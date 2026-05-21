@@ -1,11 +1,16 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/repositories/session_history_store.dart';
+import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/app_router.dart';
 import 'package:app/ui/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SessionHistoryStore.init();
   await setupDependencies();
   runApp(const RemotePiApp());
 }
@@ -18,7 +23,11 @@ class RemotePiApp extends StatefulWidget {
 }
 
 class _RemotePiAppState extends State<RemotePiApp> {
-  late final _router = buildRouter(injector.get<PairingStorage>());
+  late final _router = buildRouter(
+    injector.get<PairingStorage>(),
+    injector.get<ConnectionManager>(),
+    injector.get<Preferences>(),
+  );
 
   @override
   void dispose() {
@@ -28,11 +37,14 @@ class _RemotePiAppState extends State<RemotePiApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'Remote Pi',
-      theme: buildAppTheme(),
-      routerConfig: _router,
-      debugShowCheckedModeBanner: false,
+    return ChangeNotifierProvider<Preferences>.value(
+      value: injector.get<Preferences>(),
+      child: MaterialApp.router(
+        title: 'Remote Pi',
+        theme: buildAppTheme(),
+        routerConfig: _router,
+        debugShowCheckedModeBanner: false,
+      ),
     );
   }
 }

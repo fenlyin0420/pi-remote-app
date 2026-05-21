@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:app/config/utils/injector.dart';
+import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/repositories/session_history_store.dart';
 import 'package:app/data/repositories/session_repository.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
@@ -11,6 +14,7 @@ import 'package:app/pairing/qr_scanner.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
+import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:cryptography/cryptography.dart';
@@ -25,6 +29,12 @@ Future<void> setupDependencies() async {
   // Infrastructure singletons
   _injector.addInstance<PairingStorage>(const PairingStorage());
 
+  final prefs = Preferences();
+  await prefs.load();
+  _injector.addInstance<Preferences>(prefs);
+
+  _injector.addInstance<SessionHistoryStore>(SessionHistoryStore());
+
   // ConnectionManager — production factory wired here.
   _injector.addService<ConnectionManager>(
     () => ConnectionManager(
@@ -35,15 +45,33 @@ Future<void> setupDependencies() async {
 
   // Repositories
   _injector.addRepository<SessionRepository>(
-    () => SessionRepository(_injector.get<ConnectionManager>()),
+    () => SessionRepository(
+      _injector.get<ConnectionManager>(),
+      _injector.get<SessionHistoryStore>(),
+    ),
   );
 
   // ViewModels
   _injector.addViewModel<ChatViewModel>(
-    () => ChatViewModel(_injector.get<SessionRepository>()),
+    () => ChatViewModel(
+      _injector.get<SessionRepository>(),
+      _injector.get<Preferences>(),
+      _injector.get<PairingStorage>(),
+    ),
+  );
+  _injector.addViewModel<HomeViewModel>(
+    () => HomeViewModel(
+      _injector.get<PairingStorage>(),
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+    ),
   );
   _injector.addViewModel<SettingsViewModel>(
-    () => SettingsViewModel(_injector.get<PairingStorage>()),
+    () => SettingsViewModel(
+      _injector.get<PairingStorage>(),
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+    ),
   );
   _injector.addViewModel<PairingViewModel>(
     () => PairingViewModel(
@@ -76,10 +104,23 @@ Future<IChannel> _productionConnectionFactory(
   final deviceKey = await Ed25519().newKeyPairFromSeed(seed);
   if (cancel.isCancelled) throw _CancelledError();
 
+  // Defensive timeout (plano app-state-normalization): without this the
+  // WebSocket connect + Ed25519 challenge round-trip can hang
+  // indefinitely if the relay is unreachable — ChatViewModel would sit
+  // in `ChatConnecting` forever. Throwing here pushes the manager into
+  // its retry/backoff path, which is observable as `StatusRetrying` and
+  // renders a "reconnecting" banner rather than an empty spinner.
+  const wsConnectTimeout = Duration(seconds: 10);
   final transport = await WsTransport.connect(
     relayUrl: peer.relayUrl,
     peerPubkey: peer.remoteEpk,
     ed25519Key: deviceKey,
+  ).timeout(
+    wsConnectTimeout,
+    onTimeout: () => throw TimeoutException(
+      'WS connect to ${peer.relayUrl} timed out after '
+      '${wsConnectTimeout.inSeconds}s',
+    ),
   );
 
   if (cancel.isCancelled) {

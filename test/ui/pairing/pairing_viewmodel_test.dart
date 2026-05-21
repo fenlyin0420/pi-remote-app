@@ -5,7 +5,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:app/data/repositories/i_session_repository.dart';
+import 'package:app/data/repositories/i_session_repository.dart'
+    show ISessionRepository, SessionEvent;
 import 'package:app/data/transport/channel.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/pair_request_flow.dart' show PeerTransport;
@@ -108,6 +109,7 @@ class _FakeSessionRepo implements ISessionRepository {
 
   @override SessionState get current => const SessionState();
   @override Stream<SessionState> get sessionStream => const Stream.empty();
+  @override Stream<SessionEvent> get eventStream => const Stream.empty();
   @override Future<void> boot() async {}
   @override Future<void> connectTo(PeerRecord p) async {}
   @override Future<void> sendMessage(String t) async {}
@@ -121,6 +123,25 @@ class _FakeSessionRepo implements ISessionRepository {
     adoptedChannel = channel;
     adoptedPeer = peer;
   }
+
+  @override
+  Future<void> setActivePeer(PeerRecord peer) async {}
+
+  @override
+  void requestSync() {}
+
+  @override
+  Future<void> openSession(PeerRecord peer) async {}
+
+  @override
+  Stream<Map<String, PresenceState>> get presenceStream =>
+      const Stream.empty();
+
+  @override
+  PresenceState presenceFor(String epk) => const PresenceUnknown();
+
+  @override
+  PeerRecord? get activePeer => null;
 }
 
 // ---------------------------------------------------------------------------

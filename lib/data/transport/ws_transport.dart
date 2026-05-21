@@ -3,17 +3,23 @@
 // Flow per connection:
 //   1. Connect to relay WS
 //   2. Ed25519 challenge-response (hello → challenge → auth)
-//   3. After auth, wrap/unwrap outer JSONL envelopes {peer, ct}
+//   3. After auth, two parallel streams of inbound frames:
+//        - envelope frames `{peer, ct}` → decoded to the peer queue
+//        - control frames (top-level `type`, no `peer`) → control stream
+//      Outbound `subscribe_presence` / `presence_check` go raw too.
 //
-// `peer` is standard base64 of the destination's Ed25519 pubkey (matches the
-// relay registry, populated from the peer's hello). `ct` is base64 of the
-// inner-envelope bytes (plain JSON post-rollback, see plan/06-rollback-e2e.md).
+// `peer` is standard base64 of the destination's Ed25519 pubkey (matches
+// the relay registry, populated from the peer's hello). `ct` is base64 of
+// the inner-envelope bytes (plain JSON post-rollback, see plano 06).
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:app/data/transport/channel.dart';
+import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../pairing/pair_request_flow.dart';
@@ -26,9 +32,11 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport {
+class WsTransport implements PeerTransport, IControlLink {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
+  final _controlController =
+      StreamController<ControlInbound>.broadcast();
 
   WsTransport._(this._ws);
 
@@ -60,8 +68,36 @@ class WsTransport implements PeerTransport {
         }
         try {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-          transport._queue.add(_b64Decode(frame['ct'] as String));
-        } catch (_) {/* malformed frame — drop */}
+          // Envelope: {peer, ct} → enqueue payload bytes.
+          if (frame.containsKey('peer') && frame.containsKey('ct')) {
+            final bytes = _b64Decode(frame['ct'] as String);
+            debugPrint('[ws-raw] envelope peer=${(frame['peer'] as String).substring(0, 8)}… ct.bytes=${bytes.length}');
+            transport._queue.add(bytes);
+            return;
+          }
+          // Control: top-level `type` only → presence stream.
+          final ctrl = ControlInbound.tryFromJson(frame);
+          if (ctrl != null && !transport._controlController.isClosed) {
+            debugPrint('[ws-raw] control type=${frame['type']}');
+            transport._controlController.add(ctrl);
+            return;
+          }
+          // Anything else: unknown shape. Was silently dropped — surface
+          // it so we can diagnose "session_history nunca chegou" cases.
+          final rawStr = raw.toString();
+          final preview =
+              rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
+          debugPrint('[ws-raw] UNKNOWN frame shape: $preview');
+        } catch (e, st) {
+          // Was silently dropped → kept us blind to malformed payloads.
+          final rawStr = raw.toString();
+          final preview =
+              rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
+          debugPrint(
+            '[ws-raw] decode ERROR: $e | preview=$preview '
+            '| stack=${st.toString().split("\n").take(2).join(" | ")}',
+          );
+        }
       },
       onError: (e) {
         if (!challengeCompleter.isCompleted) challengeCompleter.completeError(e);
@@ -72,6 +108,9 @@ class WsTransport implements PeerTransport {
           challengeCompleter.completeError(const WsTransportError('WS closed during auth'));
         }
         transport._queue.close();
+        if (!transport._controlController.isClosed) {
+          transport._controlController.close();
+        }
       },
     );
 
@@ -113,6 +152,17 @@ class WsTransport implements PeerTransport {
 
   @override
   Future<void> send(Uint8List data) async {
+    // Peek the inner JSON to log the outbound message type — helpful
+    // when chasing "why didn't this reach Pi" issues.
+    String typePeek = '?';
+    try {
+      final inner = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+      typePeek = inner['type']?.toString() ?? '?';
+    } catch (_) {/* keep '?' */}
+    debugPrint(
+      '[ws-tx] type=$typePeek bytes=${data.length} '
+      'peer=${_peerPubkey.isEmpty ? "?" : "${_peerPubkey.substring(0, 8)}…"}',
+    );
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'ct': base64.encode(data),
@@ -122,11 +172,24 @@ class WsTransport implements PeerTransport {
   @override
   Future<Uint8List> receive() => _queue.next();
 
+  // ---- IControlLink --------------------------------------------------------
+
+  @override
+  Stream<ControlInbound> get controlFrames => _controlController.stream;
+
+  @override
+  void sendControl(Map<String, dynamic> json) {
+    _ws.sink.add(jsonEncode(json));
+  }
+
+  // -------------------------------------------------------------------------
+
   @override
   Future<void> close() async {
     await _sub?.cancel();
     await _ws.sink.close();
     _queue.close();
+    if (!_controlController.isClosed) await _controlController.close();
   }
 }
 

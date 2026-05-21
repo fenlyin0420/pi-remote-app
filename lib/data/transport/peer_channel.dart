@@ -13,7 +13,9 @@ import 'dart:typed_data';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/protocol/codec.dart';
+// ControlInbound + IControlLink come from these.
 import 'package:app/protocol/protocol.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 class PeerChannelError implements Exception {
   final String message;
@@ -23,7 +25,7 @@ class PeerChannelError implements Exception {
   String toString() => 'PeerChannelError: $message';
 }
 
-class PlainPeerChannel implements IChannel {
+class PlainPeerChannel implements IChannel, IControlLink {
   final PeerTransport _transport;
 
   final _controller = StreamController<ServerMessage>.broadcast();
@@ -31,6 +33,23 @@ class PlainPeerChannel implements IChannel {
   bool _closed = false;
 
   PlainPeerChannel({required PeerTransport transport}) : _transport = transport;
+
+  // ---- IControlLink — forwards to the underlying transport when it
+  //      supports raw control frames (production: WsTransport). For
+  //      non-WS transports (tests / in-memory), returns an empty stream
+  //      and silently drops outbound control frames.
+  @override
+  Stream<ControlInbound> get controlFrames {
+    final t = _transport;
+    if (t is IControlLink) return (t as IControlLink).controlFrames;
+    return const Stream.empty();
+  }
+
+  @override
+  void sendControl(Map<String, dynamic> json) {
+    final t = _transport;
+    if (t is IControlLink) (t as IControlLink).sendControl(json);
+  }
 
   @override
   Stream<ServerMessage> get serverMessages {
@@ -67,19 +86,35 @@ class PlainPeerChannel implements IChannel {
   }
 
   void _handleFrame(Uint8List bytes) {
+    String? line;
     try {
-      final line = utf8.decode(bytes);
+      line = utf8.decode(bytes);
       final msg = decodeServer(line);
+      debugPrint('[ws-rx] frame ok type=${msg.runtimeType} bytes=${bytes.length}');
       if (!_controller.isClosed) _controller.add(msg);
-    } on UnsupportedTypeException {
+    } on UnsupportedTypeException catch (e) {
       // Forward-compat: surface unknown server types as ErrorMessage.
+      debugPrint('[ws-rx] unsupported_type: $e (preview=${_preview(line)})');
       if (!_controller.isClosed) {
         _controller.add(
           ErrorMessage(code: 'unsupported_type', message: 'unknown server type'),
         );
       }
-    } catch (_) {
-      // Decode error — drop frame, do not kill the channel.
+    } catch (e, st) {
+      // Was: silently dropped. Surfacing because we suspect session_history
+      // (and similar protocol frames with nested objects) is being lost
+      // here when a cast fails — bug hunt. Remove once green.
+      debugPrint(
+        '[ws-rx] decode ERROR: $e\n'
+        '       preview=${_preview(line)}\n'
+        '       stack=${st.toString().split("\n").take(3).join(" | ")}',
+      );
     }
+  }
+
+  static String _preview(String? line) {
+    if (line == null) return '<utf8-decode-failed>';
+    const cap = 240;
+    return line.length <= cap ? line : '${line.substring(0, cap)}…';
   }
 }

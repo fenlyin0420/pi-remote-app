@@ -137,6 +137,64 @@ void main() {
       expect(msg.message, isNotEmpty);
     });
 
+    test('peer_online fixture parses (ControlInbound.tryFromJson)', () {
+      final file = File('../.orchestration/contracts/fixtures/peer_online.jsonl');
+      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>);
+      expect(m, isA<PeerOnline>());
+      expect((m! as PeerOnline).peer, isNotEmpty);
+    });
+
+    test('peer_offline fixture parses with sinceTs', () {
+      final file = File('../.orchestration/contracts/fixtures/peer_offline.jsonl');
+      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
+          as PeerOffline;
+      expect(m.sinceTs, 1716234500000);
+    });
+
+    test('presence snapshot fixture parses with mixed online/offline', () {
+      final file = File('../.orchestration/contracts/fixtures/presence.jsonl');
+      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
+          as PresenceSnapshot;
+      expect(m.states, hasLength(2));
+      expect(m.states.first.online, isTrue);
+      expect(m.states.last.online, isFalse);
+      expect(m.states.last.sinceTs, 1716234500000);
+    });
+
+    test('subscribe_presence outbound helper', () {
+      final j = subscribePresenceFrame(['A', 'B']);
+      expect(j['type'], 'subscribe_presence');
+      expect(j['peers'], ['A', 'B']);
+    });
+
+    test('Bye fixture parses with peer_stop reason', () {
+      final file = File('../.orchestration/contracts/fixtures/bye.jsonl');
+      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final msg = decodeServer(line) as Bye;
+      expect(msg.reason, ByeReason.peerStop);
+      expect(msg.rawReason, 'peer_stop');
+    });
+
+    test('Bye unknown reason → ByeReason.unknown but rawReason preserved', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'bye',
+        'reason': 'mystery',
+      }) as Bye;
+      expect(msg.reason, ByeReason.unknown);
+      expect(msg.rawReason, 'mystery');
+    });
+
+    test('UserInput fixture parses', () {
+      final file = File('../.orchestration/contracts/fixtures/user_input.jsonl');
+      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final msg = decodeServer(line) as UserInput;
+      expect(msg.id, isNotEmpty);
+      expect(msg.text, 'listar arquivos modificados');
+    });
+
     test('PairRequest encodes correctly', () {
       final msg = PairRequest(
         id: '018f9c3a-0000-7000-9a3b-1c2d3e4f5a01',

@@ -1,5 +1,4 @@
 import 'package:app/domain/session_state.dart';
-import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,55 +13,55 @@ const _bashTool = ToolEvent(
 );
 
 void main() {
-  group('ToolRequestCard', () {
+  group('ToolRequestCard (informational)', () {
     testWidgets('shows tool name and command', (tester) async {
       await tester.pumpWidget(_wrap(
-        ToolRequestCard(tool: _bashTool),
+        const ToolRequestCard(tool: _bashTool),
       ));
       expect(find.text('BASH'), findsOneWidget);
       expect(find.text('ls -la'), findsOneWidget);
     });
 
-    testWidgets('shows AWAITING and countdown initially', (tester) async {
-      await tester.pumpWidget(_wrap(ToolRequestCard(tool: _bashTool)));
-      expect(find.textContaining('AWAITING'), findsOneWidget);
-      expect(find.textContaining('60s'), findsOneWidget);
-    });
-
-    testWidgets('Allow button dispatches ApproveDecision.allow', (tester) async {
-      ApproveDecision? decided;
-      String? decidedId;
-
+    testWidgets('pending state shows RUNNING and no Allow/Deny buttons',
+        (tester) async {
       await tester.pumpWidget(_wrap(
-        ToolRequestCard(
-          tool: _bashTool,
-          onDecide: (id, decision) {
-            decidedId = id;
-            decided = decision;
-          },
-        ),
+        const ToolRequestCard(tool: _bashTool),
       ));
-
-      await tester.tap(find.text('Allow'));
-      expect(decided, ApproveDecision.allow);
-      expect(decidedId, 'tc1');
+      expect(find.text('RUNNING'), findsOneWidget);
+      expect(find.text('Allow'), findsNothing);
+      expect(find.text('Deny'), findsNothing);
+      expect(find.textContaining('s'), findsAny); // no '60s' countdown
+      expect(find.textContaining('60s'), findsNothing);
     });
 
-    testWidgets('Deny button dispatches ApproveDecision.deny', (tester) async {
-      ApproveDecision? decided;
-
-      await tester.pumpWidget(_wrap(
-        ToolRequestCard(
-          tool: _bashTool,
-          onDecide: (id, decision) => decided = decision,
-        ),
-      ));
-
-      await tester.tap(find.text('Deny'));
-      expect(decided, ApproveDecision.deny);
+    testWidgets('completed state shows DONE', (tester) async {
+      const done = ToolEvent(
+        id: 'tc1',
+        toolCallId: 'tc1',
+        tool: 'Bash',
+        args: {'command': 'ls'},
+        status: ToolEventStatus.completed,
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
+      expect(find.text('DONE'), findsOneWidget);
+      expect(find.textContaining('Done'), findsAny);
     });
 
-    testWidgets('approved card shows ALLOWED and dims', (tester) async {
+    testWidgets('denied state shows DENIED label', (tester) async {
+      const denied = ToolEvent(
+        id: 'tc1',
+        toolCallId: 'tc1',
+        tool: 'Bash',
+        args: {'command': 'ls'},
+        status: ToolEventStatus.denied,
+        error: 'user denied',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: denied)));
+      expect(find.text('DENIED'), findsOneWidget);
+    });
+
+    testWidgets('allowed state shows RUNNING (still in flight)',
+        (tester) async {
       const allowed = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -70,29 +69,9 @@ void main() {
         args: {'command': 'ls'},
         status: ToolEventStatus.allowed,
       );
-
-      await tester.pumpWidget(_wrap(ToolRequestCard(tool: allowed)));
-      expect(find.text('ALLOWED'), findsOneWidget);
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: allowed)));
+      expect(find.text('RUNNING'), findsOneWidget);
       expect(find.text('Allow'), findsNothing);
-      expect(find.text('Deny'), findsNothing);
-    });
-
-    testWidgets('denied card shows outcome text', (tester) async {
-      const denied = ToolEvent(
-        id: 'tc1',
-        toolCallId: 'tc1',
-        tool: 'Bash',
-        args: {'command': 'ls'},
-        status: ToolEventStatus.denied,
-      );
-
-      await tester.pumpWidget(_wrap(ToolRequestCard(tool: denied)));
-      expect(find.text('DENIED'), findsOneWidget);
-    });
-
-    testWidgets('countdown starts at 60s', (tester) async {
-      await tester.pumpWidget(_wrap(ToolRequestCard(tool: _bashTool)));
-      expect(find.textContaining('60s'), findsOneWidget);
     });
   });
 }

@@ -145,10 +145,53 @@ void main() {
       expect(json['session_name'], 'test');
       expect(json['relay_url'], 'ws://localhost');
       expect(json['paired_at'], '2026-01-01T00:00:00Z');
+      expect(json['nickname'], isNull);
 
       final restored = PeerRecord.fromJson(json);
       expect(restored.remoteEpk, 'pk_ed25519');
       expect(restored.sessionName, 'test');
+      expect(restored.nickname, isNull);
+    });
+
+    test('nickname round-trips through toJson/fromJson', () {
+      const record = PeerRecord(
+        remoteEpk: 'pk1',
+        sessionName: 'remote_pi · main',
+        relayUrl: 'ws://x',
+        pairedAt: '2026-01-01T00:00:00Z',
+        nickname: 'Mac de casa',
+      );
+      final restored = PeerRecord.fromJson(record.toJson());
+      expect(restored.nickname, 'Mac de casa');
+      expect(restored.sessionName, 'remote_pi · main');
+    });
+
+    test('legacy record without nickname field → fromJson returns null', () {
+      final restored = PeerRecord.fromJson({
+        'remote_epk': 'pk1',
+        'session_name': 'name',
+        'relay_url': 'ws://x',
+        'paired_at': '2026-01-01T00:00:00Z',
+        // no `nickname` key
+      });
+      expect(restored.nickname, isNull);
+    });
+
+    test('copyWith(nickname: null) clears the nickname', () {
+      const record = PeerRecord(
+        remoteEpk: 'pk1',
+        sessionName: 'n',
+        relayUrl: 'ws://x',
+        pairedAt: '2026-01-01T00:00:00Z',
+        nickname: 'old',
+      );
+      final cleared = record.copyWith(nickname: null);
+      expect(cleared.nickname, isNull);
+
+      // copyWith without passing nickname keeps the existing value
+      final preserved = record.copyWith(sessionName: 'new');
+      expect(preserved.nickname, 'old');
+      expect(preserved.sessionName, 'new');
     });
 
     test('list/save/load round-trips through fake storage', () async {

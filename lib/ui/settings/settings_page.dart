@@ -1,9 +1,10 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
+import 'package:app/ui/settings/widgets/widgets.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
@@ -12,8 +13,8 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<SettingsViewModel>().state;
-    final vm = context.read<SettingsViewModel>();
+    final vm = context.watch<SettingsViewModel>();
+    final state = vm.state;
 
     return Scaffold(
       backgroundColor: kBg,
@@ -22,262 +23,166 @@ class SettingsPage extends StatelessWidget {
         title: const Text('Settings'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: kText),
-          onPressed: () => context.pop(),
+          onPressed: () =>
+              context.canPop() ? context.pop() : context.go('/home'),
         ),
         bottom: const PreferredSize(
           preferredSize: Size.fromHeight(1),
           child: Divider(color: kBorder, height: 1),
         ),
       ),
-      body: switch (state) {
-        SettingsLoading() => const Center(
-          child: CircularProgressIndicator(color: kAccent),
-        ),
-        SettingsNoPeer() => const Center(
-          child: Text('No device paired', style: TextStyle(color: kMuted)),
-        ),
-        SettingsReady(:final peer) => _PeerCard(
-          peer: peer,
-          onRename: (name) => vm.rename(name),
-          onRevoke: () => _confirmRevoke(context, vm),
-        ),
-      },
-    );
-  }
-
-  static Future<void> _confirmRevoke(
-    BuildContext context,
-    SettingsViewModel vm,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: kSurface,
-        title: const Text('Forget pairing?', style: TextStyle(color: kText)),
-        content: const Text(
-          'This device will no longer be able to reconnect without scanning a new QR.',
-          style: TextStyle(color: kMuted2),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: kMuted2)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text(
-              'Forget',
-              style: TextStyle(color: Colors.redAccent),
+      body: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          const _DisplaySection(),
+          const Divider(color: kBorder, height: 1),
+          const _SectionHeader('Pairings'),
+          switch (state) {
+            SettingsLoading() => const Padding(
+              padding: EdgeInsets.symmetric(vertical: 32),
+              child: Center(child: CircularProgressIndicator(color: kAccent)),
             ),
-          ),
+            SettingsNoPeer() => const _EmptyState(),
+            SettingsList(:final peers) => _PeerList(
+              peers: peers,
+              onRevoke: vm.revoke,
+              onSetNickname: vm.setNickname,
+            ),
+          },
         ],
       ),
     );
-    if (confirmed == true) {
-      await vm.revoke();
-      if (context.mounted) context.go('/pair');
-    }
   }
 }
 
-// ---------------------------------------------------------------------------
-
-class _PeerCard extends StatelessWidget {
-  final PeerRecord peer;
-  final void Function(String) onRename;
-  final VoidCallback onRevoke;
-
-  const _PeerCard({
-    required this.peer,
-    required this.onRename,
-    required this.onRevoke,
-  });
+class _DisplaySection extends StatelessWidget {
+  const _DisplaySection();
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(18),
+    final prefs = context.watch<Preferences>();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Session name
-        _SectionLabel('Paired device'),
-        _EditableField(
-          label: 'Name',
-          value: peer.sessionName,
-          onSave: onRename,
-        ),
-
-        const SizedBox(height: 20),
-
-        // Technical details
-        _SectionLabel('Details'),
-        _DetailRow('Relay', peer.relayUrl),
-        _DetailRow(
-          'Peer key',
-          '${peer.remoteEpk.substring(0, 8)}…',
-          onCopy: peer.remoteEpk,
-        ),
-        _DetailRow('Paired at', peer.pairedAt.substring(0, 10)),
-
-        const SizedBox(height: 32),
-
-        // Revoke button
-        OutlinedButton.icon(
-          onPressed: onRevoke,
-          style: OutlinedButton.styleFrom(
-            foregroundColor: Colors.redAccent,
-            side: const BorderSide(color: Colors.redAccent),
-            padding: const EdgeInsets.symmetric(vertical: 14),
+        const _SectionHeader('Display'),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          activeThumbColor: kAccent,
+          title: const Text(
+            'Hide tool calls in chat',
+            style: TextStyle(color: kText, fontSize: 14),
           ),
-          icon: const Icon(Icons.link_off_rounded, size: 18),
-          label: const Text('Forget pairing'),
+          subtitle: const Text(
+            'Only show your messages and the assistant replies.',
+            style: TextStyle(color: kMuted, fontSize: 12),
+          ),
+          value: prefs.hideToolCalls,
+          onChanged: (v) => prefs.setHideToolCalls(v),
         ),
+        const SizedBox(height: 8),
       ],
     );
   }
 }
 
-class _SectionLabel extends StatelessWidget {
-  final String text;
-  const _SectionLabel(this.text);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Text(
-      text.toUpperCase(),
-      style: const TextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w600,
-        color: kMuted,
-        letterSpacing: 1.4,
-      ),
-    ),
-  );
-}
-
-class _DetailRow extends StatelessWidget {
+class _SectionHeader extends StatelessWidget {
   final String label;
-  final String value;
-  final String? onCopy;
-
-  const _DetailRow(this.label, this.value, {this.onCopy});
+  const _SectionHeader(this.label);
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onCopy != null
-          ? () {
-              Clipboard.setData(ClipboardData(text: onCopy!));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Copied'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            }
-          : null,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          children: [
-            Text(label, style: const TextStyle(color: kMuted, fontSize: 12)),
-            const Spacer(),
-            Text(
-              value,
-              style: const TextStyle(
-                fontFamily: kMono,
-                fontSize: 12,
-                color: kMuted2,
-              ),
-            ),
-            if (onCopy != null) ...[
-              const SizedBox(width: 6),
-              const Icon(Icons.copy_outlined, size: 12, color: kMuted),
-            ],
-          ],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
+      child: Text(
+        label.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: kMuted,
+          letterSpacing: 1.4,
         ),
       ),
     );
   }
 }
 
-class _EditableField extends StatefulWidget {
-  final String label;
-  final String value;
-  final void Function(String) onSave;
-
-  const _EditableField({
-    required this.label,
-    required this.value,
-    required this.onSave,
-  });
-
-  @override
-  State<_EditableField> createState() => _EditableFieldState();
-}
-
-class _EditableFieldState extends State<_EditableField> {
-  late final TextEditingController _ctrl;
-  bool _editing = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = TextEditingController(text: widget.value);
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
 
   @override
   Widget build(BuildContext context) {
-    if (_editing) {
-      return Row(
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: TextField(
-              controller: _ctrl,
-              autofocus: true,
-              style: const TextStyle(color: kText, fontSize: 14),
-              cursorColor: kAccent,
-              decoration: const InputDecoration(
-                border: UnderlineInputBorder(
-                  borderSide: BorderSide(color: kAccent),
-                ),
-                focusedBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: kAccent, width: 1.5),
-                ),
-                contentPadding: EdgeInsets.zero,
-              ),
-              onSubmitted: (v) {
-                widget.onSave(v);
-                setState(() => _editing = false);
-              },
+          const Icon(Icons.devices_other, color: kMuted, size: 40),
+          const SizedBox(height: 12),
+          const Text(
+            'No pairings yet',
+            style: TextStyle(color: kMuted2, fontSize: 14),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Tap + to pair a new Mac.',
+            style: TextStyle(color: kMuted, fontSize: 12),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: () => context.push('/pair'),
+            style: FilledButton.styleFrom(
+              backgroundColor: kAccent,
+              foregroundColor: Colors.black,
             ),
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: const Text('Scan QR'),
           ),
-          IconButton(
-            icon: const Icon(Icons.check, color: kAccent, size: 18),
-            onPressed: () {
-              widget.onSave(_ctrl.text);
-              setState(() => _editing = false);
-            },
-          ),
-        ],
-      );
-    }
-
-    return GestureDetector(
-      onTap: () => setState(() => _editing = true),
-      child: Row(
-        children: [
-          Text(widget.value, style: const TextStyle(color: kText, fontSize: 14)),
-          const SizedBox(width: 8),
-          const Icon(Icons.edit_outlined, color: kMuted, size: 14),
         ],
       ),
     );
+  }
+}
+
+class _PeerList extends StatelessWidget {
+  final List<PeerRecord> peers;
+  final Future<void> Function(String epk) onRevoke;
+  final Future<void> Function(String epk, String? nickname) onSetNickname;
+
+  const _PeerList({
+    required this.peers,
+    required this.onRevoke,
+    required this.onSetNickname,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (final peer in peers)
+          PeerListItem(
+            peer: peer,
+            onEditNickname: () => _editNickname(context, peer),
+            onRevokeRequested: () async {
+              final confirmed = await showRevokeConfirmDialog(
+                context,
+                peer: peer,
+              );
+              if (!confirmed) return false;
+              await onRevoke(peer.remoteEpk);
+              return true;
+            },
+          ),
+      ],
+    );
+  }
+
+  Future<void> _editNickname(BuildContext context, PeerRecord peer) async {
+    final result = await showNicknameEditor(
+      context,
+      defaultName: peer.sessionName,
+      currentNickname: peer.nickname ?? '',
+    );
+    if (result == null) return; // canceled
+    await onSetNickname(peer.remoteEpk, result.isEmpty ? null : result);
   }
 }

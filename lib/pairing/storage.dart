@@ -11,18 +11,26 @@ const _kDeviceAccount = 'ed25519';
 // PeerRecord — persisted per pairing
 // ---------------------------------------------------------------------------
 
+// Sentinel for nullable copyWith parameters that need to distinguish
+// "keep current" (omit) from "set to null" (pass `null` explicitly).
+const Object _unset = Object();
+
 class PeerRecord {
   // base64 Ed25519 pubkey of the Pi — the only peer identifier post-rollback.
   final String remoteEpk;
   final String sessionName;
   final String relayUrl;
   final String pairedAt; // ISO-8601
+  // Local-only display label (Pi does not know about this). Renders in
+  // place of [sessionName] when set; null = use sessionName everywhere.
+  final String? nickname;
 
   const PeerRecord({
     required this.remoteEpk,
     required this.sessionName,
     required this.relayUrl,
     required this.pairedAt,
+    this.nickname,
   });
 
   Map<String, dynamic> toJson() => {
@@ -30,6 +38,7 @@ class PeerRecord {
     'session_name': sessionName,
     'relay_url': relayUrl,
     'paired_at': pairedAt,
+    'nickname': nickname,
   };
 
   factory PeerRecord.fromJson(Map<String, dynamic> j) => PeerRecord(
@@ -37,14 +46,36 @@ class PeerRecord {
     sessionName: j['session_name'] as String,
     relayUrl: j['relay_url'] as String,
     pairedAt: j['paired_at'] as String,
+    // Legacy records (saved before plan 10.3) have no 'nickname' field.
+    nickname: j['nickname'] as String?,
   );
 
-  PeerRecord copyWith({String? sessionName}) => PeerRecord(
+  PeerRecord copyWith({
+    String? sessionName,
+    // Sentinel-typed so the caller can pass `nickname: null` to clear.
+    Object? nickname = _unset,
+  }) => PeerRecord(
     remoteEpk: remoteEpk,
     sessionName: sessionName ?? this.sessionName,
     relayUrl: relayUrl,
     pairedAt: pairedAt,
+    nickname: identical(nickname, _unset)
+        ? this.nickname
+        : nickname as String?,
   );
+
+  @override
+  bool operator ==(Object other) =>
+      other is PeerRecord &&
+      other.remoteEpk == remoteEpk &&
+      other.sessionName == sessionName &&
+      other.relayUrl == relayUrl &&
+      other.pairedAt == pairedAt &&
+      other.nickname == nickname;
+
+  @override
+  int get hashCode =>
+      Object.hash(remoteEpk, sessionName, relayUrl, pairedAt, nickname);
 }
 
 // ---------------------------------------------------------------------------

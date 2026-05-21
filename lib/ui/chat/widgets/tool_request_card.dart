@@ -1,60 +1,32 @@
-import 'dart:async';
-
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/app_theme.dart';
 import 'package:flutter/material.dart';
 
-const _kTimeout = 60; // seconds
+// Inline tool execution card that appears in the chat flow.
+//
+// Historically this widget rendered Allow/Deny buttons + a 60s countdown
+// assuming the Pi paused execution until the user decided. With the current
+// Claude SDK integration the pi-extension emits `tool_request` AFTER the
+// SDK has already accepted the tool (`tool_execution_start` fires post
+// auto-approval), so the buttons could only blink for a few hundred
+// milliseconds before `tool_result` arrived — confusing UX with no real
+// gating. The card is now purely informational.
+//
+// `onDecide` is kept on the API for forward compat — when the Pi adds a
+// real approval pause we can re-enable the controls. Today it is unused.
 
-// Inline approval card that appears in the chat flow.
-// Shows tool name + command/args + allow/deny buttons + 60s countdown.
-// After decision (or timeout) the card dims and shows the outcome.
-
-class ToolRequestCard extends StatefulWidget {
+class ToolRequestCard extends StatelessWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
 
   @override
-  State<ToolRequestCard> createState() => _ToolRequestCardState();
-}
-
-class _ToolRequestCardState extends State<ToolRequestCard> {
-  Timer? _timer;
-  int _remaining = _kTimeout;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.tool.status == ToolEventStatus.pending) {
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) return;
-        setState(() {
-          _remaining--;
-          if (_remaining <= 0) {
-            _timer?.cancel();
-            widget.onDecide?.call(
-              widget.tool.toolCallId,
-              ApproveDecision.deny,
-            );
-          }
-        });
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final isPending = widget.tool.status == ToolEventStatus.pending;
-    final opacity = isPending ? 1.0 : 0.55;
+    final isRunning = tool.status == ToolEventStatus.pending ||
+        tool.status == ToolEventStatus.allowed;
+    final opacity = isRunning ? 1.0 : 0.65;
 
     return Opacity(
       opacity: opacity,
@@ -79,13 +51,8 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             _buildHeader(),
             const SizedBox(height: 10),
             _buildCodeBlock(),
-            if (isPending) ...[
-              const SizedBox(height: 12),
-              _buildButtons(),
-            ] else ...[
-              const SizedBox(height: 8),
-              _buildOutcome(),
-            ],
+            const SizedBox(height: 8),
+            _buildOutcome(),
           ],
         ),
       ),
@@ -93,9 +60,9 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   }
 
   Widget _buildHeader() {
-    final statusLabel = switch (widget.tool.status) {
-      ToolEventStatus.pending => 'AWAITING',
-      ToolEventStatus.allowed => 'ALLOWED',
+    final statusLabel = switch (tool.status) {
+      ToolEventStatus.pending => 'RUNNING',
+      ToolEventStatus.allowed => 'RUNNING',
       ToolEventStatus.denied => 'DENIED',
       ToolEventStatus.expired => 'EXPIRED',
       ToolEventStatus.completed => 'DONE',
@@ -103,15 +70,14 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
 
     return Row(
       children: [
-        // Terminal icon
         CustomPaint(
           size: const Size(14, 14),
           painter: _TerminalIconPainter(color: kAccent),
         ),
         const SizedBox(width: 8),
         Text(
-          widget.tool.tool.toUpperCase(),
-          style: TextStyle(
+          tool.tool.toUpperCase(),
+          style: const TextStyle(
             fontFamily: kMono,
             fontSize: 11.5,
             color: kAccent,
@@ -120,15 +86,11 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
         ),
         const Spacer(),
         Text(
-          widget.tool.status == ToolEventStatus.pending
-              ? 'AWAITING · ${_remaining}s'
-              : statusLabel,
-          style: TextStyle(
+          statusLabel,
+          style: const TextStyle(
             fontFamily: kMono,
             fontSize: 10,
-            color: widget.tool.status == ToolEventStatus.pending && _remaining < 10
-                ? Colors.orangeAccent
-                : kMuted,
+            color: kMuted,
             letterSpacing: 0.4,
           ),
         ),
@@ -137,7 +99,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   }
 
   Widget _buildCodeBlock() {
-    final commandText = _formatArgs(widget.tool.tool, widget.tool.args);
+    final commandText = _formatArgs(tool.tool, tool.args);
     return Container(
       decoration: BoxDecoration(
         color: kCodeBg,
@@ -157,69 +119,23 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     );
   }
 
-  Widget _buildButtons() {
-    return Row(
-      children: [
-        Expanded(
-          child: SizedBox(
-            height: 38,
-            child: OutlinedButton(
-              onPressed: () => widget.onDecide?.call(
-                widget.tool.toolCallId,
-                ApproveDecision.deny,
-              ),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: kDenyBorder),
-                foregroundColor: const Color(0xFFCFCFCF),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(9),
-                ),
-              ),
-              child: const Text('Deny'),
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: SizedBox(
-            height: 38,
-            child: FilledButton(
-              onPressed: () => widget.onDecide?.call(
-                widget.tool.toolCallId,
-                ApproveDecision.allow,
-              ),
-              style: FilledButton.styleFrom(
-                backgroundColor: kAccent,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(9),
-                ),
-              ),
-              child: const Text(
-                'Allow',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildOutcome() {
+    final text = switch (tool.status) {
+      ToolEventStatus.pending || ToolEventStatus.allowed => '⏳ Running…',
+      ToolEventStatus.completed => '✓ Done',
+      ToolEventStatus.denied => '✗ ${tool.error ?? "Denied"}',
+      ToolEventStatus.expired => '✗ Expired',
+    };
+    final color = switch (tool.status) {
+      ToolEventStatus.denied || ToolEventStatus.expired => kMuted,
+      _ => kSuccess,
+    };
     return Text(
-      widget.tool.status == ToolEventStatus.allowed
-          ? '✓ Running…'
-          : widget.tool.status == ToolEventStatus.completed
-          ? '✓ Done'
-          : '✗ ${widget.tool.error ?? "Denied"}',
+      text,
       style: TextStyle(
         fontFamily: kMono,
         fontSize: 12,
-        color: widget.tool.status == ToolEventStatus.denied ||
-                widget.tool.status == ToolEventStatus.expired
-            ? kMuted
-            : kSuccess,
+        color: color,
       ),
     );
   }
@@ -252,7 +168,6 @@ class _TerminalIconPainter extends CustomPainter {
       ..strokeWidth = 1.2
       ..strokeCap = StrokeCap.round;
 
-    // Outer rect
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(0.5, 1, size.width - 1, size.height - 2),
@@ -260,13 +175,11 @@ class _TerminalIconPainter extends CustomPainter {
       ),
       paint,
     );
-    // > chevron
     final path = Path()
       ..moveTo(3, 4.5)
       ..lineTo(5.5, 7)
       ..lineTo(3, 9.5);
     canvas.drawPath(path, paint);
-    // — dash
     canvas.drawLine(
       Offset(6.5, size.height / 2),
       Offset(size.width - 2, size.height / 2),

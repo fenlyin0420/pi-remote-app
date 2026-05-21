@@ -42,6 +42,10 @@ dependencies:
   auto_injector: ^2.0.5
   provider: ^6.1.2
 
+  # Local session cache (per-peer chat history)
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

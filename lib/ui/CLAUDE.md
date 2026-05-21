@@ -100,10 +100,8 @@ class PairingPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Lê + escuta — rebuild quando state muda
-    final state = context.watch<PairingViewModel>().state;
-
-    // Lê sem escutar — para chamar métodos
-    final viewModel = context.read<PairingViewModel>();
+    final viewModel = context.watch<PairingViewModel>(); // or .read() para não escutar
+    final state = viewModel.state;
 
     return Scaffold(
       body: switch (state) {

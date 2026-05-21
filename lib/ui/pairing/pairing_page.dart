@@ -40,21 +40,18 @@ class _PairingPageState extends State<PairingPage> {
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<PairingViewModel>().state;
-    final vm = context.read<PairingViewModel>();
+    final vm = context.watch<PairingViewModel>();
+    final state = vm.state;
 
     if (state is PairingPaired) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (context.mounted) context.go('/chat');
+        if (context.mounted) context.go('/home');
       });
     }
 
     return Scaffold(
       backgroundColor: kBg,
-      appBar: AppBar(
-        backgroundColor: kBg,
-        title: const Text('Pair device'),
-      ),
+      appBar: AppBar(backgroundColor: kBg, title: const Text('Pair device')),
       body: _buildBody(state, vm),
     );
   }
@@ -97,9 +94,7 @@ class _PairingPageState extends State<PairingPage> {
               border: Border.all(color: kBorder),
             ),
             child: isConnecting
-                ? const Center(
-                    child: CircularProgressIndicator(color: kAccent),
-                  )
+                ? const Center(child: CircularProgressIndicator(color: kAccent))
                 : _CornerBrackets(),
           ),
         ),
@@ -122,18 +117,9 @@ class _PairingPageState extends State<PairingPage> {
 
   List<Widget> _cornerBrackets() {
     return [
-      Align(
-        alignment: const Alignment(-0.7, -0.4),
-        child: _Bracket(rotate: 0),
-      ),
-      Align(
-        alignment: const Alignment(0.7, -0.4),
-        child: _Bracket(rotate: 90),
-      ),
-      Align(
-        alignment: const Alignment(0.7, 0.4),
-        child: _Bracket(rotate: 180),
-      ),
+      Align(alignment: const Alignment(-0.7, -0.4), child: _Bracket(rotate: 0)),
+      Align(alignment: const Alignment(0.7, -0.4), child: _Bracket(rotate: 90)),
+      Align(alignment: const Alignment(0.7, 0.4), child: _Bracket(rotate: 180)),
       Align(
         alignment: const Alignment(-0.7, 0.4),
         child: _Bracket(rotate: 270),
@@ -207,7 +193,11 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
+            const Icon(
+              Icons.error_outline_rounded,
+              color: Colors.redAccent,
+              size: 48,
+            ),
             const SizedBox(height: 16),
             Text(
               message,

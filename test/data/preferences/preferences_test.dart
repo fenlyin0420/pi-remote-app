@@ -1,0 +1,76 @@
+import 'package:app/data/preferences/preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+class _FakeSecureStorage implements FlutterSecureStorage {
+  final Map<String, String> _store = {};
+
+  @override
+  Future<String?> read({
+    required String key,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async => _store[key];
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (value == null) {
+      _store.remove(key);
+    } else {
+      _store[key] = value;
+    }
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
+void main() {
+  group('Preferences', () {
+    test('defaults to hideToolCalls=false before load()', () {
+      final p = Preferences(_FakeSecureStorage());
+      expect(p.hideToolCalls, isFalse);
+    });
+
+    test('load() hydrates from storage', () async {
+      final store = _FakeSecureStorage();
+      await store.write(key: 'prefs.hide_tool_calls', value: 'true');
+      final p = Preferences(store);
+      await p.load();
+      expect(p.hideToolCalls, isTrue);
+    });
+
+    test('setHideToolCalls writes to storage and notifies', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      var notifs = 0;
+      p.addListener(() => notifs++);
+
+      await p.setHideToolCalls(true);
+      expect(p.hideToolCalls, isTrue);
+      expect(await store.read(key: 'prefs.hide_tool_calls'), 'true');
+      expect(notifs, 1);
+
+      // No-op if value unchanged.
+      await p.setHideToolCalls(true);
+      expect(notifs, 1);
+
+      await p.setHideToolCalls(false);
+      expect(p.hideToolCalls, isFalse);
+      expect(notifs, 2);
+    });
+  });
+}
