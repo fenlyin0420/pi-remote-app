@@ -14,7 +14,7 @@ import 'package:app/data/preferences/preferences.dart';
 
 /// Public community relay. Hardcoded; not configurable at build time
 /// to keep the onboarding flow deterministic.
-const String kDefaultRelayUrl = 'wss://relay.remote-pi.dev';
+const String kDefaultRelayUrl = 'wss://relay-rp1.jacobmoura.work';
 
 /// Returns the effective relay URL the app should connect to.
 /// Falls back to [kDefaultRelayUrl] when no user override is set.
