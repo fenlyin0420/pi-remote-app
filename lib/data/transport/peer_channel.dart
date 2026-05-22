@@ -51,6 +51,18 @@ class PlainPeerChannel implements IChannel, IControlLink {
     if (t is IControlLink) (t as IControlLink).sendControl(json);
   }
 
+  /// Plan 17 — propagate the active Pi-side room to the underlying
+  /// transport so subsequent `send`s carry the right outer `room` field.
+  /// No-op when the transport doesn't support it (in-memory test fakes).
+  void setActiveRoom(String roomId) {
+    final t = _transport;
+    try {
+      (t as dynamic).setActiveRoom(roomId);
+    } catch (_) {
+      // Non-WS transports don't track rooms — fine to ignore.
+    }
+  }
+
   @override
   Stream<ServerMessage> get serverMessages {
     if (!_started) {

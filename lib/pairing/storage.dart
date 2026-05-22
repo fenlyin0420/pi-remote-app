@@ -6,6 +6,71 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 const _kPeersService = 'dev.remotepi.peers';
 const _kDeviceService = 'dev.remotepi.device';
 const _kDeviceAccount = 'ed25519';
+const _kRoomsService = 'dev.remotepi.rooms';
+
+/// Plan-17 follow-up — persisted snapshot of every room we have ever
+/// learned about for a peer (relay-announced via `room_announced` /
+/// `rooms` push). Allows Home to keep showing the same tiles after a
+/// cold start while the relay is still warming up + lets the user
+/// open a chat offline and read history.
+class PersistedRoom {
+  final String roomId;
+  final String? name;
+  final String? cwd;
+  final int startedAt;
+  /// Local-only override for [name]. When non-null, takes precedence
+  /// in UI (long-press rename).
+  final String? localName;
+  /// Plan 18 — last-known model the Pi-extension is running with.
+  /// Persisted so the subtitle survives cold starts.
+  final String? model;
+
+  const PersistedRoom({
+    required this.roomId,
+    required this.startedAt,
+    this.name,
+    this.cwd,
+    this.localName,
+    this.model,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'room_id': roomId,
+    'name': name,
+    'cwd': cwd,
+    'started_at': startedAt,
+    'local_name': localName,
+    'model': model,
+  };
+
+  factory PersistedRoom.fromJson(Map<String, dynamic> j) => PersistedRoom(
+    roomId: j['room_id'] as String,
+    name: j['name'] as String?,
+    cwd: j['cwd'] as String?,
+    startedAt: (j['started_at'] as num).toInt(),
+    localName: j['local_name'] as String?,
+    model: j['model'] as String?,
+  );
+
+  PersistedRoom copyWith({
+    String? name,
+    String? cwd,
+    int? startedAt,
+    Object? localName = _unset,
+    Object? model = _unset,
+  }) => PersistedRoom(
+    roomId: roomId,
+    name: name ?? this.name,
+    cwd: cwd ?? this.cwd,
+    startedAt: startedAt ?? this.startedAt,
+    localName: identical(localName, _unset)
+        ? this.localName
+        : localName as String?,
+    model: identical(model, _unset)
+        ? this.model
+        : model as String?,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // PeerRecord — persisted per pairing
@@ -24,6 +89,12 @@ class PeerRecord {
   // Local-only display label (Pi does not know about this). Renders in
   // place of [sessionName] when set; null = use sessionName everywhere.
   final String? nickname;
+  /// Plan 17 fix — Pi-side room id (cwd-session) this pairing is bound
+  /// to. Set from `PairOk.roomId` on pair, or discovered lazily via
+  /// `subscribe_rooms` for legacy peers persisted before this fix.
+  /// `null` = not yet discovered; outbound sends fall back to 'main'
+  /// while ConnectionManager runs the discovery once.
+  final String? roomId;
 
   const PeerRecord({
     required this.remoteEpk,
@@ -31,6 +102,7 @@ class PeerRecord {
     required this.relayUrl,
     required this.pairedAt,
     this.nickname,
+    this.roomId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -39,6 +111,7 @@ class PeerRecord {
     'relay_url': relayUrl,
     'paired_at': pairedAt,
     'nickname': nickname,
+    'room_id': roomId,
   };
 
   factory PeerRecord.fromJson(Map<String, dynamic> j) => PeerRecord(
@@ -48,12 +121,16 @@ class PeerRecord {
     pairedAt: j['paired_at'] as String,
     // Legacy records (saved before plan 10.3) have no 'nickname' field.
     nickname: j['nickname'] as String?,
+    // Legacy records (saved before plan 17 fix) have no 'room_id'.
+    // Stays null until ConnectionManager discovers it via subscribe_rooms.
+    roomId: j['room_id'] as String?,
   );
 
   PeerRecord copyWith({
     String? sessionName,
     // Sentinel-typed so the caller can pass `nickname: null` to clear.
     Object? nickname = _unset,
+    Object? roomId = _unset,
   }) => PeerRecord(
     remoteEpk: remoteEpk,
     sessionName: sessionName ?? this.sessionName,
@@ -62,6 +139,9 @@ class PeerRecord {
     nickname: identical(nickname, _unset)
         ? this.nickname
         : nickname as String?,
+    roomId: identical(roomId, _unset)
+        ? this.roomId
+        : roomId as String?,
   );
 
   @override
@@ -71,11 +151,12 @@ class PeerRecord {
       other.sessionName == sessionName &&
       other.relayUrl == relayUrl &&
       other.pairedAt == pairedAt &&
-      other.nickname == nickname;
+      other.nickname == nickname &&
+      other.roomId == roomId;
 
   @override
   int get hashCode =>
-      Object.hash(remoteEpk, sessionName, relayUrl, pairedAt, nickname);
+      Object.hash(remoteEpk, sessionName, relayUrl, pairedAt, nickname, roomId);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +223,31 @@ class PairingStorage {
     }
     return _generateAndSaveDeviceKey();
   }
+
+  // ---- Rooms (plan 17 follow-up) -----------------------------------------
+
+  String _roomsKey(String remoteEpk) => '$_kRoomsService:$remoteEpk';
+
+  /// Persist the full set of known rooms for a peer. Replaces any
+  /// previously stored set. Called on every room-state change in
+  /// ConnectionManager so a cold start can reflect the same view.
+  Future<void> saveRooms(String remoteEpk, List<PersistedRoom> rooms) =>
+      _store.write(
+        key: _roomsKey(remoteEpk),
+        value: jsonEncode(rooms.map((r) => r.toJson()).toList()),
+      );
+
+  Future<List<PersistedRoom>> loadRooms(String remoteEpk) async {
+    final raw = await _store.read(key: _roomsKey(remoteEpk));
+    if (raw == null) return const [];
+    final list = jsonDecode(raw) as List<dynamic>;
+    return list
+        .map((e) => PersistedRoom.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> deleteRooms(String remoteEpk) =>
+      _store.delete(key: _roomsKey(remoteEpk));
 
   Future<DeviceIdentity> _generateAndSaveDeviceKey() async {
     final kp = await Ed25519().newKeyPair();

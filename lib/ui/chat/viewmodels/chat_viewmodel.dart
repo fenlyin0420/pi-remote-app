@@ -23,19 +23,48 @@ class ChatViewModel extends ViewModel<ChatState> {
   final PairingStorage _storage;
   StreamSubscription? _sub;
   StreamSubscription? _eventSub;
-  StreamSubscription<Map<String, PresenceState>>? _presenceSub;
+  // Plan-17 follow-up — presence per-peer was replaced by "is this
+  // specific room currently live?". Subscribed to roomsStream below.
+  StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   bool _pairingRevoked = false;
   String? _peerOfflineReason;
   PeerRecord? _activePeer;
-  PresenceState _peerPresence = const PresenceUnknown();
+  String _activeRoomId = 'main';
+  bool _roomLive = false;
   bool _bootstrapping = true;
   bool _disposed = false;
+
+  /// Active room metadata (name, cwd, etc) for the AppBar title.
+  /// Refreshed on every rooms snapshot. `null` until first snapshot.
+  RoomInfo? get activeRoom {
+    final epk = _activePeer?.remoteEpk;
+    if (epk == null) return null;
+    final list = _repo.roomsFor(epk);
+    for (final r in list) {
+      if (r.roomId == _activeRoomId) return r;
+    }
+    return null;
+  }
+
+  /// Currently-bound peer, exposed for the AppBar.
+  PeerRecord? get activePeer => _activePeer;
+
+  /// Whether the active room is announced LIVE on the relay.
+  bool get isRoomLive => _roomLive;
+
+  /// Plan-18 follow-up — `true` when the agent is mid-response
+  /// (state.streaming != null). Drives the "working…" pill in the
+  /// chat AppBar.
+  bool get isWorking {
+    final s = state;
+    return s is ChatReady && s.streaming != null;
+  }
 
   ChatViewModel(this._repo, this._prefs, this._storage)
     : super(const ChatConnecting()) {
     _sub = _repo.sessionStream.listen(_onSession);
     _eventSub = _repo.eventStream.listen(_onEvent);
-    _presenceSub = _repo.presenceStream.listen(_onPresence);
+    _roomsSub = _repo.roomsStream.listen(_onRooms);
     // ignore: unawaited_futures
     _bootstrap();
   }
@@ -46,12 +75,14 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> _bootstrap() async {
     final epk = _prefs.selectedPeerEpk;
+    final roomId = _prefs.selectedRoomId ?? 'main';
     if (epk == null) {
       debugPrint('[chat-state] bootstrap: no selectedPeerEpk → ChatNoPeer');
       _bootstrapping = false;
       emit(const ChatNoPeer());
       return;
     }
+    debugPrint('[chat-state] bootstrap: target peer=$epk room=$roomId');
     final peer = await _storage.loadPeer(epk);
     if (_disposed) return;
     if (peer == null) {
@@ -61,15 +92,23 @@ class ChatViewModel extends ViewModel<ChatState> {
       return;
     }
     _activePeer = peer;
-    _peerPresence = _repo.presenceFor(peer.remoteEpk);
+    _activeRoomId = roomId;
+    _roomLive = _repo.isRoomLive(peer.remoteEpk, roomId);
     debugPrint(
-      '[chat-state] bootstrap: peer=${peer.remoteEpk} '
-      'presence=${_peerPresence.runtimeType}',
+      '[chat-state] bootstrap: peer=${peer.remoteEpk} room=$roomId '
+      'live=$_roomLive',
     );
+    // Plan 17 — make sure the destination room id is propagated to
+    // ConnectionManager / WS transport on cold start (Home's
+    // openSession already does this when the user taps a tile; this
+    // handles the case where the app re-launches directly into /chat).
+    // Tell the connection layer which room to address on the Pi side.
+    _repo.switchRoom(roomId);
+    // setActivePeer below loads the (peer, room) partitioned cache.
 
     // Always load the per-peer history cache (plano 11) so the chat
     // surface has content even if the WS hasn't authenticated yet.
-    await _repo.setActivePeer(peer);
+    await _repo.setActivePeer(peer, roomId: roomId);
     if (_disposed) return;
 
     // Plano 13 fast path: if the connection layer already settled on
@@ -149,7 +188,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       s,
       _pairingRevoked,
       _peerOfflineReason,
-      _peerPresence,
+      _roomLive,
       _bootstrapping,
     );
     debugPrint(
@@ -168,7 +207,7 @@ class ChatViewModel extends ViewModel<ChatState> {
         _repo.current,
         true,
         _peerOfflineReason,
-        _peerPresence,
+        _roomLive,
         _bootstrapping,
       ));
     } else if (e is PeerWentOffline) {
@@ -177,44 +216,38 @@ class ChatViewModel extends ViewModel<ChatState> {
         _repo.current,
         _pairingRevoked,
         e.rawReason,
-        _peerPresence,
+        _roomLive,
         _bootstrapping,
       ));
     }
   }
 
-  void _onPresence(Map<String, PresenceState> _) {
+  /// Plan-17 follow-up — replaces the old per-peer presence handler.
+  /// Tracks whether the ACTIVE ROOM is live on the relay; flips
+  /// online/offline at the room granularity (matches what the user
+  /// sees per cwd-session on Home).
+  void _onRooms(Map<String, List<RoomInfo>> _) {
     final epk = _activePeer?.remoteEpk;
     if (epk == null) return;
-    // `_repo.presenceFor` already normalises the epk to match the
-    // relay-registry encoding (standard base64) — don't index the
-    // snapshot directly with the url-safe storage key.
-    final next = _repo.presenceFor(epk);
-    if (next.runtimeType == _peerPresence.runtimeType) return;
-    final prev = _peerPresence;
+    final next = _repo.isRoomLive(epk, _activeRoomId);
+    if (next == _roomLive) return;
+    final wasLive = _roomLive;
+    _roomLive = next;
     debugPrint(
-      '[chat-state] presence for active peer: '
-      '${prev.runtimeType} → ${next.runtimeType}',
+      '[chat-state] room live transition: $wasLive → $next '
+      '(peer=$epk room=$_activeRoomId)',
     );
-    _peerPresence = next;
 
-    // Auto-recovery: if Pi just came back from an offline state
-    // (whether marked via Bye `peer_offline` banner or via relay
-    // presence flipping), clear the sticky banner AND pull any new
-    // history that may have accumulated while we couldn't reach it.
-    // This is what the user expected when they said: "quando o Pi
-    // voltar, tem que enviar o evento pra saber se tem novas
-    // mensagens tb".
-    final cameBackOnline = next is PresenceOnline &&
-        (prev is PresenceOffline || _peerOfflineReason != null);
-    if (cameBackOnline) {
+    // Auto-recovery: room just came back online — clear the sticky
+    // banner from a previous Bye and ask Pi for the latest history.
+    if (next && !wasLive) {
       if (_peerOfflineReason != null) {
         debugPrint(
-          '[chat-state] Pi back online → clearing offlineReason banner',
+          '[chat-state] room back live → clearing offlineReason banner',
         );
         _peerOfflineReason = null;
       }
-      debugPrint('[chat-state] Pi back online → triggering requestSync');
+      debugPrint('[chat-state] room back live → triggering requestSync');
       _repo.requestSync();
     }
 
@@ -222,7 +255,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       _repo.current,
       _pairingRevoked,
       _peerOfflineReason,
-      next,
+      _roomLive,
       _bootstrapping,
     ));
   }
@@ -231,9 +264,15 @@ class ChatViewModel extends ViewModel<ChatState> {
     SessionState s,
     bool revoked,
     String? offlineReason,
-    PresenceState peerPresence,
+    bool isRoomLive,
     bool bootstrapping,
   ) {
+    // Plan-17 follow-up — translate the new bool flag back to the
+    // existing PresenceState enum (PresenceOnline | PresenceOffline)
+    // so the ChatReady contract stays stable.
+    final peerPresence = isRoomLive
+        ? const PresenceOnline() as PresenceState
+        : const PresenceOffline(sinceTs: 0);
     final conn = s.connection;
 
     // Fingerprint mismatch / non-recoverable offline — short-circuit
@@ -300,7 +339,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _disposed = true;
     _sub?.cancel();
     _eventSub?.cancel();
-    _presenceSub?.cancel();
+    _roomsSub?.cancel();
     // Connection persists from boot (plano 12). Chat is passive.
     super.dispose();
   }

@@ -133,5 +133,48 @@ void main() {
         expect(p2.onboardingCompleted, isTrue);
       },
     );
+
+    test('selectedRoom round-trips epk + roomId composite (plan 17)',
+        () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      await p.setSelectedRoom(epk: 'abc123', roomId: 'room-xyz');
+      expect(p.selectedPeerEpk, 'abc123');
+      expect(p.selectedRoomId, 'room-xyz');
+      expect(p.selectedRoomRaw, 'abc123:room-xyz');
+
+      // Reload from cold → preserved
+      final p2 = Preferences(store);
+      await p2.load();
+      expect(p2.selectedPeerEpk, 'abc123');
+      expect(p2.selectedRoomId, 'room-xyz');
+    });
+
+    test(
+      'backward-compat: legacy value (no `:room` suffix) returns epk '
+      'and null roomId so caller defaults to "main"',
+      () async {
+        final store = _FakeSecureStorage();
+        // Pre-populate with legacy format (just the epk, no suffix).
+        await store.write(
+          key: 'prefs.selected_peer_epk',
+          value: 'legacy_epk',
+        );
+        final p = Preferences(store);
+        await p.load();
+        expect(p.selectedPeerEpk, 'legacy_epk');
+        expect(p.selectedRoomId, isNull);
+      },
+    );
+
+    test('setSelectedRoom with null epk clears the selection', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      await p.setSelectedRoom(epk: 'abc', roomId: 'r');
+      expect(p.selectedPeerEpk, 'abc');
+      await p.setSelectedRoom(epk: null);
+      expect(p.selectedPeerEpk, isNull);
+      expect(p.selectedRoomRaw, isNull);
+    });
   });
 }

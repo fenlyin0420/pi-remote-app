@@ -78,10 +78,12 @@ class _FakeRepo implements ISessionRepository {
   PeerRecord? get activePeer => fakeActivePeer;
 
   int setActivePeerCalls = 0;
+  String? lastSetRoomId;
   List<ChatMessage>? cachedMessagesForBootstrap;
   @override
-  Future<void> setActivePeer(PeerRecord peer) async {
+  Future<void> setActivePeer(PeerRecord peer, {String? roomId}) async {
     setActivePeerCalls++;
+    lastSetRoomId = roomId;
     final cache = cachedMessagesForBootstrap;
     if (cache != null) {
       _push(_state.copyWith(messages: cache, clearStreaming: true));
@@ -89,6 +91,40 @@ class _FakeRepo implements ISessionRepository {
   }
   int requestSyncCalls = 0;
   @override void requestSync() { requestSyncCalls++; }
+  int switchRoomCalls = 0;
+  String? lastSwitchedRoom;
+  @override void switchRoom(String roomId) {
+    switchRoomCalls++;
+    lastSwitchedRoom = roomId;
+  }
+
+  final _roomsCtrl =
+      StreamController<Map<String, List<RoomInfo>>>.broadcast(sync: true);
+  final Map<String, List<RoomInfo>> _rooms = {};
+  final Map<String, Set<String>> _liveRooms = {};
+  @override
+  Stream<Map<String, List<RoomInfo>>> get roomsStream => _roomsCtrl.stream;
+  @override
+  List<RoomInfo> roomsFor(String epk) =>
+      List.unmodifiable(_rooms[epk] ?? const []);
+  @override
+  bool isRoomLive(String epk, String roomId) =>
+      _liveRooms[epk]?.contains(roomId) ?? false;
+  void setRooms(String epk, List<RoomInfo> rooms, {Set<String>? live}) {
+    _rooms[epk] = rooms;
+    _liveRooms[epk] = live ?? rooms.map((r) => r.roomId).toSet();
+    _roomsCtrl.add(Map.unmodifiable(_rooms));
+  }
+
+  // Plan-18 follow-up — fake "working" signal. Tests don't exercise
+  // this surface yet; expose static null/empty.
+  @override
+  String? get workingEpk => null;
+  @override
+  String? get workingRoomId => null;
+  @override
+  Stream<({String? epk, String? roomId})> get workingStream =>
+      const Stream.empty();
   @override
   Future<void> openSession(PeerRecord peer) async { openSessionCalls++; }
 
@@ -493,7 +529,8 @@ void main() {
     );
 
     test(
-      'peer presence offline → ChatReady.peerPresence is PresenceOffline',
+      'room offline → ChatReady.peerPresence is PresenceOffline '
+      '(plan-17 follow-up: presence now derives from room-live state)',
       () async {
         final s = await _build(
           selectedEpk: 'epk_A',
@@ -501,11 +538,12 @@ void main() {
         );
         final ch = _FakeChannel();
         s.repo.push(SessionState(connection: StatusOnline(ch)));
-        expect((s.vm.state as ChatReady).peerPresence, isA<PresenceUnknown>());
-
-        s.repo.setPresence('epk_A', const PresenceOffline(sinceTs: 123));
+        // Initial: no rooms in the snapshot → roomLive=false →
+        // peerPresence renders as PresenceOffline.
         await Future<void>.delayed(const Duration(milliseconds: 10));
-
+        // Trigger a rooms emit (empty) so _onRooms picks it up.
+        s.repo.setRooms('epk_A', const [], live: {});
+        await Future<void>.delayed(const Duration(milliseconds: 10));
         expect((s.vm.state as ChatReady).peerPresence, isA<PresenceOffline>());
 
         s.vm.dispose();
@@ -514,7 +552,7 @@ void main() {
     );
 
     test(
-      'peer presence flips online → ChatReady.peerPresence updates',
+      'room comes online → ChatReady.peerPresence flips to PresenceOnline',
       () async {
         final s = await _build(
           selectedEpk: 'epk_A',
@@ -523,13 +561,16 @@ void main() {
         final ch = _FakeChannel();
         s.repo.push(SessionState(connection: StatusOnline(ch)));
 
-        // Start offline.
-        s.repo.setPresence('epk_A', const PresenceOffline(sinceTs: 1));
+        // Start offline: no rooms.
+        s.repo.setRooms('epk_A', const [], live: {});
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect((s.vm.state as ChatReady).peerPresence, isA<PresenceOffline>());
 
-        // Pi comes back.
-        s.repo.setPresence('epk_A', const PresenceOnline());
+        // Pi announces the active room → live=true.
+        s.repo.setRooms(
+          'epk_A',
+          const [RoomInfo(roomId: 'main', startedAt: 1)],
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect((s.vm.state as ChatReady).peerPresence, isA<PresenceOnline>());
 
@@ -562,20 +603,31 @@ void main() {
         );
         final ch = _FakeChannel();
         s.repo.push(SessionState(connection: StatusOnline(ch)));
-        // Start online.
-        s.repo.setPresence('epk_A', const PresenceOnline());
+        // Start with the active room live.
+        s.repo.setRooms(
+          'epk_A',
+          const [RoomInfo(roomId: 'main', startedAt: 1)],
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // Pi sends Bye → ChatViewModel.onEvent stores offlineReason.
+        // Then the relay flips the room to offline.
         s.repo.pushEvent(const PeerWentOffline('peer_stop'));
-        s.repo.setPresence('epk_A', const PresenceOffline(sinceTs: 1));
+        s.repo.setRooms(
+          'epk_A',
+          const [RoomInfo(roomId: 'main', startedAt: 1)],
+          live: {},
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect((s.vm.state as ChatReady).peerOfflineReason, 'peer_stop',
             reason: 'banner reason is set when Bye lands');
 
-        // Pi comes back online (relay → peer_online).
+        // Room comes back live (relay → room_announced).
         final syncCallsBefore = s.repo.requestSyncCalls;
-        s.repo.setPresence('epk_A', const PresenceOnline());
+        s.repo.setRooms(
+          'epk_A',
+          const [RoomInfo(roomId: 'main', startedAt: 1)],
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // Banner cleared automatically.

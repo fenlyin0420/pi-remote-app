@@ -151,4 +151,129 @@ void main() {
       expect((restored.result as Map)['stdout'], 'hi');
     });
   });
+
+  group('SessionHistoryStore — plan 17 partitioned by (peer, room)', () {
+    test(
+      'different roomIds for the same peer keep independent caches',
+      () async {
+        final store = SessionHistoryStore();
+        final epk = _newEpk();
+        await store.replaceFor(
+          epk,
+          const [UserMsg(id: 'u_a', text: 'in room A')],
+          roomId: 'roomA',
+          sessionStartedAt: 100,
+          lastTs: 110,
+        );
+        await store.replaceFor(
+          epk,
+          const [UserMsg(id: 'u_b', text: 'in room B')],
+          roomId: 'roomB',
+          sessionStartedAt: 200,
+          lastTs: 210,
+        );
+
+        final a = await store.loadFor(epk, roomId: 'roomA');
+        final b = await store.loadFor(epk, roomId: 'roomB');
+
+        expect(a.messages.single.id, 'u_a');
+        expect((a.messages.single as UserMsg).text, 'in room A');
+        expect(a.sessionStartedAt, 100);
+        expect(b.messages.single.id, 'u_b');
+        expect((b.messages.single as UserMsg).text, 'in room B');
+        expect(b.sessionStartedAt, 200);
+      },
+    );
+
+    test(
+      'loadFor with default roomId="main" migrates from legacy '
+      'session_<epk> box on first call',
+      () async {
+        final epk = _newEpk();
+        // Hand-prime the LEGACY box (pre-plan-17 layout).
+        final legacyBox = await Hive.openBox<dynamic>('session_$epk');
+        await legacyBox.put('data', {
+          'schema_version': 1,
+          'session_started_at': 1000,
+          'last_ts': 1100,
+          'messages': [
+            {'kind': 'user', 'id': 'u_legacy', 'text': 'pre-rooms data'},
+          ],
+        });
+
+        final store = SessionHistoryStore();
+        final loaded = await store.loadFor(epk);
+
+        // Migrated to the new key without losing data.
+        expect(loaded.messages, hasLength(1));
+        expect((loaded.messages.single as UserMsg).text, 'pre-rooms data');
+
+        // Subsequent reads come from the new partitioned box.
+        final loaded2 = await store.loadFor(epk);
+        expect(loaded2.messages, hasLength(1));
+
+        // Asking for a DIFFERENT room is still empty — the migration
+        // only seeded 'main'.
+        final other = await store.loadFor(epk, roomId: 'other');
+        expect(other.messages, isEmpty);
+      },
+    );
+
+    test(
+      'clearFor("main") wipes both the new partition AND the legacy '
+      'box so stale data does not resurrect',
+      () async {
+        final epk = _newEpk();
+        final legacyBox = await Hive.openBox<dynamic>('session_$epk');
+        await legacyBox.put('data', {
+          'schema_version': 1,
+          'session_started_at': 1,
+          'last_ts': 1,
+          'messages': [
+            {'kind': 'user', 'id': 'u', 'text': 'legacy'},
+          ],
+        });
+
+        final store = SessionHistoryStore();
+        // Touch loadFor to migrate.
+        await store.loadFor(epk);
+        await store.clearFor(epk);
+
+        // Re-load → empty.
+        final reloaded = await store.loadFor(epk);
+        expect(reloaded.messages, isEmpty);
+        // Legacy box also empty (so a later loadFor won't resurrect it).
+        final reloadedLegacy = await Hive.openBox<dynamic>('session_$epk');
+        expect(reloadedLegacy.get('data'), isNull);
+      },
+    );
+
+    test(
+      'appendEvents respects roomId — events only land in the named '
+      'partition',
+      () async {
+        final store = SessionHistoryStore();
+        final epk = _newEpk();
+        await store.appendEvents(
+          epk,
+          const [UserMsg(id: 'u1', text: 'hello')],
+          roomId: 'work',
+          lastTs: 50,
+        );
+        await store.appendEvents(
+          epk,
+          const [UserMsg(id: 'u2', text: 'other')],
+          roomId: 'play',
+          lastTs: 60,
+        );
+
+        final work = await store.loadFor(epk, roomId: 'work');
+        final play = await store.loadFor(epk, roomId: 'play');
+        expect(work.messages, hasLength(1));
+        expect(play.messages, hasLength(1));
+        expect((work.messages.single as UserMsg).text, 'hello');
+        expect((play.messages.single as UserMsg).text, 'other');
+      },
+    );
+  });
 }

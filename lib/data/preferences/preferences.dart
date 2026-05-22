@@ -29,7 +29,34 @@ class Preferences extends ChangeNotifier {
   /// `/chat` will connect to when it mounts. Null = no peer selected yet
   /// (user is still browsing or hasn't paired). Persisted so reopening
   /// the app right into `/chat` (e.g. via deep-link) knows which peer.
-  String? get selectedPeerEpk => _selectedPeerEpk;
+  ///
+  /// Plan 17: under the new rooms model the persisted value carries an
+  /// optional `:roomId` suffix (e.g. `Bz02uLi…:main` or
+  /// `Bz02uLi…:room-uuid-xyz`). The getter returns only the EPK; use
+  /// [selectedRoomId] for the room half. Legacy values without the
+  /// `:room` suffix transparently fall through (the value is the epk
+  /// and `selectedRoomId` returns null → falls back to 'main' at the
+  /// caller).
+  String? get selectedPeerEpk {
+    final raw = _selectedPeerEpk;
+    if (raw == null) return null;
+    final ix = raw.indexOf(':');
+    return ix < 0 ? raw : raw.substring(0, ix);
+  }
+
+  /// Plan 17 — the room half of the persisted selected target. Returns
+  /// null for legacy values (caller defaults to 'main').
+  String? get selectedRoomId {
+    final raw = _selectedPeerEpk;
+    if (raw == null) return null;
+    final ix = raw.indexOf(':');
+    if (ix < 0) return null;
+    final r = raw.substring(ix + 1);
+    return r.isEmpty ? null : r;
+  }
+
+  /// Composite raw value (epk[:room]). Tests can inspect.
+  String? get selectedRoomRaw => _selectedPeerEpk;
 
   /// User-configured relay URL override. `null` = use the public default
   /// (`kDefaultRelayUrl` in `relay_config.dart`). Set via Settings or
@@ -95,6 +122,19 @@ class Preferences extends ChangeNotifier {
       await _store.write(key: _kSelectedPeerEpkKey, value: cleaned);
     }
     notifyListeners();
+  }
+
+  /// Plan 17 — persist the composite `epk:roomId` selection. Passing
+  /// [roomId] = null falls back to 'main' implicitly via the getter
+  /// contract. Null [epk] clears the entire selection.
+  Future<void> setSelectedRoom({String? epk, String? roomId}) async {
+    if (epk == null || epk.isEmpty) {
+      return setSelectedPeerEpk(null);
+    }
+    final composite = (roomId == null || roomId.isEmpty)
+        ? epk
+        : '$epk:$roomId';
+    return setSelectedPeerEpk(composite);
   }
 
   /// Set the user-configured relay URL. `null` or empty clears the

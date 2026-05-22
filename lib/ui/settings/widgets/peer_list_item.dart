@@ -24,6 +24,16 @@ class PeerListItem extends StatelessWidget {
     required this.onEditNickname,
   });
 
+  /// Platform hint for the secondary line (Mac / Linux / Windows / Pi
+  /// OS). Pi-extension hasn't surfaced this yet; once it does
+  /// (PairOk extension or a new field on PeerRecord), wire here and
+  /// the slot lights up. Until then returns null and the row stays
+  /// title-only.
+  static String? _platformLabel(PeerRecord peer) {
+    // ignore: dead_code
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final nickname = peer.nickname;
@@ -85,16 +95,24 @@ class PeerListItem extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  const SizedBox(height: 4),
-                  Text(
-                    peer.relayUrl,
-                    style: const TextStyle(
-                      fontFamily: kMono,
-                      fontSize: 11,
-                      color: kMuted,
+                  // Plan-17 follow-up — relay URL removed from the
+                  // tile (it's the same for every peer post-plan-14
+                  // global-relay refactor, so it added no signal).
+                  // If/when the protocol surfaces platform (Mac /
+                  // Linux / Windows / Pi OS), render it here; until
+                  // then this slot stays empty.
+                  if (_platformLabel(peer) != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      _platformLabel(peer)!,
+                      style: const TextStyle(
+                        fontFamily: kMono,
+                        fontSize: 11,
+                        color: kMuted,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  ],
                 ],
               ),
             ),

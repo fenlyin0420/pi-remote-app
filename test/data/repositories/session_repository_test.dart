@@ -893,6 +893,45 @@ void main() {
     );
   });
 
+  group('SessionRepository — plan 17 — room-partitioned cache', () {
+    test(
+      'setActivePeer(peer, roomId: X) loads from the (peer, X) '
+      'partition; switchRoom hot-swaps state.messages to the new room',
+      () async {
+        // Pre-seed two distinct rooms for the same epk so the swap
+        // is observable.
+        final store = SessionHistoryStore();
+        final epk = 'epk_rooms_${++_epkCounter}';
+        await store.replaceFor(
+          epk,
+          const [UserMsg(id: 'in_main', text: 'main view')],
+          roomId: 'main',
+          sessionStartedAt: 1,
+          lastTs: 1,
+        );
+        await store.replaceFor(
+          epk,
+          const [UserMsg(id: 'in_alt', text: 'alt view')],
+          roomId: 'alt',
+          sessionStartedAt: 2,
+          lastTs: 2,
+        );
+
+        final s = await _setup(store: store, epkOverride: epk);
+        // _setup calls setActivePeer with the default 'main' room.
+        expect((s.repo.current.messages.single as UserMsg).id, 'in_main');
+
+        s.repo.switchRoom('alt');
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        expect(s.repo.current.messages, hasLength(1));
+        expect((s.repo.current.messages.single as UserMsg).id, 'in_alt');
+
+        s.repo.dispose();
+      },
+    );
+  });
+
   group('SessionRepository — plan 16 — mirror-cache wire format', () {
     test(
       'requestSync omits limit + since_ts + session_started_at — Pi '

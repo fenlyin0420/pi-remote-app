@@ -25,6 +25,33 @@ sealed class ControlInbound {
               .map((e) => PeerPresence.fromJson(e as Map<String, dynamic>))
               .toList(),
         ),
+      'room_announced' => RoomAnnounced(
+          peer: j['peer'] as String,
+          roomId: j['room_id'] as String,
+          name: j['name'] as String?,
+          cwd: j['cwd'] as String?,
+          startedAt: (j['started_at'] as num).toInt(),
+          model: j['model'] as String?,
+        ),
+      'room_ended' => RoomEnded(
+          peer: j['peer'] as String,
+          roomId: j['room_id'] as String,
+          sinceTs: (j['since_ts'] as num).toInt(),
+        ),
+      'rooms' => RoomsSnapshot(
+          peer: j['peer'] as String,
+          rooms: (j['rooms'] as List<dynamic>)
+              .map((e) => RoomInfo.fromJson(e as Map<String, dynamic>))
+              .toList(),
+        ),
+      'room_meta_updated' => () {
+          final meta = j['meta'] as Map<String, dynamic>?;
+          return RoomMetaUpdated(
+            peer: j['peer'] as String,
+            roomId: j['room_id'] as String,
+            model: meta?['model'] as String?,
+          );
+        }(),
       _ => null,
     };
   }
@@ -79,6 +106,151 @@ Map<String, dynamic> presenceCheckFrame(List<String> peers) => {
   'type': 'presence_check',
   'peers': peers,
 };
+
+Map<String, dynamic> subscribeRoomsFrame(List<String> peers) => {
+  'type': 'subscribe_rooms',
+  'peers': peers,
+};
+
+Map<String, dynamic> unsubscribeRoomsFrame(List<String> peers) => {
+  'type': 'unsubscribe_rooms',
+  'peers': peers,
+};
+
+Map<String, dynamic> roomsCheckFrame(List<String> peers) => {
+  'type': 'rooms_check',
+  'peers': peers,
+};
+
+// ---------------------------------------------------------------------------
+// Rooms (plan 17 — multi-cwd per Mac)
+//
+// Each Pi-extension instance opens one room per active session (cwd).
+// The relay tracks room metadata per peer and pushes:
+//   - room_announced: a new room came online for a peer
+//   - room_ended: a room closed (Pi exited or stopped that cwd)
+//   - rooms (snapshot): full list for a peer (sent after subscribe_rooms
+//     or rooms_check).
+// The app subscribes via `subscribe_rooms(peers)` and renders them as
+// tiles grouped by Mac.
+// ---------------------------------------------------------------------------
+
+// Sentinel for nullable copyWith parameters that need to distinguish
+// "keep current" (omit) from "set to null" (pass `null` explicitly).
+const Object _kRoomInfoUnset = Object();
+
+/// Snapshot of a single Pi room (one cwd / session).
+class RoomInfo {
+  final String roomId;
+  final String? name;
+  final String? cwd;
+  final int startedAt;
+  /// Plan 18 — display model the Pi-extension is running with (e.g.
+  /// `claude-sonnet-4.5`, `gpt-4o`). Optional; Pi-ext may omit and
+  /// the app falls back to `last paired` in the subtitle.
+  final String? model;
+
+  const RoomInfo({
+    required this.roomId,
+    required this.startedAt,
+    this.name,
+    this.cwd,
+    this.model,
+  });
+
+  factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
+    roomId: j['room_id'] as String,
+    name: j['name'] as String?,
+    cwd: j['cwd'] as String?,
+    startedAt: (j['started_at'] as num).toInt(),
+    model: j['model'] as String?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'room_id': roomId,
+    'name': name,
+    'cwd': cwd,
+    'started_at': startedAt,
+    'model': model,
+  };
+
+  RoomInfo copyWith({
+    String? name,
+    String? cwd,
+    int? startedAt,
+    Object? model = _kRoomInfoUnset,
+  }) => RoomInfo(
+    roomId: roomId,
+    name: name ?? this.name,
+    cwd: cwd ?? this.cwd,
+    startedAt: startedAt ?? this.startedAt,
+    model: identical(model, _kRoomInfoUnset)
+        ? this.model
+        : model as String?,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is RoomInfo &&
+      other.roomId == roomId &&
+      other.name == name &&
+      other.cwd == cwd &&
+      other.startedAt == startedAt &&
+      other.model == model;
+
+  @override
+  int get hashCode => Object.hash(roomId, name, cwd, startedAt, model);
+}
+
+class RoomAnnounced extends ControlInbound {
+  final String peer;
+  final String roomId;
+  final String? name;
+  final String? cwd;
+  final int startedAt;
+  /// Plan 18 — display model the Pi-extension is running with.
+  final String? model;
+  const RoomAnnounced({
+    required this.peer,
+    required this.roomId,
+    required this.startedAt,
+    this.name,
+    this.cwd,
+    this.model,
+  });
+}
+
+class RoomEnded extends ControlInbound {
+  final String peer;
+  final String roomId;
+  final int sinceTs;
+  const RoomEnded({
+    required this.peer,
+    required this.roomId,
+    required this.sinceTs,
+  });
+}
+
+class RoomsSnapshot extends ControlInbound {
+  final String peer;
+  final List<RoomInfo> rooms;
+  const RoomsSnapshot({required this.peer, required this.rooms});
+}
+
+/// Plan 18 — incremental update to a room's metadata (model is the
+/// only field for now, but the `meta` envelope is open-ended). The
+/// relay pushes this when the Pi-extension swaps its model
+/// mid-session.
+class RoomMetaUpdated extends ControlInbound {
+  final String peer;
+  final String roomId;
+  final String? model;
+  const RoomMetaUpdated({
+    required this.peer,
+    required this.roomId,
+    this.model,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // PresenceState — per-peer summary kept by ConnectionManager.
@@ -341,16 +513,25 @@ class PairOk extends ServerMessage {
   /// it locally so a future `session_sync` can detect a Pi restart (value
   /// changed) and replace the cache instead of appending stale events.
   final int sessionStartedAt;
+  /// Plan 17 fix — Pi-side room id (cwd-session) that confirmed this
+  /// pair. The app persists this on the PeerRecord so subsequent
+  /// reconnects can address the right (peer, room) directly without
+  /// having to wait for subscribe_rooms / discovery. Legacy Pis that
+  /// don't emit `room_id` fall back to `'main'`.
+  final String roomId;
   PairOk({
     required this.inReplyTo,
     required this.sessionName,
     required this.sessionStartedAt,
+    required this.roomId,
   });
 
   factory PairOk.fromJson(Map<String, dynamic> j) => PairOk(
     inReplyTo: j['in_reply_to'] as String,
     sessionName: j['session_name'] as String,
     sessionStartedAt: (j['session_started_at'] as num).toInt(),
+    // Backward-compat: pre-fix Pis don't emit room_id → use 'main'.
+    roomId: (j['room_id'] as String?) ?? 'main',
   );
 }
 

@@ -127,6 +127,86 @@ void main() {
     );
 
     test(
+      'pair_ok.room_id is persisted on the PeerRecord (plan 17 fix)',
+      () async {
+        final q1 = _Q();
+        final q2 = _Q();
+        final pi = _MemTransport(send: q1, recv: q2);
+        final app = _MemTransport(send: q2, recv: q1);
+        final storage = _FakeStorage();
+        // QR carries the Pi-side room id explicitly.
+        final qr = QrPairPayload(
+          token: 'AAAAAAAAAAAAAAAAAAAAAA',
+          epk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+          sessionName: 'Pi',
+          roomId: 'room-from-qr',
+        );
+
+        unawaited(() async {
+          final raw = await pi.receive();
+          final req = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+          await pi.send(Uint8List.fromList(utf8.encode(jsonEncode({
+            'type': 'pair_ok',
+            'in_reply_to': req['id'],
+            'session_name': 'Pi',
+            'session_started_at': 1700000000000,
+            'room_id': 'room-from-pair-ok',
+          }))));
+        }());
+
+        final peer = await performPairing(
+          qr: qr,
+          transport: app,
+          storage: storage,
+          deviceName: 'phone',
+          currentRelayUrl: 'wss://relay.example',
+        );
+
+        // pair_ok.room_id wins over qr.roomId.
+        expect(peer.roomId, 'room-from-pair-ok');
+        expect(storage.saved.single.roomId, 'room-from-pair-ok');
+      },
+    );
+
+    test(
+      'falls back to qr.roomId when pair_ok omits room_id (legacy Pi)',
+      () async {
+        final q1 = _Q();
+        final q2 = _Q();
+        final pi = _MemTransport(send: q1, recv: q2);
+        final app = _MemTransport(send: q2, recv: q1);
+        final qr = QrPairPayload(
+          token: 'AAAAAAAAAAAAAAAAAAAAAA',
+          epk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+          sessionName: 'Pi',
+          roomId: 'room-from-qr-only',
+        );
+
+        unawaited(() async {
+          final raw = await pi.receive();
+          final req = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+          await pi.send(Uint8List.fromList(utf8.encode(jsonEncode({
+            'type': 'pair_ok',
+            'in_reply_to': req['id'],
+            'session_name': 'Pi',
+            'session_started_at': 1700000000000,
+            // No 'room_id' — legacy Pi behaviour.
+          }))));
+        }());
+
+        final peer = await performPairing(
+          qr: qr,
+          transport: app,
+          storage: _FakeStorage(),
+          deviceName: 'phone',
+          currentRelayUrl: 'wss://relay.example',
+        );
+        // Pi did not echo room_id back → fall back to qr.roomId.
+        expect(peer.roomId, 'room-from-qr-only');
+      },
+    );
+
+    test(
       'proceeds when qr.relayUrl is null (new-format QR) — saves '
       'currentRelayUrl on the PeerRecord',
       () async {

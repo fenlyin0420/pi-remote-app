@@ -52,7 +52,40 @@ class SettingsPage extends StatelessWidget {
               onSetNickname: vm.setNickname,
             ),
           },
+          // Plan-17 follow-up — entry point to pair an additional Pi.
+          // The flow itself lives at /pair and survives whatever
+          // peers/rooms already exist (PairingViewModel handles the
+          // add path the same way as the first pair).
+          const _AddPairingButton(),
         ],
+      ),
+    );
+  }
+}
+
+class _AddPairingButton extends StatelessWidget {
+  const _AddPairingButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+      child: OutlinedButton.icon(
+        onPressed: () => context.push('/pair'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: kAccent,
+          side: const BorderSide(color: kBorder),
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(6)),
+          ),
+          minimumSize: const Size.fromHeight(0),
+        ),
+        icon: const Icon(Icons.qr_code_scanner, size: 18),
+        label: const Text(
+          'Adicionar novo pareamento',
+          style: TextStyle(fontFamily: kMono, fontSize: 13),
+        ),
       ),
     );
   }

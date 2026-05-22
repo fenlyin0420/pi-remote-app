@@ -70,6 +70,20 @@ Future<PeerRecord> performPairing({
     );
   }
 
+  // Plan 17 fix — set the outer envelope's `room` BEFORE sending
+  // pair_request. Without this the relay would route to
+  // (peer=Pi, room='main') which usually doesn't exist (Pi-ext is in
+  // room=<hashOfCwd>) and drop with "dest not found". For legacy QRs
+  // that don't carry `rm`, falls back to 'main' — the new
+  // ConnectionManager discovery flow patches it up afterwards.
+  final pairingRoomId = qr.roomId ?? 'main';
+  try {
+    (transport as dynamic).setActiveRoom(pairingRoomId);
+  } catch (_) {
+    // Non-WS transports (tests with in-memory pipes) don't track room —
+    // routing is symbolic there, so no harm done.
+  }
+
   final id = _uuid7();
   final req = {
     'type': 'pair_request',
@@ -84,6 +98,13 @@ Future<PeerRecord> performPairing({
   final type = inner['type'] as String?;
 
   if (type == 'pair_ok' && inner['in_reply_to'] == id) {
+    // Plan 17 fix — persist the Pi-confirmed room_id (or fall back to
+    // the one carried by the QR, then to 'main'). Stored on the
+    // PeerRecord so subsequent reconnects address (peer, room)
+    // correctly from the very first frame.
+    final piRoomId = (inner['room_id'] as String?) ??
+        qr.roomId ??
+        'main';
     final peer = PeerRecord(
       remoteEpk: qr.epk,
       sessionName: inner['session_name'] as String,
@@ -92,6 +113,7 @@ Future<PeerRecord> performPairing({
       // for new QRs (no `r`) it's the currently configured relay.
       relayUrl: qr.relayUrl ?? currentRelayUrl,
       pairedAt: DateTime.now().toUtc().toIso8601String(),
+      roomId: piRoomId,
     );
     await storage.savePeer(peer);
     return peer;

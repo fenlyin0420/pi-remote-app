@@ -50,7 +50,11 @@ abstract class ISessionRepository {
   /// history cache and emits it immediately. Called automatically when the
   /// underlying [ConnectionManager] transitions to `StatusOnline` with a new
   /// peer, but also exposed for tests.
-  Future<void> setActivePeer(PeerRecord peer);
+  ///
+  /// Plan 17 — [roomId] selects which (peer, room) partition of the
+  /// Hive cache to load. Omit (or pass null) to default to 'main',
+  /// which matches single-cwd Pis and the pre-plan-17 layout.
+  Future<void> setActivePeer(PeerRecord peer, {String? roomId});
 
   /// Send a `session_sync` over the active channel asking the Pi to
   /// backfill anything newer than the locally-cached high-water mark.
@@ -73,4 +77,31 @@ abstract class ISessionRepository {
   /// by `ChatViewModel._bootstrap` to fast-path when the WS already
   /// matches the requested peer (plano 13).
   PeerRecord? get activePeer;
+
+  /// Plan 17 — change the destination room (Pi-side cwd session)
+  /// without renegotiating the WS. Forwards to ConnectionManager.
+  void switchRoom(String roomId);
+
+  /// Plan-17 follow-up — stream of per-peer room lists (cached ∪ live).
+  /// Same shape as ConnectionManager.roomsStream.
+  Stream<Map<String, List<RoomInfo>>> get roomsStream;
+
+  /// Snapshot of currently-known rooms for [epk] (live + cached).
+  List<RoomInfo> roomsFor(String epk);
+
+  /// `true` if [roomId] for [epk] is currently LIVE (announced in the
+  /// last relay snapshot). Drives the chat AppBar online dot.
+  bool isRoomLive(String epk, String roomId);
+
+  /// Plan-18 follow-up — `(epk, roomId)` of the room whose agent is
+  /// currently streaming a response (state.streaming != null). Null
+  /// when no stream is active. Limited to the room the connection
+  /// is currently addressing (`ConnectionManager.activeRoomId`),
+  /// because room-demux drops AgentChunks for non-active rooms.
+  String? get workingEpk;
+  String? get workingRoomId;
+
+  /// Emits whenever the working room changes (start/stop streaming
+  /// or active room switch).
+  Stream<({String? epk, String? roomId})> get workingStream;
 }

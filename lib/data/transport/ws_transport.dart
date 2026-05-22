@@ -68,10 +68,42 @@ class WsTransport implements PeerTransport, IControlLink {
         }
         try {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-          // Envelope: {peer, ct} → enqueue payload bytes.
+          // Envelope: {peer, room?, ct} → enqueue payload bytes.
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
             final bytes = _b64Decode(frame['ct'] as String);
-            debugPrint('[ws-raw] envelope peer=${(frame['peer'] as String).substring(0, 8)}… ct.bytes=${bytes.length}');
+            final senderRoom = frame['room'] as String?;
+            final senderRoomFmt = senderRoom == null
+                ? 'absent'
+                : senderRoom.length > 16
+                    ? '${senderRoom.substring(0, 16)}…'
+                    : senderRoom;
+            // Plan-18 follow-up — DEMUX inbound by sender room.
+            // SessionRepository is singleton; without this guard,
+            // AgentChunks for a chat the user just left bleed into
+            // the chat they're now viewing (singleton _state.streaming
+            // gets contaminated). When senderRoom doesn't match the
+            // currently-addressed Pi cwd, drop the payload. The
+            // missed messages get reconciled via session_sync the
+            // next time the user enters that room.
+            //
+            // Legacy Pis that don't carry `room` (senderRoom == null)
+            // are still routed through unconditionally — same
+            // behaviour as before the room demux landed.
+            if (senderRoom != null && senderRoom != transport._activeRoom) {
+              debugPrint(
+                '[ws-raw] envelope DROPPED room-mismatch '
+                'peer=${(frame['peer'] as String).substring(0, 8)}… '
+                'sender_room=$senderRoomFmt '
+                'active_room=${transport._activeRoom} '
+                'ct.bytes=${bytes.length} '
+                '(reconciled via session_sync on next visit)',
+              );
+              return;
+            }
+            debugPrint(
+              '[ws-raw] envelope peer=${(frame['peer'] as String).substring(0, 8)}… '
+              'sender_room=$senderRoomFmt ct.bytes=${bytes.length}',
+            );
             transport._queue.add(bytes);
             return;
           }
@@ -115,11 +147,15 @@ class WsTransport implements PeerTransport, IControlLink {
     );
 
     try {
-      // 1. Hello (standard base64 — matches relay registry format)
+      // 1. Hello (standard base64 — matches relay registry format).
+      // Plan 17: app is a client (no cwd) and always announces itself
+      // on the canonical 'main' room. Pi-side hellos include their own
+      // room_id (one per cwd) AND room_meta; that's not our concern here.
       final pub = await ed25519Key.extractPublicKey();
       ws.sink.add(jsonEncode({
         'type': 'hello',
         'pubkey': base64.encode(pub.bytes),
+        'room_id': 'main',
       }));
 
       // 2. Challenge
@@ -150,6 +186,25 @@ class WsTransport implements PeerTransport, IControlLink {
   String _peerPubkey = '';
   StreamSubscription? _sub;
 
+  /// Active target room on the Pi side. Plan 17: set via
+  /// `setActiveRoom`, defaults to 'main' when unset. The outer envelope
+  /// embeds this so the Pi can route the inner message to the right
+  /// per-cwd session.
+  String _activeRoom = 'main';
+
+  /// Override the destination room (Pi side). The app remains on the
+  /// 'main' room itself (that's what we sent in `hello.room_id`).
+  void setActiveRoom(String room) {
+    if (room == _activeRoom) {
+      debugPrint(
+        '[ws-tx] setActiveRoom no-op (already $_activeRoom)',
+      );
+      return;
+    }
+    debugPrint('[ws-tx] setActiveRoom $_activeRoom → $room');
+    _activeRoom = room;
+  }
+
   @override
   Future<void> send(Uint8List data) async {
     // Peek the inner JSON to log the outbound message type — helpful
@@ -161,10 +216,12 @@ class WsTransport implements PeerTransport, IControlLink {
     } catch (_) {/* keep '?' */}
     debugPrint(
       '[ws-tx] type=$typePeek bytes=${data.length} '
-      'peer=${_peerPubkey.isEmpty ? "?" : "${_peerPubkey.substring(0, 8)}…"}',
+      'peer=${_peerPubkey.isEmpty ? "?" : "${_peerPubkey.substring(0, 8)}…"} '
+      'room=$_activeRoom',
     );
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
+      'room': _activeRoom,
       'ct': base64.encode(data),
     }));
   }

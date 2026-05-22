@@ -25,13 +25,31 @@ PeerRecord _fakePeer() => const PeerRecord(
 
 class _FakeStorage extends PairingStorage {
   final List<PeerRecord> peers;
+  final List<PeerRecord> savedPeers = [];
+  final Map<String, List<PersistedRoom>> _roomsByEpk = {};
   _FakeStorage(this.peers);
 
   @override
   Future<List<PeerRecord>> listPeers() async => peers;
 
   @override
-  Future<void> savePeer(PeerRecord r) async {}
+  Future<void> savePeer(PeerRecord r) async {
+    savedPeers.add(r);
+  }
+
+  @override
+  Future<void> saveRooms(String epk, List<PersistedRoom> rooms) async {
+    _roomsByEpk[epk] = List.of(rooms);
+  }
+
+  @override
+  Future<List<PersistedRoom>> loadRooms(String epk) async =>
+      List.of(_roomsByEpk[epk] ?? const []);
+
+  @override
+  Future<void> deleteRooms(String epk) async {
+    _roomsByEpk.remove(epk);
+  }
 }
 
 class _Q {
@@ -79,6 +97,9 @@ PlainPeerChannel _makeChannel() {
 // ---------------------------------------------------------------------------
 
 void main() {
+  // Plan 17 — rooms suite registered alongside the rest.
+  _registerRoomsTests();
+
   group('ConnectionManager', () {
     test('boot() → StatusNoPeer when storage is empty', () async {
       final cm = ConnectionManager(
@@ -932,3 +953,289 @@ class _ControllableChannel implements IChannel, IControlLink {
 // ---------------------------------------------------------------------------
 
 void mainPresence() {} // placeholder so the group below is visible
+
+// ---------------------------------------------------------------------------
+// Rooms (plan 17)
+// ---------------------------------------------------------------------------
+
+void _registerRoomsTests() {
+  group('ConnectionManager — rooms (plan 17)', () {
+    test(
+      'replaySubscriptions sends BOTH subscribe_presence AND '
+      'subscribe_rooms after connect',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([]),
+        );
+        cm.subscribeToPeers(['Bz02uLi']);
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final types = ch.sentControl.map((m) => m['type']).toList();
+        expect(types, contains('subscribe_presence'));
+        expect(types, contains('subscribe_rooms'));
+        expect(types, contains('rooms_check'));
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'RoomAnnounced / RoomEnded / RoomsSnapshot mutate _roomsByPeer + '
+      'emit on roomsStream',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([]),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final snapshots = <Map<String, List<RoomInfo>>>[];
+        final sub = cm.roomsStream.listen(snapshots.add);
+
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epkA',
+          roomId: 'r1',
+          name: 'work',
+          cwd: '/Users/x',
+          startedAt: 1000,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+
+        expect(cm.roomsFor('epkA'), hasLength(1));
+        expect(cm.roomsFor('epkA').single.roomId, 'r1');
+        expect(snapshots, isNotEmpty);
+
+        ch.pushControl(const RoomEnded(
+          peer: 'epkA',
+          roomId: 'r1',
+          sinceTs: 2000,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        // Plan-17 follow-up: RoomEnded keeps the room CACHED so the
+        // tile stays in Home (marked offline) — only the live set
+        // shrinks. isRoomLive now distinguishes the two.
+        expect(cm.roomsFor('epkA'), hasLength(1));
+        expect(cm.isRoomLive('epkA', 'r1'), isFalse);
+
+        ch.pushControl(const RoomsSnapshot(peer: 'epkA', rooms: [
+          RoomInfo(roomId: 'rA', startedAt: 3000, cwd: '/a'),
+          RoomInfo(roomId: 'rB', startedAt: 4000, cwd: '/b'),
+        ]));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        // Plan-17 follow-up: snapshots MERGE with cached rooms (so a
+        // room going offline keeps its tile). r1 is still in cache
+        // (offline), rA and rB are now live → total 3.
+        expect(cm.roomsFor('epkA'), hasLength(3));
+        expect(cm.isRoomLive('epkA', 'r1'), isFalse);
+        expect(cm.isRoomLive('epkA', 'rA'), isTrue);
+        expect(cm.isRoomLive('epkA', 'rB'), isTrue);
+
+        await sub.cancel();
+        cm.dispose();
+      },
+    );
+
+    test(
+      '_connect adopts peer.roomId (plan 17 fix — bind room on the '
+      'first frame so the relay routes correctly)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([]),
+        );
+        await cm.connectTo(const PeerRecord(
+          remoteEpk: 'epk_room_aware',
+          sessionName: 'Pi',
+          relayUrl: 'wss://x',
+          pairedAt: '2026-01-01T00:00:00Z',
+          roomId: 'cwd-A',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cm.activeRoomId, 'cwd-A',
+            reason: 'PeerRecord.roomId should be adopted at connect');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'legacy peer (PeerRecord.roomId == null) → discovers + persists '
+      'first announced room',
+      () async {
+        final storage = _FakeStorage([]);
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+        );
+        // Pre-fix peer record — no roomId.
+        const legacyPeer = PeerRecord(
+          remoteEpk: 'epk_legacy',
+          sessionName: 'Pi',
+          relayUrl: 'wss://x',
+          pairedAt: '2025-12-01T00:00:00Z',
+        );
+        await cm.connectTo(legacyPeer);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cm.activeRoomId, 'main',
+            reason: 'no persisted roomId → falls back to main');
+
+        // Relay announces the real room for this peer.
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_legacy',
+          roomId: 'discovered-room-id',
+          name: 'work',
+          cwd: '/Users/x',
+          startedAt: 1000,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(cm.activeRoomId, 'discovered-room-id',
+            reason: 'discovery should auto-adopt the announced room');
+        // Persisted on storage so subsequent app launches skip the
+        // discovery round-trip.
+        final saved = storage.savedPeers;
+        expect(saved, isNotEmpty);
+        expect(saved.last.roomId, 'discovered-room-id');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'RoomMetaUpdated patches the model on an existing room (plan 18)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Seed via RoomAnnounced (no model yet).
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_test',
+          roomId: 'r1',
+          startedAt: 1,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_test').single.model, isNull);
+
+        // Pi changes model mid-session.
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_test',
+          roomId: 'r1',
+          model: 'claude-sonnet-4.5',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_test').single.model, 'claude-sonnet-4.5');
+
+        // Updating again (e.g. switched models) overwrites cleanly.
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_test',
+          roomId: 'r1',
+          model: 'gpt-4o',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_test').single.model, 'gpt-4o');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'RoomMetaUpdated for unknown room is a no-op (no crash, no insert)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([]),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_unknown',
+          roomId: 'r_ghost',
+          model: 'claude',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_unknown'), isEmpty);
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'setRoomLocalName preserves model + other fields (regression: '
+      'rename used to drop model and the tile fell back to '
+      '"Last Paired")',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Seed a room WITH model + cwd.
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_test',
+          roomId: 'r1',
+          name: 'work',
+          cwd: '/Users/jacob/projects/app',
+          startedAt: 1000,
+          model: 'claude-sonnet-4.5',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_test').single.model, 'claude-sonnet-4.5');
+
+        // Rename via long-press path.
+        await cm.setRoomLocalName('epk_test', 'r1', 'meu-projeto');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final after = cm.roomsFor('epk_test').single;
+        expect(after.name, 'meu-projeto',
+            reason: 'local name override applied');
+        expect(after.model, 'claude-sonnet-4.5',
+            reason: 'model must survive rename');
+        expect(after.cwd, '/Users/jacob/projects/app',
+            reason: 'cwd must survive rename');
+        expect(after.startedAt, 1000,
+            reason: 'startedAt must survive rename');
+
+        cm.dispose();
+      },
+    );
+
+    test('switchRoom updates activeRoomId (and forwards to channel)',
+        () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([]),
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(cm.activeRoomId, 'main');
+      cm.switchRoom('room-xyz');
+      expect(cm.activeRoomId, 'room-xyz');
+
+      // Same room is a no-op.
+      cm.switchRoom('room-xyz');
+      expect(cm.activeRoomId, 'room-xyz');
+
+      cm.dispose();
+    });
+  });
+}
+

@@ -189,10 +189,29 @@ class _FakeSessionRepo implements ISessionRepository {
   }
 
   @override
-  Future<void> setActivePeer(PeerRecord peer) async {}
+  Future<void> setActivePeer(PeerRecord peer, {String? roomId}) async {}
 
   @override
   void requestSync() {}
+
+  @override
+  void switchRoom(String roomId) {}
+
+  @override
+  Stream<Map<String, List<RoomInfo>>> get roomsStream =>
+      const Stream.empty();
+  @override
+  List<RoomInfo> roomsFor(String epk) => const [];
+  @override
+  bool isRoomLive(String epk, String roomId) => false;
+
+  @override
+  String? get workingEpk => null;
+  @override
+  String? get workingRoomId => null;
+  @override
+  Stream<({String? epk, String? roomId})> get workingStream =>
+      const Stream.empty();
 
   @override
   Future<void> openSession(PeerRecord peer) async {}

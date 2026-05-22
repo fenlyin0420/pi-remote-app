@@ -1,7 +1,6 @@
-import 'package:app/config/dependencies.dart';
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
@@ -44,24 +43,25 @@ class ChatPage extends StatelessWidget {
   }
 
   Widget _buildTopBar(BuildContext context, ChatState state) {
-    // Title prefers the local nickname; falls back to the Pi's session
-    // name. The subtitle is `sessionName · ● <status>` (or just
-    // `● <status>` when the title is already the sessionName).
-    final peer = injector.get<ConnectionManager>().activePeer;
-    final nickname = peer?.nickname;
-    final sessionName = peer?.sessionName;
-    final hasNickname = nickname != null && nickname.isNotEmpty;
-    final primary = hasNickname
-        ? _truncate(nickname, 24)
-        : sessionName != null && sessionName.isNotEmpty
-        ? _truncate(sessionName, 24)
-        : state is ChatReady && state.messages.isNotEmpty
-        ? _inferSessionName(state.messages)
-        : 'Remote Pi';
-    final subtitleSession =
-        hasNickname && sessionName != null && sessionName.isNotEmpty
-        ? _truncate(sessionName, 24)
-        : null;
+    // Plan-17 follow-up — two-line AppBar:
+    //   Line 1: ROOM name (cwd basename / room.name / fallback).
+    //   Line 2: peer (Mac nickname or sessionName) + presence dot.
+    // The dot reads from the ChatReady.peerPresence flag (which the
+    // ViewModel sources from `isRoomLive`).
+    final vm = context.watch<ChatViewModel>();
+    final peer = vm.activePeer;
+    final room = vm.activeRoom;
+    final isOnline = vm.isRoomLive;
+    // Plan-18 follow-up — when the chat is "offline" (WS to relay
+    // down or retrying), prefer a "reconectando" amber pill so the
+    // user knows it's the relay, not the Pi cwd, that's gone.
+    final isReconnecting = state is ChatReady && (state).isOffline;
+    // Plan-18 follow-up — when the agent is currently producing a
+    // response, show "working…" instead of online/offline.
+    final isWorking = vm.isWorking;
+
+    final roomName = _roomDisplayName(room, state);
+    final peerLabel = _peerDisplayName(peer);
 
     return Container(
       height: 56,
@@ -84,7 +84,7 @@ class ChatPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  primary,
+                  _truncate(roomName, 28),
                   style: const TextStyle(
                     fontFamily: kMono,
                     fontSize: 13,
@@ -94,13 +94,95 @@ class ChatPage extends StatelessWidget {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
-                _ChatStatusLine(state: state, sessionLabel: subtitleSession),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        _truncate(peerLabel, 24),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: kMono,
+                          fontSize: 10,
+                          color: kMuted,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Builder(builder: (_) {
+                      // Plan-18 follow-up — 4-state pill:
+                      // working / reconnecting / online / offline.
+                      // Priority: working > reconnecting > online > offline.
+                      const kWorking = Color(0xFF3FA9F5);
+                      final color = isWorking
+                          ? kWorking
+                          : isReconnecting
+                              ? Colors.amber.shade600
+                              : isOnline
+                                  ? kSuccess
+                                  : kMuted;
+                      final label = isWorking
+                          ? 'working…'
+                          : isReconnecting
+                              ? 'reconectando…'
+                              : isOnline
+                                  ? 'online'
+                                  : 'offline';
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 7,
+                            height: 7,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: color,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontFamily: kMono,
+                              fontSize: 10,
+                              color: color,
+                            ),
+                          ),
+                        ],
+                      );
+                    }),
+                  ],
+                ),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  static String _roomDisplayName(RoomInfo? room, ChatState state) {
+    if (room != null) {
+      if (room.name != null && room.name!.isNotEmpty) return room.name!;
+      final cwd = room.cwd;
+      if (cwd != null && cwd.isNotEmpty) {
+        final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
+        if (segs.isNotEmpty) return segs.last;
+      }
+    }
+    if (state is ChatReady && state.messages.isNotEmpty) {
+      return _inferSessionName(state.messages);
+    }
+    return 'Remote Pi';
+  }
+
+  static String _peerDisplayName(PeerRecord? peer) {
+    if (peer == null) return '—';
+    if (peer.nickname != null && peer.nickname!.isNotEmpty) {
+      return peer.nickname!;
+    }
+    if (peer.sessionName.isNotEmpty) return peer.sessionName;
+    return peer.remoteEpk.substring(0, 8);
   }
 
   static String _truncate(String s, int max) =>
@@ -287,81 +369,6 @@ class _EmptyState extends StatelessWidget {
               child: Text(actionLabel!),
             ),
           ],
-        ],
-      ),
-    );
-  }
-}
-
-/// Inline AppBar subtitle. Only renders WHEN ABNORMAL — connecting,
-/// offline, revoked, etc. When everything is healthy (ChatReady + online
-/// + no Pi-offline reason + presence online or unknown), this widget
-/// shrinks to nothing so the title sits alone, idle.
-class _ChatStatusLine extends StatelessWidget {
-  final ChatState state;
-  final String? sessionLabel;
-  const _ChatStatusLine({required this.state, required this.sessionLabel});
-
-  /// Returns `(label, color)` if a status indicator should render, or
-  /// `null` if the state is idle/healthy and should display nothing.
-  static (String, Color)? _statusFor(ChatState state) {
-    return switch (state) {
-      ChatNoPeer() => null,                                  // chat is not the place for pairing
-      ChatConnecting() => ('connecting…', kAccent),
-      ChatFatalError() => ('offline', Colors.red.shade400),
-      ChatReady(:final isOffline,
-                :final pairingRevoked,
-                :final peerOfflineReason,
-                :final peerPresence) =>
-        pairingRevoked
-            ? ('revoked', Colors.red.shade400)
-            : peerOfflineReason != null
-                ? ('Pi offline', Colors.amber.shade600)
-                : peerPresence is PresenceOffline
-                    ? ('Pi offline', Colors.amber.shade600)
-                    : isOffline
-                        ? ('reconnecting…', Colors.amber.shade600)
-                        : null, // online + clean → idle, render nothing
-    };
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final indicator = _statusFor(state);
-    if (indicator == null) return const SizedBox.shrink();
-    final (label, color) = indicator;
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Row(
-        children: [
-          if (sessionLabel != null) ...[
-            Flexible(
-              child: Text(
-                sessionLabel!,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontFamily: kMono,
-                  fontSize: 10,
-                  color: kMuted,
-                ),
-              ),
-            ),
-            const Text(
-              '  ·  ',
-              style: TextStyle(fontFamily: kMono, fontSize: 10, color: kMuted),
-            ),
-          ],
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-          ),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(fontFamily: kMono, fontSize: 10, color: color),
-          ),
         ],
       ),
     );

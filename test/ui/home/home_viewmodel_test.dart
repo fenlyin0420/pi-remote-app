@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/repositories/i_session_repository.dart'
+    show ISessionRepository;
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/pairing/pair_request_flow.dart';
@@ -72,6 +74,24 @@ class _FakeSecureStorage implements FlutterSecureStorage {
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
+/// Minimal ISessionRepository stub for HomeViewModel tests. The
+/// HomeViewModel only consumes `workingStream` + `workingEpk` /
+/// `workingRoomId` getters from us; all other surfaces stay as
+/// safe defaults.
+class _NoopRepo implements ISessionRepository {
+  @override
+  String? get workingEpk => null;
+  @override
+  String? get workingRoomId => null;
+  @override
+  Stream<({String? epk, String? roomId})> get workingStream =>
+      const Stream.empty();
+  @override
+  void dispose() {}
+  @override
+  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 const _peerA = PeerRecord(
   remoteEpk: 'epk_A',
   sessionName: 'Pi A',
@@ -105,7 +125,7 @@ void main() {
     test('initial state is HomeLoading', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
       expect(vm.state, isA<HomeLoading>());
       vm.dispose();
     });
@@ -113,7 +133,7 @@ void main() {
     test('empty storage → HomeNoPeer', () async {
       final storage = _FakeStorage([]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
       await Future<void>.delayed(Duration.zero);
       expect(vm.state, isA<HomeNoPeer>());
       vm.dispose();
@@ -122,7 +142,7 @@ void main() {
     test('two peers → HomeList containing both', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
       await Future<void>.delayed(Duration.zero);
 
       final s = vm.state as HomeList;
@@ -134,7 +154,7 @@ void main() {
     test('openSession writes selectedPeerEpk to Preferences', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_B');
@@ -157,7 +177,7 @@ void main() {
           },
           storage: storage,
         );
-        final vm = HomeViewModel(storage, prefs, conn);
+        final vm = HomeViewModel(storage, prefs, conn, _NoopRepo());
         await Future<void>.delayed(Duration.zero);
 
         await vm.openSession('epk_B');
@@ -177,7 +197,7 @@ void main() {
     test('openSession with unknown epk is a no-op', () async {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_unknown');
@@ -185,5 +205,36 @@ void main() {
 
       vm.dispose();
     });
+
+    test(
+      'openSession with roomId persists the composite epk:room AND '
+      'awaits before returning — caller can rely on Preferences being '
+      'updated before navigating to /chat (race-condition regression)',
+      () async {
+        final storage = _FakeStorage([_peerA]);
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _NoopRepo());
+        await Future<void>.delayed(Duration.zero);
+
+        // Seed prefs with a DIFFERENT room (simulating the previous
+        // chat the user was looking at).
+        await prefs.setSelectedRoom(
+          epk: 'epk_A',
+          roomId: 'room-previous',
+        );
+        expect(prefs.selectedRoomId, 'room-previous');
+
+        // Now tap a new room → openSession completes, prefs reflect it.
+        await vm.openSession('epk_A', roomId: 'room-target');
+
+        // After awaiting openSession, prefs ARE updated. If
+        // ChatViewModel.bootstrap reads prefs at this point, it sees
+        // the correct room.
+        expect(prefs.selectedPeerEpk, 'epk_A');
+        expect(prefs.selectedRoomId, 'room-target');
+
+        vm.dispose();
+      },
+    );
   });
 }

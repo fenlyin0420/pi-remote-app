@@ -110,8 +110,22 @@ class ConnectionManager extends Service {
   final Map<String, PresenceState> _presence = <String, PresenceState>{};
   final _presenceController =
       StreamController<Map<String, PresenceState>>.broadcast();
+  // Plan 17 — rooms tracking. Keys are STANDARD base64 epks (matches
+  // presence map). Each value is the canonical room list for that peer.
+  // Plan-17 follow-up — `_roomsByPeer` is the CANONICAL set (cached +
+  // currently announced). `_liveRoomIds` tracks which roomIds are
+  // alive RIGHT NOW (in the relay snapshot). Rooms in `_roomsByPeer`
+  // but not in `_liveRoomIds` are "offline" (last-seen state).
+  final Map<String, List<RoomInfo>> _roomsByPeer = <String, List<RoomInfo>>{};
+  final Map<String, Set<String>> _liveRoomIds = <String, Set<String>>{};
+  final _roomsController =
+      StreamController<Map<String, List<RoomInfo>>>.broadcast();
+  bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
+  // Plan 17 — active room on the destination Pi. 'main' is the implicit
+  // default and matches the per-cwd room a Pi opens.
+  String _activeRoomId = 'main';
 
   Timer? _retryTimer;
   Timer? _pingTimer;
@@ -159,6 +173,64 @@ class ConnectionManager extends Service {
   /// tile / chat resolver do this via [presenceFor].
   Map<String, PresenceState> get presenceSnapshot =>
       Map.unmodifiable(_presence);
+
+  // ---- Rooms (plan 17) -----------------------------------------------------
+
+  /// Stream of full room-map snapshots. Each event is the canonical
+  /// list of rooms per peer (standard-base64 keys).
+  Stream<Map<String, List<RoomInfo>>> get roomsStream =>
+      _roomsController.stream;
+
+  Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
+
+  /// Rooms for a single peer (or empty list if none known yet). Accepts
+  /// url-safe or standard base64.
+  List<RoomInfo> roomsFor(String epk) =>
+      List.unmodifiable(_roomsByPeer[toStandardB64(epk)] ?? const []);
+
+  /// Active destination room (the Pi-side room id). 'main' = default.
+  String get activeRoomId => _activeRoomId;
+
+  /// Switch the destination room WITHOUT closing the current WS. The
+  /// outer envelope's `room` field on subsequent sends will carry this
+  /// value. Use when the user taps a different Pi cwd on Home.
+  void switchRoom(String roomId) {
+    if (roomId == _activeRoomId) {
+      debugPrint(
+        '[conn] switchRoom no-op (already $_activeRoomId) — '
+        'if you expected a switch, check whether the caller is passing '
+        'the right roomId from Preferences.selectedRoomId',
+      );
+      return;
+    }
+    debugPrint('[conn] switchRoom $_activeRoomId → $roomId');
+    _activeRoomId = roomId;
+    // Push down to the underlying WS transport so outbound envelopes
+    // get the right `room` value.
+    final cur = _status;
+    if (cur is StatusOnline) {
+      _propagateActiveRoom(roomId, cur.channel);
+    } else {
+      debugPrint(
+        '[conn] switchRoom: status=${cur.runtimeType}, no channel to '
+        'propagate to — _activeRoomId stored, next StatusOnline will '
+        'use it via send()',
+      );
+    }
+  }
+
+  void _propagateActiveRoom(String roomId, IChannel link) {
+    // Sends a synthetic control frame ourselves NOT to the relay — we
+    // just need a hook into the transport. PlainPeerChannel exposes
+    // `setActiveRoom` via a hidden interface; for typing simplicity we
+    // try the dynamic call. If the transport doesn't support it, we
+    // silently skip and the default 'main' room is used.
+    try {
+      (link as dynamic).setActiveRoom(roomId);
+    } catch (_) {
+      // Tests / non-WS transports — fine to ignore.
+    }
+  }
 
   /// Subscribe (or re-subscribe) the relay to push `peer_online` /
   /// `peer_offline` updates for [epks]. Idempotent. Stored so the
@@ -214,6 +286,11 @@ class ConnectionManager extends Service {
   /// retrying). In that case we still re-subscribe presence with the
   /// full peer list, since the storage may have changed.
   Future<void> boot({String? preferredEpk}) async {
+    // Plan-17 follow-up — restore cached rooms from disk FIRST so
+    // Home tiles render with last-known state even before the relay
+    // pushes a fresh snapshot. Idempotent so reentrant boots are
+    // harmless.
+    await _restoreCachedRooms();
     if (_activePeer != null) {
       final peers = await _storage.listPeers();
       subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
@@ -354,9 +431,25 @@ class ConnectionManager extends Service {
     final token = CancelToken();
     _connectCancel = token;
     _activePeer = peer;
+    // Plan 17 fix — set the destination room from the persisted
+    // PeerRecord BEFORE emitting StatusOnline so the very first send
+    // after connect goes to the right (peer, room) on the relay. If
+    // the PeerRecord predates this fix (`roomId == null`), we keep
+    // `_activeRoomId = 'main'` and rely on the discovery flow in
+    // `_onControl` to learn the real room from a subsequent
+    // `room_announced` push and then update _activeRoomId + persist.
+    final boundRoom = peer.roomId ?? 'main';
+    if (boundRoom != _activeRoomId) {
+      debugPrint(
+        '[conn] _connect adopting peer.roomId=$boundRoom '
+        '(was $_activeRoomId)',
+      );
+      _activeRoomId = boundRoom;
+    }
     _emit(const StatusConnecting());
     debugPrint(
-      '[conn] _connect attempt=$_retryAttempt peer=${peer.remoteEpk}',
+      '[conn] _connect attempt=$_retryAttempt peer=${peer.remoteEpk} '
+      'room=$_activeRoomId (from PeerRecord.roomId=${peer.roomId})',
     );
 
     try {
@@ -366,6 +459,10 @@ class ConnectionManager extends Service {
         return;
       }
       _missedPings = 0;
+      // Push down the active room to the WS so the outer envelope
+      // carries it from frame 1 (factory creates a fresh WsTransport
+      // every reconnect — default _activeRoom='main' unless we set).
+      _propagateActiveRoom(_activeRoomId, ch);
       _emit(StatusOnline(ch));
       _startPing(peer, ch);
       _watchChannel(peer, ch);
@@ -392,13 +489,17 @@ class ConnectionManager extends Service {
     // is always keyed in the same canonical form regardless of what we
     // received on the wire — and so consumer-side lookups via
     // `presenceFor` (which coerces) round-trip.
+    var presenceDirty = false;
+    var roomsDirty = false;
     switch (c) {
       case PeerOnline(:final peer):
         _presence[toStandardB64(peer)] = const PresenceOnline();
         debugPrint('[conn] presence: peer_online $peer');
+        presenceDirty = true;
       case PeerOffline(:final peer, :final sinceTs):
         _presence[toStandardB64(peer)] = PresenceOffline(sinceTs: sinceTs);
         debugPrint('[conn] presence: peer_offline $peer ($sinceTs)');
+        presenceDirty = true;
       case PresenceSnapshot(:final states):
         for (final s in states) {
           _presence[toStandardB64(s.peer)] = s.online
@@ -406,14 +507,292 @@ class ConnectionManager extends Service {
               : PresenceOffline(sinceTs: s.sinceTs);
         }
         debugPrint('[conn] presence: snapshot n=${states.length}');
+        presenceDirty = true;
+      case RoomAnnounced(
+          :final peer,
+          :final roomId,
+          :final name,
+          :final cwd,
+          :final startedAt,
+          :final model,
+        ):
+        final key = toStandardB64(peer);
+        final list = _roomsByPeer[key] ?? <RoomInfo>[];
+        // Preserve any localName the user already set for this room
+        // (long-press rename) — only the live metadata comes from the
+        // wire, the rename is local-only.
+        String? preservedName;
+        final existingIdx = list.indexWhere((r) => r.roomId == roomId);
+        if (existingIdx >= 0) {
+          preservedName = list[existingIdx].name;
+        }
+        list.removeWhere((r) => r.roomId == roomId);
+        list.add(RoomInfo(
+          roomId: roomId,
+          name: preservedName ?? name,
+          cwd: cwd,
+          startedAt: startedAt,
+          model: model,
+        ));
+        _roomsByPeer[key] = list;
+        (_liveRoomIds[key] ??= <String>{}).add(roomId);
+        debugPrint('[conn] rooms: announced peer=$peer room=$roomId '
+            'model=${model ?? "—"}');
+        roomsDirty = true;
+        // Persist the new view so cold restart shows the same tiles.
+        // ignore: unawaited_futures
+        _persistRoomsForPeer(key);
+        // Plan 17 fix — legacy discovery: if the active peer has no
+        // persisted roomId yet (PeerRecord saved before this fix or
+        // QR without `rm`), adopt the first room we learn about as
+        // the canonical one. Persists the choice on the PeerRecord
+        // so future reconnects address it directly.
+        _maybeAdoptLegacyRoom(key, roomId);
+      case RoomEnded(:final peer, :final roomId):
+        final key = toStandardB64(peer);
+        // Mark the room offline but KEEP it in the cached set so the
+        // tile stays in Home (now grey). Removing from _liveRoomIds
+        // is enough.
+        _liveRoomIds[key]?.remove(roomId);
+        if (_liveRoomIds[key]?.isEmpty ?? false) {
+          _liveRoomIds.remove(key);
+        }
+        debugPrint('[conn] rooms: ended peer=$peer room=$roomId (kept cached)');
+        roomsDirty = true;
+      case RoomMetaUpdated(:final peer, :final roomId, :final model):
+        final key = toStandardB64(peer);
+        final list = _roomsByPeer[key];
+        if (list == null) break;
+        final idx = list.indexWhere((r) => r.roomId == roomId);
+        if (idx < 0) break;
+        list[idx] = list[idx].copyWith(model: model);
+        debugPrint(
+          '[conn] rooms: meta_updated peer=$peer room=$roomId '
+          'model=${model ?? "—"}',
+        );
+        roomsDirty = true;
+        // ignore: unawaited_futures
+        _persistRoomsForPeer(key);
+      case RoomsSnapshot(:final peer, :final rooms):
+        final key = toStandardB64(peer);
+        // Merge snapshot into cache: add unknown rooms, refresh
+        // metadata (preserving local rename + previous model when
+        // the snapshot omits it), update live set.
+        final existing = _roomsByPeer[key] ?? <RoomInfo>[];
+        final byId = {for (final r in existing) r.roomId: r};
+        for (final r in rooms) {
+          final preservedName = byId[r.roomId]?.name ?? r.name;
+          final preservedModel = r.model ?? byId[r.roomId]?.model;
+          byId[r.roomId] = RoomInfo(
+            roomId: r.roomId,
+            name: preservedName,
+            cwd: r.cwd,
+            startedAt: r.startedAt,
+            model: preservedModel,
+          );
+        }
+        _roomsByPeer[key] = byId.values.toList();
+        _liveRoomIds[key] = rooms.map((r) => r.roomId).toSet();
+        debugPrint('[conn] rooms: snapshot peer=$peer n=${rooms.length} '
+            '(merged into cached, live=${_liveRoomIds[key]?.length ?? 0})');
+        roomsDirty = true;
+        // ignore: unawaited_futures
+        _persistRoomsForPeer(key);
+        // Same legacy-discovery hook as RoomAnnounced.
+        if (rooms.isNotEmpty) {
+          _maybeAdoptLegacyRoom(key, rooms.first.roomId);
+        }
     }
-    if (!_presenceController.isClosed) {
+    if (presenceDirty && !_presenceController.isClosed) {
       _presenceController.add(Map.unmodifiable(_presence));
+    }
+    if (roomsDirty && !_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
     }
   }
 
+  Map<String, List<RoomInfo>> _roomsSnapshot() => Map.unmodifiable(
+        _roomsByPeer.map(
+          (k, v) => MapEntry(k, List<RoomInfo>.unmodifiable(v)),
+        ),
+      );
+
+  /// Returns `true` if `roomId` is currently announced live for the
+  /// peer (the relay's last `room_announced` / `rooms` push included
+  /// it). Cached rooms not in the live set return `false`. Used by
+  /// the chat AppBar to render the online dot.
+  ///
+  /// Plan-18 follow-up: gated by `_status is StatusOnline`. When the
+  /// WS to the relay drops (retrying / offline), we have no fresh
+  /// signal that any room is reachable, so EVERY room is reported
+  /// offline regardless of the cached `_liveRoomIds`. Home tiles +
+  /// chat AppBar flip to grey immediately. On reconnect, the relay
+  /// re-pushes the rooms snapshot which repopulates the live set
+  /// and tiles go green again.
+  bool isRoomLive(String epk, String roomId) {
+    if (_status is! StatusOnline) return false;
+    final live = _liveRoomIds[toStandardB64(epk)];
+    return live != null && live.contains(roomId);
+  }
+
+  /// Plan-17 follow-up — hydrate `_roomsByPeer` from disk on boot so
+  /// Home tiles persist across cold starts even before the relay
+  /// pushes a fresh snapshot. Idempotent.
+  Future<void> _restoreCachedRooms() async {
+    if (_roomsRestored) return;
+    _roomsRestored = true;
+    final peers = await _storage.listPeers();
+    for (final p in peers) {
+      final cached = await _storage.loadRooms(p.remoteEpk);
+      if (cached.isEmpty) continue;
+      final key = toStandardB64(p.remoteEpk);
+      _roomsByPeer[key] = cached
+          .map((c) => RoomInfo(
+                roomId: c.roomId,
+                name: c.localName ?? c.name,
+                cwd: c.cwd,
+                startedAt: c.startedAt,
+                model: c.model,
+              ))
+          .toList();
+      // Note: nothing in _liveRoomIds yet — those rooms are "offline"
+      // until the relay announces them again.
+    }
+    if (!_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
+  }
+
+  Future<void> _persistRoomsForPeer(String peerKey) async {
+    final peers = await _storage.listPeers();
+    PeerRecord? match;
+    for (final p in peers) {
+      if (toStandardB64(p.remoteEpk) == peerKey) {
+        match = p;
+        break;
+      }
+    }
+    if (match == null) return;
+    final list = _roomsByPeer[peerKey] ?? const <RoomInfo>[];
+    // Read the current on-disk localNames so we don't drop the user's
+    // long-press rename when we re-persist in response to a wire
+    // metadata refresh.
+    final existing = await _storage.loadRooms(match.remoteEpk);
+    final localById = {
+      for (final p in existing)
+        if (p.localName != null && p.localName!.isNotEmpty)
+          p.roomId: p.localName!,
+    };
+    final persisted = list
+        .map((r) => PersistedRoom(
+              roomId: r.roomId,
+              name: r.name,
+              cwd: r.cwd,
+              startedAt: r.startedAt,
+              localName: localById[r.roomId],
+              model: r.model,
+            ))
+        .toList();
+    await _storage.saveRooms(match.remoteEpk, persisted);
+  }
+
+  /// Plan-17 follow-up — long-press menu support. Override the
+  /// display name of a single room locally (Pi never sees this).
+  /// Reflects immediately in the rooms snapshot.
+  Future<void> setRoomLocalName(
+    String epk,
+    String roomId,
+    String? name,
+  ) async {
+    final key = toStandardB64(epk);
+    final list = _roomsByPeer[key];
+    if (list == null) return;
+    final idx = list.indexWhere((r) => r.roomId == roomId);
+    if (idx < 0) return;
+    final old = list[idx];
+    // Use copyWith so EVERY field (model, cwd, startedAt, …) is
+    // preserved. The previous explicit constructor call dropped
+    // `model`, which made the tile subtitle fall back to
+    // "Last Paired: …" right after a rename — bug.
+    list[idx] = old.copyWith(
+      name: (name != null && name.isNotEmpty) ? name : old.name,
+    );
+    // Persist with localName so it survives cold start.
+    final cached = await _storage.loadRooms(epk);
+    final updated = cached
+        .map((c) => c.roomId == roomId
+            ? c.copyWith(localName: name)
+            : c)
+        .toList();
+    await _storage.saveRooms(epk, updated);
+    if (!_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
+  }
+
+  /// Plan-17 follow-up — delete a cached room locally. Only safe when
+  /// the room is offline (not live); UI gates this.
+  Future<void> deleteCachedRoom(String epk, String roomId) async {
+    final key = toStandardB64(epk);
+    final list = _roomsByPeer[key];
+    if (list != null) {
+      list.removeWhere((r) => r.roomId == roomId);
+      if (list.isEmpty) _roomsByPeer.remove(key);
+    }
+    final cached = await _storage.loadRooms(epk);
+    final pruned = cached.where((c) => c.roomId != roomId).toList();
+    await _storage.saveRooms(epk, pruned);
+    if (!_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
+  }
+
+  /// Plan 17 fix — legacy migration hook for peers paired before
+  /// `PeerRecord.roomId` existed. When the relay tells us about rooms
+  /// for the active peer, and that peer has no persisted roomId yet,
+  /// we adopt the announced room as canonical:
+  ///   1. Update `_activeRoomId` so outbound envelopes are routed.
+  ///   2. Push the change down to the WS transport.
+  ///   3. Persist the choice on the PeerRecord via storage so
+  ///      subsequent app launches address (peer, room) from the start
+  ///      and don't re-trigger discovery.
+  void _maybeAdoptLegacyRoom(String peerKey, String discoveredRoom) {
+    final active = _activePeer;
+    if (active == null) return;
+    if (toStandardB64(active.remoteEpk) != peerKey) return;
+    if (active.roomId != null && active.roomId == _activeRoomId) {
+      return; // already bound — discovery is a no-op
+    }
+    debugPrint(
+      '[conn] legacy room discovery: peer=${active.remoteEpk} '
+      'persisted=${active.roomId} → adopting $discoveredRoom',
+    );
+    _activeRoomId = discoveredRoom;
+    final cur = _status;
+    if (cur is StatusOnline) {
+      _propagateActiveRoom(discoveredRoom, cur.channel);
+    }
+    // Persist asynchronously — failure here is non-fatal (next discovery
+    // round will re-adopt).
+    final updated = active.copyWith(roomId: discoveredRoom);
+    _activePeer = updated;
+    // ignore: unawaited_futures
+    _storage.savePeer(updated).then((_) {
+      debugPrint(
+        '[conn] legacy room discovery: persisted roomId=$discoveredRoom '
+        'on peer=${active.remoteEpk}',
+      );
+    }).catchError((Object e, StackTrace _) {
+      debugPrint('[conn] legacy room discovery: save FAILED: $e');
+    });
+  }
+
   /// On (re)connect, re-send the last subscribe_presence so the relay
-  /// pushes updates again for our current peer list.
+  /// pushes updates again for our current peer list. Plan 17: also
+  /// subscribe to rooms for the same peer set — the relay pushes
+  /// `room_announced` / `room_ended` / `rooms` (snapshot) the same way
+  /// presence does. Single subscription covers all per-cwd sessions on
+  /// every paired Mac.
   void _replaySubscriptions() {
     if (_subscribedEpks.isEmpty) return;
     final link = _controlLink;
@@ -421,6 +800,9 @@ class ConnectionManager extends Service {
     debugPrint('[conn] replay subscribe_presence n=${_subscribedEpks.length}');
     link.sendControl(subscribePresenceFrame(_subscribedEpks));
     link.sendControl(presenceCheckFrame(_subscribedEpks));
+    debugPrint('[conn] replay subscribe_rooms n=${_subscribedEpks.length}');
+    link.sendControl(subscribeRoomsFrame(_subscribedEpks));
+    link.sendControl(roomsCheckFrame(_subscribedEpks));
   }
 
   void _watchChannel(PeerRecord peer, IChannel ch) {
@@ -495,8 +877,18 @@ class ConnectionManager extends Service {
   }
 
   void _emit(ConnectionStatus s) {
+    // Plan-18 follow-up — when the connection-status flips ON or OFF
+    // StatusOnline, every room's "live" answer changes too (see
+    // `isRoomLive` gate). Re-emit the rooms snapshot so subscribers
+    // (Home, Chat AppBar) re-evaluate dot color immediately, without
+    // waiting for the relay's next push.
+    final wasOnline = _status is StatusOnline;
+    final nowOnline = s is StatusOnline;
     _status = s;
     if (!_statusController.isClosed) _statusController.add(s);
+    if (wasOnline != nowOnline && !_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
   }
 
   static int _idCounter = 0;

@@ -36,8 +36,10 @@ class SessionRepository extends Repository implements ISessionRepository {
   String _chunkReplyTo = '';
   Timer? _flushTimer;
 
-  // Cache + sync bookkeeping per active peer.
+  // Cache + sync bookkeeping per active (peer, room). The cache is
+  // partitioned by both since plan 17 (multi-cwd per Mac).
   String? _activeEpk;
+  String _activeRoomId = kDefaultRoomId;
   int? _lastSyncedTs;
   int? _lastSessionStartedAt;
   Timer? _syncDebounce;
@@ -88,6 +90,78 @@ class SessionRepository extends Repository implements ISessionRepository {
   PeerRecord? get activePeer => _conn.activePeer;
 
   @override
+  Stream<Map<String, List<RoomInfo>>> get roomsStream => _conn.roomsStream;
+
+  @override
+  List<RoomInfo> roomsFor(String epk) => _conn.roomsFor(epk);
+
+  @override
+  bool isRoomLive(String epk, String roomId) =>
+      _conn.isRoomLive(epk, roomId);
+
+  // --- Plan-18 follow-up: per-active-room "working" signal ---
+
+  final _workingController =
+      StreamController<({String? epk, String? roomId})>.broadcast();
+  bool _lastWorkingFlag = false;
+
+  @override
+  String? get workingEpk =>
+      _state.streaming != null ? _activeEpk : null;
+  @override
+  String? get workingRoomId =>
+      _state.streaming != null ? _activeRoomId : null;
+  @override
+  Stream<({String? epk, String? roomId})> get workingStream =>
+      _workingController.stream;
+
+  void _maybeEmitWorking() {
+    final on = _state.streaming != null && _activeEpk != null;
+    if (on == _lastWorkingFlag) return;
+    _lastWorkingFlag = on;
+    if (_workingController.isClosed) return;
+    _workingController.add((
+      epk: on ? _activeEpk : null,
+      roomId: on ? _activeRoomId : null,
+    ));
+  }
+
+  @override
+  void switchRoom(String roomId) {
+    final effective = roomId.isEmpty ? kDefaultRoomId : roomId;
+    _conn.switchRoom(effective);
+    // Plan 17 — when the user crosses rooms (e.g. taps a different
+    // cwd on Home), the cache lives in a different partitioned box.
+    // Hot-swap state.messages from the new room's cache so the chat
+    // re-renders without a Pi round-trip. session_sync will refresh
+    // shortly via the normal mirror flow.
+    if (effective == _activeRoomId) return;
+    final epk = _activeEpk;
+    if (epk == null) return;
+    // ignore: unawaited_futures
+    _hotSwapRoomCache(epk, effective);
+  }
+
+  Future<void> _hotSwapRoomCache(String epk, String roomId) async {
+    debugPrint(
+      '[chat-state] hotSwap load epk=${_short(epk)} room=$roomId '
+      '(was room=$_activeRoomId)',
+    );
+    final cached = await _store.loadFor(epk, roomId: roomId);
+    _activeRoomId = roomId;
+    _lastSyncedTs = cached.lastTs;
+    _lastSessionStartedAt = cached.sessionStartedAt;
+    debugPrint(
+      '[chat-state] hotSwap loaded epk=${_short(epk)} room=$roomId '
+      'messages=${cached.messages.length}',
+    );
+    _emit(_state.copyWith(
+      messages: cached.messages,
+      clearStreaming: true,
+    ));
+  }
+
+  @override
   void adoptChannel(IChannel channel, PeerRecord peer) =>
       _conn.adopt(channel, peer);
 
@@ -99,15 +173,36 @@ class SessionRepository extends Repository implements ISessionRepository {
   // ---------------------------------------------------------------------------
 
   @override
-  Future<void> setActivePeer(PeerRecord peer) async {
-    final cached = await _store.loadFor(peer.remoteEpk);
+  Future<void> setActivePeer(PeerRecord peer, {String? roomId}) async {
+    final effectiveRoom = (roomId == null || roomId.isEmpty)
+        ? kDefaultRoomId
+        : roomId;
+    debugPrint(
+      '[chat-state] setActivePeer load epk=${_short(peer.remoteEpk)} '
+      'room=$effectiveRoom (requested=$roomId)',
+    );
+    final cached = await _store.loadFor(
+      peer.remoteEpk,
+      roomId: effectiveRoom,
+    );
     _activeEpk = peer.remoteEpk;
+    _activeRoomId = effectiveRoom;
     _lastSyncedTs = cached.lastTs;
     _lastSessionStartedAt = cached.sessionStartedAt;
+    debugPrint(
+      '[chat-state] setActivePeer loaded epk=${_short(peer.remoteEpk)} '
+      'room=$effectiveRoom messages=${cached.messages.length} '
+      'lastTs=${cached.lastTs}',
+    );
     _emit(_state.copyWith(
       messages: cached.messages,
       clearStreaming: true,
     ));
+  }
+
+  static String _short(String? s) {
+    if (s == null) return '—';
+    return s.length <= 8 ? s : s.substring(0, 8);
   }
 
   @override
@@ -194,16 +289,34 @@ class SessionRepository extends Repository implements ISessionRepository {
   // ---------------------------------------------------------------------------
 
   void _onStatusChange(ConnectionStatus s) {
+    final hadSub = _msgSub != null;
     _msgSub?.cancel();
     _msgSub = null;
 
     if (s is StatusOnline) {
       _msgSub = s.channel.serverMessages.listen(
         _onServerMessage,
-        onDone: () {},
+        onDone: () {
+          debugPrint(
+            '[chat-state] _msgSub DONE — channel.serverMessages closed; '
+            'no more inbound until next StatusOnline',
+          );
+        },
+        onError: (Object e, StackTrace st) {
+          debugPrint('[chat-state] _msgSub ERROR: $e');
+        },
+      );
+      debugPrint(
+        '[chat-state] _msgSub subscribed (status=StatusOnline, '
+        'prev_sub=$hadSub) — chat will receive inbound from this channel',
       );
       // ignore: unawaited_futures
       _onlineActivated();
+    } else {
+      debugPrint(
+        '[chat-state] _msgSub cancelled (status=${s.runtimeType}, '
+        'prev_sub=$hadSub) — inbound stream is now SILENT until reconnect',
+      );
     }
     _emit(_state.copyWith(connection: s));
   }
@@ -212,13 +325,29 @@ class SessionRepository extends Repository implements ISessionRepository {
     final peer = _conn.activePeer;
     if (peer == null) return;
     if (peer.remoteEpk != _activeEpk) {
-      await setActivePeer(peer);
+      // Plan 17 — adopt whichever room the ConnectionManager is
+      // currently addressing. Defaults to 'main' if nothing was set.
+      await setActivePeer(peer, roomId: _conn.activeRoomId);
     }
     _syncDebounce?.cancel();
     _syncDebounce = Timer(const Duration(milliseconds: 200), requestSync);
   }
 
   void _onServerMessage(ServerMessage msg) {
+    // Plan 17 diagnostic — confirm the pipeline
+    //   WsTransport → PlainPeerChannel → SessionRepository
+    // is delivering. If `[ws-rx] frame ok` is logged but THIS line
+    // is silent, the subscription chain is broken (look for
+    // `_msgSub` cancellation logs around the same timestamp).
+    final peerTag = _activeEpk == null
+        ? '—'
+        : _activeEpk!.length <= 8
+            ? _activeEpk!
+            : _activeEpk!.substring(0, 8);
+    debugPrint(
+      '[chat-state] _onServerMessage IN: type=${msg.runtimeType} '
+      'active_peer=$peerTag active_room=$_activeRoomId',
+    );
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
         final tail = delta.length > 3
@@ -405,7 +534,8 @@ class SessionRepository extends Repository implements ISessionRepository {
     // Plan 16 mirror-cache: state.messages = Pi's view exactly.
     // `truncated` is captured for logs only (D1=B).
     debugPrint(
-      '[chat-state] _applyHistory: REPLACE converted.len=${converted.length} '
+      '[chat-state] _applyHistory: REPLACE epk=${_short(_activeEpk)} '
+      'room=$_activeRoomId converted.len=${converted.length} '
       'existing.len=${_state.messages.length} eos=${h.eos} '
       'truncated=${h.truncated}',
     );
@@ -413,9 +543,14 @@ class SessionRepository extends Repository implements ISessionRepository {
 
     final epk = _activeEpk;
     if (epk != null) {
+      debugPrint(
+        '[chat-state] _applyHistory persist epk=${_short(epk)} '
+        'room=$_activeRoomId messages=${converted.length}',
+      );
       await _store.replaceFor(
         epk,
         converted,
+        roomId: _activeRoomId,
         sessionStartedAt: h.sessionStartedAt,
         lastTs: _lastSyncedTs,
       );
@@ -482,14 +617,24 @@ class SessionRepository extends Repository implements ISessionRepository {
 
   Future<void> _persistSnapshot() async {
     final epk = _activeEpk;
-    if (epk == null) return;
+    if (epk == null) {
+      debugPrint(
+        '[chat-state] persistSnapshot SKIPPED — no active peer',
+      );
+      return;
+    }
     // Persist current state to Hive. Pointers (`_lastSessionStartedAt`,
     // `_lastSyncedTs`) are only advanced by `_applyHistory` when actual
     // events arrive; here we just snapshot the rendered message list
     // so a reload-from-cold shows the same view.
+    debugPrint(
+      '[chat-state] persistSnapshot epk=${_short(epk)} '
+      'room=$_activeRoomId messages=${_state.messages.length}',
+    );
     await _store.replaceFor(
       epk,
       _state.messages,
+      roomId: _activeRoomId,
       sessionStartedAt: _lastSessionStartedAt,
       lastTs: _lastSyncedTs,
     );
@@ -544,6 +689,7 @@ class SessionRepository extends Repository implements ISessionRepository {
   void _emit(SessionState s) {
     _state = s;
     if (!_stateController.isClosed) _stateController.add(s);
+    _maybeEmitWorking();
   }
 
   // ---------------------------------------------------------------------------
@@ -557,6 +703,7 @@ class SessionRepository extends Repository implements ISessionRepository {
     _conn.dispose();
     _stateController.close();
     _eventController.close();
+    _workingController.close();
   }
 
   static int _counter = 0;

@@ -59,5 +59,32 @@ void main() {
       expect(qr, isNotNull);
       expect(qr!.relayUrl, isNull);
     });
+
+    test(
+      'parses QR with `rm` (room id) — plan 17 fix lets the app target '
+      'the Pi\'s cwd-session at pair_request time',
+      () {
+        final raw = 'remotepi://pair?t=$goodToken&epk=$goodEpk&'
+            'rm=abc123def456&n=$sessionName';
+        final qr = QrPairPayload.tryParse(raw);
+        expect(qr, isNotNull);
+        expect(qr!.roomId, 'abc123def456');
+      },
+    );
+
+    test('QR without `rm` (legacy) leaves roomId null', () {
+      final raw = 'remotepi://pair?t=$goodToken&epk=$goodEpk&n=$sessionName';
+      final qr = QrPairPayload.tryParse(raw);
+      expect(qr, isNotNull);
+      expect(qr!.roomId, isNull);
+    });
+
+    test('empty rm= is treated as null', () {
+      final raw = 'remotepi://pair?t=$goodToken&epk=$goodEpk&'
+          'rm=&n=$sessionName';
+      final qr = QrPairPayload.tryParse(raw);
+      expect(qr, isNotNull);
+      expect(qr!.roomId, isNull);
+    });
   });
 }

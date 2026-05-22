@@ -1,5 +1,13 @@
-// Per-peer local cache of chat history. Each peer's history lives in its
-// own Hive box (`session_<epk>`) so revoking a peer simply deletes the box.
+// Per-(peer, room) local cache of chat history. Plan 17 partitioned
+// the cache: each Pi-extension session (cwd) lives in its own box
+// (`session_<epk>__<roomId>`). Revoking a peer or closing a room
+// simply deletes the matching box.
+//
+// Backward-compat: pre-plan-17 stores keyed by epk only
+// (`session_<epk>`) are read transparently the first time the user
+// opens the implicit `main` room of that peer, and the data is then
+// re-written into the new partitioned key. The legacy box is left in
+// place (cheap, future-proof) — `clearFor` deletes both forms.
 //
 // Schema (versioned for future migration):
 //
@@ -20,7 +28,9 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 const int _kSchemaVersion = 1;
 const String _kBoxPrefix = 'session_';
+const String _kRoomSeparator = '__';
 const String _kDataKey = 'data';
+const String kDefaultRoomId = 'main';
 
 class CachedSession {
   final List<ChatMessage> messages;
@@ -58,15 +68,51 @@ class SessionHistoryStore {
     _initialized = true;
   }
 
-  String _boxName(String epk) => '$_kBoxPrefix$epk';
+  // Plan 17 — keys now include the room id. Default room is 'main',
+  // which preserves single-cwd Pis from earlier versions.
+  String _boxName(String epk, String roomId) =>
+      '$_kBoxPrefix$epk$_kRoomSeparator$roomId';
 
-  Future<Box<dynamic>> _open(String epk) =>
-      Hive.openBox<dynamic>(_boxName(epk));
+  /// Legacy (pre-plan-17) box name — keyed by epk only. Still read on
+  /// first `loadFor(epk, 'main')` so users don't lose their offline
+  /// view on upgrade.
+  String _legacyBoxName(String epk) => '$_kBoxPrefix$epk';
 
-  Future<CachedSession> loadFor(String epk) async {
-    final box = await _open(epk);
+  Future<Box<dynamic>> _open(String epk, String roomId) =>
+      Hive.openBox<dynamic>(_boxName(epk, roomId));
+
+  Future<Box<dynamic>> _openLegacy(String epk) =>
+      Hive.openBox<dynamic>(_legacyBoxName(epk));
+
+  Future<CachedSession> loadFor(
+    String epk, {
+    String roomId = kDefaultRoomId,
+  }) async {
+    final box = await _open(epk, roomId);
     final raw = box.get(_kDataKey);
-    if (raw == null) return CachedSession.empty();
+    if (raw != null) {
+      return _decode(raw);
+    }
+    // Plan 17 backward-compat: if this is the implicit 'main' room and
+    // a legacy `session_<epk>` box exists with data, transparently
+    // migrate the user's prior cache into the new partitioned key so
+    // they keep seeing their chat history.
+    if (roomId == kDefaultRoomId) {
+      final legacy = await _openLegacy(epk);
+      final legacyRaw = legacy.get(_kDataKey);
+      if (legacyRaw != null) {
+        final cached = _decode(legacyRaw);
+        if (cached.messages.isNotEmpty ||
+            cached.sessionStartedAt != null) {
+          await _write(epk, roomId, cached);
+          return cached;
+        }
+      }
+    }
+    return CachedSession.empty();
+  }
+
+  CachedSession _decode(dynamic raw) {
     final map = _coerceMap(raw);
     // Schema guard — if the version on disk does not match what we
     // understand, treat as empty cache (defensive against migrations).
@@ -84,35 +130,38 @@ class SessionHistoryStore {
     );
   }
 
-  /// Append [events] to the existing cache for [epk]. [lastTs] is the
-  /// newest event timestamp the caller observed (epoch ms). The session
-  /// pointer stays unchanged.
+  /// Append [events] to the existing cache for `(epk, roomId)`.
+  /// [lastTs] is the newest event timestamp the caller observed
+  /// (epoch ms). The session pointer stays unchanged.
   Future<void> appendEvents(
     String epk,
     List<ChatMessage> events, {
+    String roomId = kDefaultRoomId,
     required int? lastTs,
   }) async {
     if (events.isEmpty && lastTs == null) return;
-    final cur = await loadFor(epk);
+    final cur = await loadFor(epk, roomId: roomId);
     final next = CachedSession(
       messages: [...cur.messages, ...events],
       lastTs: lastTs ?? cur.lastTs,
       sessionStartedAt: cur.sessionStartedAt,
     );
-    await _write(epk, next);
+    await _write(epk, roomId, next);
   }
 
-  /// Replace the entire cache for [epk] — used when the Pi reports a
-  /// different `session_started_at` (session restart on the Pi side) or
-  /// when we just want to snapshot the in-memory state.
+  /// Replace the entire cache for `(epk, roomId)` — used when the Pi
+  /// reports a different `session_started_at` (session restart on the
+  /// Pi side) or when we just want to snapshot the in-memory state.
   Future<void> replaceFor(
     String epk,
     List<ChatMessage> events, {
+    String roomId = kDefaultRoomId,
     required int? sessionStartedAt,
     required int? lastTs,
   }) async {
     await _write(
       epk,
+      roomId,
       CachedSession(
         messages: events,
         lastTs: lastTs,
@@ -124,12 +173,14 @@ class SessionHistoryStore {
   /// Update only the metadata pointers; messages untouched.
   Future<void> updateMeta(
     String epk, {
+    String roomId = kDefaultRoomId,
     int? lastTs,
     int? sessionStartedAt,
   }) async {
-    final cur = await loadFor(epk);
+    final cur = await loadFor(epk, roomId: roomId);
     await _write(
       epk,
+      roomId,
       CachedSession(
         messages: cur.messages,
         lastTs: lastTs ?? cur.lastTs,
@@ -138,9 +189,19 @@ class SessionHistoryStore {
     );
   }
 
-  Future<void> clearFor(String epk) async {
-    final box = await _open(epk);
+  /// Clear the cache for a single `(epk, roomId)`. For the implicit
+  /// 'main' room this also wipes the legacy `session_<epk>` box so
+  /// stale data doesn't resurrect on the next load.
+  Future<void> clearFor(
+    String epk, {
+    String roomId = kDefaultRoomId,
+  }) async {
+    final box = await _open(epk, roomId);
     await box.clear();
+    if (roomId == kDefaultRoomId) {
+      final legacy = await _openLegacy(epk);
+      await legacy.clear();
+    }
   }
 
   Future<void> close() async {
@@ -149,8 +210,8 @@ class SessionHistoryStore {
 
   // ---------------------------------------------------------------------------
 
-  Future<void> _write(String epk, CachedSession s) async {
-    final box = await _open(epk);
+  Future<void> _write(String epk, String roomId, CachedSession s) async {
+    final box = await _open(epk, roomId);
     await box.put(_kDataKey, {
       'schema_version': _kSchemaVersion,
       'session_started_at': s.sessionStartedAt,
