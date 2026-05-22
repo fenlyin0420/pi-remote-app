@@ -50,20 +50,35 @@ class _FakeStore implements FlutterSecureStorage {
 
 void main() {
   group('relay_config — isValidRelayUrl', () {
-    test('accepts ws:// and wss:// with non-empty host', () {
+    test('accepts ws://, wss://, http://, https:// with non-empty host', () {
       expect(isValidRelayUrl('ws://localhost'), isTrue);
       expect(isValidRelayUrl('wss://relay.remote-pi.dev'), isTrue);
       expect(isValidRelayUrl('ws://127.0.0.1:8080'), isTrue);
       expect(isValidRelayUrl('wss://example.com/path?q=1'), isTrue);
+      expect(isValidRelayUrl('http://localhost'), isTrue);
+      expect(isValidRelayUrl('https://relay.example.com'), isTrue);
     });
 
-    test('rejects empty, non-ws schemes, missing host', () {
+    test('rejects empty, unsupported schemes, missing host', () {
       expect(isValidRelayUrl(''), isFalse);
-      expect(isValidRelayUrl('http://example.com'), isFalse);
-      expect(isValidRelayUrl('https://example.com'), isFalse);
+      expect(isValidRelayUrl('ftp://example.com'), isFalse);
       expect(isValidRelayUrl('foo'), isFalse);
       expect(isValidRelayUrl('wss://'), isFalse,
           reason: 'no host segment');
+      expect(isValidRelayUrl('https://'), isFalse,
+          reason: 'no host segment');
+    });
+  });
+
+  group('relay_config — toWsRelayUrl', () {
+    test('translates http(s) to ws(s) and leaves ws(s) untouched', () {
+      expect(toWsRelayUrl('https://relay.example.com'),
+          'wss://relay.example.com');
+      expect(toWsRelayUrl('http://localhost:8080'),
+          'ws://localhost:8080');
+      expect(toWsRelayUrl('wss://relay.example.com'),
+          'wss://relay.example.com');
+      expect(toWsRelayUrl('ws://localhost'), 'ws://localhost');
     });
   });
 
@@ -78,7 +93,6 @@ void main() {
       final p = Preferences(_FakeStore());
       expect(p.relayUrl, isNull);
       expect(resolveRelayUrl(p), kDefaultRelayUrl);
-      expect(kDefaultRelayUrl, startsWith('wss://'));
     });
   });
 }

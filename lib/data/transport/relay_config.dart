@@ -14,25 +14,41 @@ import 'package:app/data/preferences/preferences.dart';
 
 /// Public community relay. Hardcoded; not configurable at build time
 /// to keep the onboarding flow deterministic.
-const String kDefaultRelayUrl = 'wss://relay-rp1.jacobmoura.work';
+const String kDefaultRelayUrl = 'https://relay-rp1.jacobmoura.work';
 
 /// Returns the effective relay URL the app should connect to.
 /// Falls back to [kDefaultRelayUrl] when no user override is set.
 String resolveRelayUrl(Preferences prefs) =>
     prefs.relayUrl ?? kDefaultRelayUrl;
 
+/// Normalises any accepted relay URL into the WebSocket form expected by
+/// the underlying transport. `http://` and `https://` are translated to
+/// `ws://` and `wss://` respectively; `ws://` and `wss://` are returned
+/// unchanged. The caller is expected to have validated the URL via
+/// [isValidRelayUrl] first.
+String toWsRelayUrl(String url) {
+  if (url.startsWith('https://')) return 'wss://${url.substring(8)}';
+  if (url.startsWith('http://')) return 'ws://${url.substring(7)}';
+  return url;
+}
+
 /// Validates a candidate relay URL.
 ///
 /// Rules:
 /// - Non-empty.
-/// - Scheme must be `ws://` or `wss://`.
+/// - Scheme must be `ws://`, `wss://`, `http://`, or `https://`.
 /// - Must be parseable by `Uri.parse` AND yield a non-empty `host`.
 ///
 /// Returns `true` if the URL is acceptable. Use this in the Settings
 /// form and during onboarding step 2 before writing to [Preferences].
 bool isValidRelayUrl(String url) {
   if (url.isEmpty) return false;
-  if (!url.startsWith('ws://') && !url.startsWith('wss://')) return false;
+  if (!url.startsWith('ws://') &&
+      !url.startsWith('wss://') &&
+      !url.startsWith('http://') &&
+      !url.startsWith('https://')) {
+    return false;
+  }
   final Uri uri;
   try {
     uri = Uri.parse(url);

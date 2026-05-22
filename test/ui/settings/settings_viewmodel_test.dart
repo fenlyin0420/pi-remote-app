@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
@@ -266,7 +267,7 @@ void main() {
         final err = await vm.saveRelayUrl('');
         expect(err, isNull);
         expect(prefs.relayUrl, isNull);
-        expect(vm.effectiveRelayUrl, startsWith('wss://'));
+        expect(vm.effectiveRelayUrl, kDefaultRelayUrl);
 
         vm.dispose();
       },

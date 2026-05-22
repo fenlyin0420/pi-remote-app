@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const _kPeersService = 'dev.remotepi.peers';
@@ -174,20 +175,30 @@ class DeviceIdentity {
 // PairingStorage
 // ---------------------------------------------------------------------------
 
-class PairingStorage {
+/// Pairing storage with change notification.
+///
+/// Mutations to the peer set (`savePeer`, `deletePeer`) and to the
+/// per-peer rooms cache (`saveRooms`, `deleteRooms`) call
+/// `notifyListeners()` so any UI watching the storage (HomeViewModel,
+/// SettingsViewModel) can refresh without manual plumbing between
+/// screens. Read methods do not notify.
+class PairingStorage extends ChangeNotifier {
   final FlutterSecureStorage _store;
 
-  const PairingStorage([FlutterSecureStorage? store])
+  PairingStorage([FlutterSecureStorage? store])
     : _store = store ?? const FlutterSecureStorage();
 
   // ---- Peer records --------------------------------------------------------
 
   String _peerKey(String remoteEpk) => '$_kPeersService:$remoteEpk';
 
-  Future<void> savePeer(PeerRecord record) => _store.write(
-    key: _peerKey(record.remoteEpk),
-    value: jsonEncode(record.toJson()),
-  );
+  Future<void> savePeer(PeerRecord record) async {
+    await _store.write(
+      key: _peerKey(record.remoteEpk),
+      value: jsonEncode(record.toJson()),
+    );
+    notifyListeners();
+  }
 
   Future<PeerRecord?> loadPeer(String remoteEpk) async {
     final raw = await _store.read(key: _peerKey(remoteEpk));
@@ -195,8 +206,10 @@ class PairingStorage {
     return PeerRecord.fromJson(jsonDecode(raw) as Map<String, dynamic>);
   }
 
-  Future<void> deletePeer(String remoteEpk) =>
-      _store.delete(key: _peerKey(remoteEpk));
+  Future<void> deletePeer(String remoteEpk) async {
+    await _store.delete(key: _peerKey(remoteEpk));
+    notifyListeners();
+  }
 
   Future<List<PeerRecord>> listPeers() async {
     final all = await _store.readAll();
@@ -231,11 +244,13 @@ class PairingStorage {
   /// Persist the full set of known rooms for a peer. Replaces any
   /// previously stored set. Called on every room-state change in
   /// ConnectionManager so a cold start can reflect the same view.
-  Future<void> saveRooms(String remoteEpk, List<PersistedRoom> rooms) =>
-      _store.write(
-        key: _roomsKey(remoteEpk),
-        value: jsonEncode(rooms.map((r) => r.toJson()).toList()),
-      );
+  Future<void> saveRooms(String remoteEpk, List<PersistedRoom> rooms) async {
+    await _store.write(
+      key: _roomsKey(remoteEpk),
+      value: jsonEncode(rooms.map((r) => r.toJson()).toList()),
+    );
+    notifyListeners();
+  }
 
   Future<List<PersistedRoom>> loadRooms(String remoteEpk) async {
     final raw = await _store.read(key: _roomsKey(remoteEpk));
@@ -246,8 +261,10 @@ class PairingStorage {
         .toList();
   }
 
-  Future<void> deleteRooms(String remoteEpk) =>
-      _store.delete(key: _roomsKey(remoteEpk));
+  Future<void> deleteRooms(String remoteEpk) async {
+    await _store.delete(key: _roomsKey(remoteEpk));
+    notifyListeners();
+  }
 
   Future<DeviceIdentity> _generateAndSaveDeviceKey() async {
     final kp = await Ed25519().newKeyPair();

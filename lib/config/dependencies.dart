@@ -29,7 +29,7 @@ CustomInjector get injector => _injector;
 
 Future<void> setupDependencies() async {
   // Infrastructure singletons
-  _injector.addInstance<PairingStorage>(const PairingStorage());
+  _injector.addInstance<PairingStorage>(PairingStorage());
 
   final prefs = Preferences();
   await prefs.load();

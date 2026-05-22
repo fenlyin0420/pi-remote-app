@@ -4,6 +4,7 @@ import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Settings is config-only (nickname + revoke). The peer switcher moved
 /// to Home; the connection itself is shared and owned by
@@ -56,16 +57,30 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   /// Persist a custom relay URL. Pass [value] = null or empty to clear
   /// the override (falls back to [kDefaultRelayUrl]). Returns `null` on
   /// success or an error message string when validation fails.
+  ///
+  /// Always tears down the active relay connection and kicks off a
+  /// fresh `boot` after saving — clicking Save is the user's explicit
+  /// "use this relay now" gesture, so we restart the WebSocket
+  /// unconditionally even when the URL didn't change (handy as a
+  /// manual reconnect when the relay seems stuck).
   Future<String?> saveRelayUrl(String? value) async {
     final trimmed = value?.trim();
     if (trimmed == null || trimmed.isEmpty) {
       await _prefs.setRelayUrl(null);
-      return null;
+    } else {
+      if (!isValidRelayUrl(trimmed)) {
+        return 'URL must start with ws://, wss://, http://, or https://';
+      }
+      await _prefs.setRelayUrl(trimmed);
     }
-    if (!isValidRelayUrl(trimmed)) {
-      return 'URL must start with ws:// or wss://';
-    }
-    await _prefs.setRelayUrl(trimmed);
+    final after = resolveRelayUrl(_prefs);
+    debugPrint('[settings] saveRelayUrl → restarting WS against $after');
+    await _conn.disconnect();
+    // Fire-and-forget; boot resolves the URL fresh via the production
+    // connect factory (`resolveRelayUrl(prefs)`), so the new endpoint
+    // is picked up on the next attempt.
+    // ignore: unawaited_futures
+    _conn.boot(preferredEpk: _prefs.selectedPeerEpk);
     return null;
   }
 
@@ -76,12 +91,26 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   /// `onboardingCompleted=false` so the next boot lands on /onboarding
   /// (matches user expectation of "revoke = start fresh").
   Future<void> revoke(String epk) async {
+    final wasActive = _conn.activePeer?.remoteEpk == epk;
     if (_prefs.selectedPeerEpk == epk) {
       await _prefs.setSelectedPeerEpk(null);
     }
     await _storage.deletePeer(epk);
     final remaining = await _storage.listPeers();
     _conn.subscribeToPeers(remaining.map((p) => p.remoteEpk).toList());
+    // If the revoked peer was the one currently driving the connection,
+    // tear it down so we don't keep talking to a peer the user just
+    // removed. If others remain, fall back to one of them; otherwise
+    // disconnect cleanly.
+    if (wasActive) {
+      await _conn.disconnect();
+      if (remaining.isNotEmpty) {
+        final fallback = remaining.first;
+        await _prefs.setSelectedPeerEpk(fallback.remoteEpk);
+        // ignore: unawaited_futures
+        _conn.boot(preferredEpk: fallback.remoteEpk);
+      }
+    }
     if (remaining.isEmpty) {
       await _prefs.setOnboardingCompleted(false);
     }

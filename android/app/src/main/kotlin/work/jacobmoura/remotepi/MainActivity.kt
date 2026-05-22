@@ -1,4 +1,4 @@
-package dev.remotepi.app
+package work.jacobmoura.remotepi
 
 import io.flutter.embedding.android.FlutterActivity
 

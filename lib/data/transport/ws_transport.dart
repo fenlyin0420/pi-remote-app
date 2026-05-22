@@ -17,6 +17,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:app/data/transport/channel.dart';
+import 'package:app/data/transport/relay_config.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -54,8 +55,10 @@ class WsTransport implements PeerTransport, IControlLink {
     // letting it silently linger until the next user action. The
     // protocol-level Ping/Pong handled by ConnectionManager covers
     // app↔Pi liveness; this one covers app↔relay TCP liveness.
+    // Accept http(s) URLs in the user-facing form but always speak
+    // ws(s) on the wire — IOWebSocketChannel rejects http schemes.
     final WebSocketChannel ws = IOWebSocketChannel.connect(
-      Uri.parse(relayUrl),
+      Uri.parse(toWsRelayUrl(relayUrl)),
       pingInterval: const Duration(seconds: 20),
     );
     final transport = WsTransport._(ws);

@@ -7,9 +7,10 @@ import 'package:flutter/material.dart';
 /// community relay" (saves null in Preferences, falls back to
 /// [kDefaultRelayUrl] via [resolveRelayUrl]).
 
-/// Onboarding step 2 — relay choice. Two vertical cards (per plan 14
-/// D2): community (recommended, pre-selected) vs custom (URL field
-/// with inline validation).
+/// Onboarding step 2 — relay choice. Two vertical cards: self-hosted
+/// (recommended for the privacy story) vs community (convenience).
+/// The custom card carries a URL field with inline validation; leaving
+/// it empty falls back to the default community relay.
 class RelayStep extends StatelessWidget {
   final OnboardingInProgress state;
   final ValueChanged<RelayChoice> onChoice;
@@ -56,21 +57,30 @@ class RelayStep extends StatelessWidget {
             style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
           ),
           const SizedBox(height: 24),
-          _RelayCard(
-            title: 'Community relay',
-            badge: 'recommended',
-            description: kDefaultRelayUrl,
-            selected: state.relayChoice == RelayChoice.community,
-            onTap: () => onChoice(RelayChoice.community),
-          ),
-          const SizedBox(height: 12),
           _CustomRelayCard(
+            badge: 'recommended',
+            description:
+                'Best privacy — host the relay on your own network, '
+                'ideally reachable only through a VPN. Sessions never '
+                'transit a shared server.',
             selected: state.relayChoice == RelayChoice.custom,
             customUrl: state.customRelayUrl,
             error: state.customRelayError,
             onTap: () => onChoice(RelayChoice.custom),
             onUrlChanged: onCustomUrl,
           ),
+          const SizedBox(height: 12),
+          _RelayCard(
+            title: 'Community relay',
+            description: 'Easiest to start. Traffic still passes '
+                'through a server we operate — keep this in mind for '
+                'sensitive workloads.',
+            footer: kDefaultRelayUrl,
+            selected: state.relayChoice == RelayChoice.community,
+            onTap: () => onChoice(RelayChoice.community),
+          ),
+          const SizedBox(height: 16),
+          const _SecurityNote(),
           const Spacer(),
           Row(
             children: [
@@ -124,8 +134,8 @@ class RelayStep extends StatelessWidget {
 
 class _RelayCard extends StatelessWidget {
   final String title;
-  final String? badge;
   final String description;
+  final String? footer;
   final bool selected;
   final VoidCallback onTap;
   const _RelayCard({
@@ -133,7 +143,7 @@ class _RelayCard extends StatelessWidget {
     required this.description,
     required this.selected,
     required this.onTap,
-    this.badge,
+    this.footer,
   });
 
   @override
@@ -173,25 +183,6 @@ class _RelayCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (badge != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: kAccent.withValues(alpha: 0.15),
-                      borderRadius:
-                          const BorderRadius.all(Radius.circular(4)),
-                    ),
-                    child: Text(
-                      badge!,
-                      style: const TextStyle(
-                        fontFamily: kMono,
-                        fontSize: 9,
-                        color: kAccent,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
               ],
             ),
             const SizedBox(height: 8),
@@ -203,9 +194,24 @@ class _RelayCard extends StatelessWidget {
                   fontFamily: kMono,
                   fontSize: 11,
                   color: kMuted,
+                  height: 1.4,
                 ),
               ),
             ),
+            if (footer != null) ...[
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(left: 26),
+                child: Text(
+                  footer!,
+                  style: const TextStyle(
+                    fontFamily: kMono,
+                    fontSize: 10,
+                    color: kMuted,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -217,6 +223,8 @@ class _CustomRelayCard extends StatelessWidget {
   final bool selected;
   final String customUrl;
   final String? error;
+  final String? badge;
+  final String? description;
   final VoidCallback onTap;
   final ValueChanged<String> onUrlChanged;
   const _CustomRelayCard({
@@ -225,6 +233,8 @@ class _CustomRelayCard extends StatelessWidget {
     required this.error,
     required this.onTap,
     required this.onUrlChanged,
+    this.badge,
+    this.description,
   });
 
   @override
@@ -253,17 +263,53 @@ class _CustomRelayCard extends StatelessWidget {
                   color: selected ? kAccent : kMuted,
                 ),
                 const SizedBox(width: 10),
-                const Text(
-                  'Use my own server',
-                  style: TextStyle(
-                    fontFamily: kMono,
-                    fontSize: 13,
-                    color: kText,
-                    fontWeight: FontWeight.w600,
+                const Expanded(
+                  child: Text(
+                    'Use my own server',
+                    style: TextStyle(
+                      fontFamily: kMono,
+                      fontSize: 13,
+                      color: kText,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
+                if (badge != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: kAccent.withValues(alpha: 0.15),
+                      borderRadius:
+                          const BorderRadius.all(Radius.circular(4)),
+                    ),
+                    child: Text(
+                      badge!,
+                      style: const TextStyle(
+                        fontFamily: kMono,
+                        fontSize: 9,
+                        color: kAccent,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
               ],
             ),
+            if (description != null) ...[
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.only(left: 26),
+                child: Text(
+                  description!,
+                  style: const TextStyle(
+                    fontFamily: kMono,
+                    fontSize: 11,
+                    color: kMuted,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ],
             if (selected) ...[
               const SizedBox(height: 12),
               Padding(
@@ -304,6 +350,59 @@ class _CustomRelayCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Inline explainer for the security trade-off between the community
+/// relay and self-hosted. Rendered between the two options and the
+/// Back/Continue row.
+class _SecurityNote extends StatelessWidget {
+  const _SecurityNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: kBg,
+        border: Border.all(color: kBorder),
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.lock_outline, size: 14, color: kAccent),
+              SizedBox(width: 8),
+              Text(
+                'Security',
+                style: TextStyle(
+                  fontFamily: kMono,
+                  fontSize: 11,
+                  color: kAccent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Both options use WSS in transit and a pairing key the Pi '
+            'generates. The community relay is convenient but the '
+            'operator can still see metadata (which devices talk to '
+            'which Pi, when). Running your own relay — ideally only '
+            'reachable through a VPN — removes that exposure entirely.',
+            style: TextStyle(
+              fontFamily: kMono,
+              fontSize: 10,
+              color: kMuted,
+              height: 1.5,
+            ),
+          ),
+        ],
       ),
     );
   }

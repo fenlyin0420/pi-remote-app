@@ -141,7 +141,7 @@ void main() {
         s.vm.next();
         s.vm.setRelayChoice(RelayChoice.custom);
 
-        s.vm.setCustomRelayUrl('http://nope');
+        s.vm.setCustomRelayUrl('ftp://nope');
         expect((s.vm.state as OnboardingInProgress).customRelayError,
             isNotNull);
 

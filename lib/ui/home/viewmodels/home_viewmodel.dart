@@ -44,6 +44,15 @@ class HomeViewModel extends ViewModel<HomeState> {
     _roomsSub = _conn.roomsStream.listen(_onRooms);
     _statusSub = _conn.statusStream.listen(_onStatus);
     _workingSub = _repo.workingStream.listen(_onWorking);
+    // Settings (rename / revoke) and pairing flow both write through
+    // PairingStorage; listening here keeps Home in sync without manual
+    // notifications between screens.
+    _storage.addListener(_onStorageChanged);
+  }
+
+  void _onStorageChanged() {
+    if (_disposed) return;
+    _load();
   }
 
   /// `true` when the app's WS to the relay is alive (StatusOnline).
@@ -174,6 +183,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     _roomsSub?.cancel();
     _statusSub?.cancel();
     _workingSub?.cancel();
+    _storage.removeListener(_onStorageChanged);
     super.dispose();
   }
 }

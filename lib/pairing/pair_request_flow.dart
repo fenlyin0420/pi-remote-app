@@ -60,7 +60,8 @@ Future<PeerRecord> performPairing({
   // factory on resolveRelayUrl, would silently pair against the
   // user's relay while the Pi is waiting on another). Detect and
   // surface — UI (PairingViewModel) can show "trocar relay?" modal.
-  if (qr.relayUrl != null && qr.relayUrl != currentRelayUrl) {
+  if (qr.relayUrl != null &&
+      toWsRelayUrl(qr.relayUrl!) != toWsRelayUrl(currentRelayUrl)) {
     throw PairingError(
       code: 'relay_mismatch',
       message: 'QR points to "${qr.relayUrl}", '
