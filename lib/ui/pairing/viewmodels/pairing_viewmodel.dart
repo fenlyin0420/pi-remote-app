@@ -64,7 +64,7 @@ class PairingViewModel extends ViewModel<PairingState> {
       final transport = await _transportFactory(qr, ownerKey);
       _transport = transport;
 
-      final peer = await pair_flow.performPairing(
+      final result = await pair_flow.performPairing(
         qr: qr,
         transport: transport,
         storage: _storage,
@@ -82,10 +82,13 @@ class PairingViewModel extends ViewModel<PairingState> {
       _liveChannel = channel;
       _transport = null; // channel now owns the transport
 
-      _sessionRepo.adoptChannel(channel, peer);
+      _sessionRepo.adoptChannel(channel, result.peer);
       _liveChannel = null;
 
-      emit(PairingPaired(peer: peer));
+      emit(PairingPaired(
+        peer: result.peer,
+        hostnameHint: result.hostnameHint,
+      ));
     } on pair_flow.PairingError catch (e) {
       await _closeTransient();
       emit(PairingError(message: _friendlyError(e), canRetry: true));
@@ -97,6 +100,25 @@ class PairingViewModel extends ViewModel<PairingState> {
 
   /// Retry after an error.
   void retry() => emit(const PairingScanning());
+
+  /// Persist a nickname on the just-paired peer. Called by the
+  /// post-pair nickname modal (plan/27 Wave A) — `null` or empty
+  /// leaves the existing record unchanged, anything else is written
+  /// back through [PairingStorage.savePeer], whose mutation hook
+  /// republishes `mesh_versions` so other devices learn the label.
+  ///
+  /// The trimmed nickname is also reflected on the in-state peer so
+  /// the post-frame navigation to /home shows the chosen label
+  /// immediately (no flicker waiting for `loadPeer`).
+  Future<void> applyNickname(String? nickname) async {
+    final s = state;
+    if (s is! PairingPaired) return;
+    final trimmed = nickname?.trim();
+    if (trimmed == null || trimmed.isEmpty) return;
+    final updated = s.peer.copyWith(nickname: trimmed);
+    await _storage.savePeer(updated);
+    emit(PairingPaired(peer: updated, hostnameHint: s.hostnameHint));
+  }
 
   // ---------------------------------------------------------------------------
 

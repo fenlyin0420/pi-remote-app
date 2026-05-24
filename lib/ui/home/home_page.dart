@@ -171,14 +171,34 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  /// Subtitle line under "Remote Pi": ● Relay · [Connected|Offline].
+  /// Subtitle line under "Remote Pi": ● Relay · [Connected|Awaiting pairing|Offline].
   /// Reflects the app→relay WS state (not per-Pi presence) so the
   /// user always knows whether the app itself is reachable.
+  ///
+  /// `HomeNoPeer` is the special case where no peer is paired yet —
+  /// the WS is never opened (its URL embeds the destination peer's
+  /// pubkey), so `isRelayConnected` is false but that doesn't mean
+  /// the relay is down. Render a neutral "Awaiting pairing" instead
+  /// of the alarming amber "Offline".
   Widget _subtitleFor(HomeViewModel vm, HomeState state) {
     final connected = vm.isRelayConnected;
-    final dotColor = connected ? kSuccess : Colors.amber.shade600;
-    final statusLabel = connected ? 'Connected' : 'Offline';
-    final statusColor = connected ? kMuted : Colors.amber.shade600;
+    final awaitingPairing = state is HomeNoPeer;
+    final Color dotColor;
+    final String statusLabel;
+    final Color statusColor;
+    if (connected) {
+      dotColor = kSuccess;
+      statusLabel = 'Connected';
+      statusColor = kMuted;
+    } else if (awaitingPairing) {
+      dotColor = kMuted;
+      statusLabel = 'Awaiting pairing';
+      statusColor = kMuted;
+    } else {
+      dotColor = Colors.amber.shade600;
+      statusLabel = 'Offline';
+      statusColor = Colors.amber.shade600;
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -240,7 +260,7 @@ class HomePage extends StatelessWidget {
     String? lastEpk;
     for (final it in items) {
       if (it.peer.remoteEpk != lastEpk) {
-        children.add(_PeerSectionHeader(peer: it.peer));
+        children.add(PeerSectionHeader(peer: it.peer));
         lastEpk = it.peer.remoteEpk;
       }
       children.add(_buildItemRowAt(context, vm, state, it));
@@ -441,32 +461,6 @@ class HomePage extends StatelessWidget {
   }
 }
 
-class _PeerSectionHeader extends StatelessWidget {
-  final PeerRecord peer;
-  const _PeerSectionHeader({required this.peer});
-
-  @override
-  Widget build(BuildContext context) {
-    final label = (peer.nickname?.isNotEmpty ?? false)
-        ? peer.nickname!
-        : peer.sessionName.isNotEmpty
-            ? peer.sessionName
-            : peer.remoteEpk.substring(0, 8);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 6),
-      child: Text(
-        label.toUpperCase(),
-        style: const TextStyle(
-          fontFamily: kMono,
-          fontSize: 11,
-          color: kMuted,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 1.0,
-        ),
-      ),
-    );
-  }
-}
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.
 class _LonelyEmptyState extends StatelessWidget {

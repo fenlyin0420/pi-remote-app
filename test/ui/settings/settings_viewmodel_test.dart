@@ -43,6 +43,11 @@ class _FakeStorage extends PairingStorage {
   Future<void> deletePeer(String epk) async {
     peers = peers.where((p) => p.remoteEpk != epk).toList();
   }
+
+  @override
+  Future<void> deletePeerSilent(String epk) async {
+    peers = peers.where((p) => p.remoteEpk != epk).toList();
+  }
 }
 
 class _FakeSecureStorage implements FlutterSecureStorage {

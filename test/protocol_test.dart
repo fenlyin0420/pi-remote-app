@@ -129,6 +129,39 @@ void main() {
       expect(msg.sessionName, contains('remote_pi'));
     });
 
+    test('PairOk.fromJson decodes harness + hostname (plan/27 Wave A)', () {
+      final msg = PairOk.fromJson({
+        'type': 'pair_ok',
+        'in_reply_to': 'req-1',
+        'session_name': 'remote_pi · main',
+        'session_started_at': 1700000000000,
+        'room_id': 'room-xyz',
+        'hostname': 'Mac do Jacob',
+        'harness': {'name': 'Pi coding agent', 'version': '0.4.2'},
+      });
+      expect(msg.hostname, 'Mac do Jacob');
+      expect(msg.harness, isNotNull);
+      expect(msg.harness!.name, 'Pi coding agent');
+      expect(msg.harness!.version, '0.4.2');
+    });
+
+    test('PairOk.fromJson tolerates missing harness/hostname (legacy Pi)', () {
+      final msg = PairOk.fromJson({
+        'type': 'pair_ok',
+        'in_reply_to': 'req-2',
+        'session_name': 'remote_pi · main',
+        'session_started_at': 1700000000000,
+      });
+      expect(msg.harness, isNull);
+      expect(msg.hostname, isNull);
+    });
+
+    test('PiHarness.fromJson tolerates partial blob with default fallbacks', () {
+      final h = PiHarness.fromJson(<String, dynamic>{});
+      expect(h.name, PiHarness.piCodingAgentUnknown.name);
+      expect(h.version, PiHarness.piCodingAgentUnknown.version);
+    });
+
     test('PairError fixture parses', () {
       final file = File('../.orchestration/contracts/fixtures/pair_error.jsonl');
       final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);

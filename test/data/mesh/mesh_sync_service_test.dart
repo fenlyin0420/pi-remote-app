@@ -471,6 +471,51 @@ void main() {
           reason: 'no extra POST was issued');
     });
 
+    test(
+      'publish(allowEmpty: true) bypasses the empty-on-existing safety '
+      'net — drives the legitimate "revoke last peer" flow so the '
+      'relay forgets the lone member instead of holding stale state '
+      'that the next pullOnDemand would resurrect locally',
+      () async {
+        final owner = await _newOwner();
+        final storage = PairingStorage(_FakeSecureStorage());
+        final bridge =
+            await _bootedBridge(storage, owner.keyPair, owner.ownerPk);
+        final hash = await MeshClient.ownerPkHash(owner.ownerPk);
+        final s = _stubDio();
+        s.adapter.on(
+          'POST',
+          '/mesh/$hash',
+          _Reply(200, jsonEncode({'version': 1, 'updated_at': 1})),
+        );
+        await storage.savePeer(const PeerRecord(
+          remoteEpk: 'epk-only',
+          sessionName: 'only',
+          relayUrl: 'wss://r',
+          pairedAt: '2026-05-01T00:00:00Z',
+        ));
+        final client =
+            MeshClient(baseUrlProvider: () => 'https://r', dio: s.dio);
+        final svc = MeshSyncService(client, bridge, storage);
+        final first = await svc.publish();
+        expect(first, isA<MeshPublishOk>());
+        expect(svc.lastVersion, 1);
+
+        // The legitimate last-peer revoke: storage is empty AND watermark
+        // is non-zero, but the caller explicitly opted in.
+        await storage.deletePeerSilent('epk-only');
+        s.adapter.on(
+          'POST',
+          '/mesh/$hash',
+          _Reply(200, jsonEncode({'version': 2, 'updated_at': 2})),
+        );
+        final result = await svc.publish(allowEmpty: true);
+        expect(result, isA<MeshPublishOk>(),
+            reason: 'allowEmpty:true must bypass the safety net');
+        expect(svc.lastVersion, 2);
+      },
+    );
+
     test('publishing empty members at v=0 is allowed (edge case)', () async {
       final owner = await _newOwner();
       final storage = PairingStorage(_FakeSecureStorage());

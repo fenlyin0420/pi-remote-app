@@ -12,7 +12,13 @@ import 'package:provider/provider.dart';
 class PairStep extends StatefulWidget {
   final VoidCallback onPaired;
   final VoidCallback onBack;
-  const PairStep({super.key, required this.onPaired, required this.onBack});
+  final VoidCallback onSkip;
+  const PairStep({
+    super.key,
+    required this.onPaired,
+    required this.onBack,
+    required this.onSkip,
+  });
 
   @override
   State<PairStep> createState() => _PairStepState();
@@ -136,21 +142,46 @@ class _PairStepState extends State<PairStep> {
               ),
             ),
           const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: widget.onBack,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: kMuted,
-              side: const BorderSide(color: kBorder),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.all(Radius.circular(6)),
+          Row(
+            children: [
+              OutlinedButton(
+                onPressed: widget.onBack,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: kMuted,
+                  side: const BorderSide(color: kBorder),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 12,
+                  ),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(6)),
+                  ),
+                ),
+                child: const Text(
+                  'Back',
+                  style: TextStyle(fontFamily: kMono, fontSize: 13),
+                ),
               ),
-            ),
-            child: const Text(
-              'Back',
-              style: TextStyle(fontFamily: kMono, fontSize: 13),
-            ),
+              const Spacer(),
+              TextButton(
+                onPressed: widget.onSkip,
+                style: TextButton.styleFrom(
+                  foregroundColor: kAccent,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                ),
+                child: const Text(
+                  'Scan later',
+                  style: TextStyle(
+                    fontFamily: kMono,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 24),
         ],

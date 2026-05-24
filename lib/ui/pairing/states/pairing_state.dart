@@ -20,17 +20,27 @@ class PairingConnecting extends PairingState {
   const PairingConnecting({required this.sessionName});
 }
 
-/// Pi confirmed; channel adopted. UI navigates straight to chat.
+/// Pi confirmed; channel adopted. UI navigates straight to chat
+/// after the post-pair nickname modal is dismissed.
+///
+/// Plan/27 Wave A — [hostnameHint] is what the pi-extension reported
+/// as its OS hostname in `pair_ok.hostname`. The post-pair nickname
+/// modal pre-fills its input with it (e.g. "Mac do Jacob") instead
+/// of the generic "Pi" placeholder. `null` on legacy Pis that
+/// haven't been upgraded yet.
 class PairingPaired extends PairingState {
   final PeerRecord peer;
-  const PairingPaired({required this.peer});
+  final String? hostnameHint;
+  const PairingPaired({required this.peer, this.hostnameHint});
 
   @override
   bool operator ==(Object other) =>
-      other is PairingPaired && other.peer.remoteEpk == peer.remoteEpk;
+      other is PairingPaired &&
+      other.peer.remoteEpk == peer.remoteEpk &&
+      other.hostnameHint == hostnameHint;
 
   @override
-  int get hashCode => peer.remoteEpk.hashCode;
+  int get hashCode => Object.hash(peer.remoteEpk, hostnameHint);
 }
 
 /// QR parse, transport, or pair_request failed.

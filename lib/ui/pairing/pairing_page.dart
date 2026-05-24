@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
+import 'package:app/ui/pairing/widgets/nickname_sheet.dart';
 import 'package:app/ui/pairing/widgets/paste_qr_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -21,6 +24,10 @@ class PairingPage extends StatefulWidget {
 class _PairingPageState extends State<PairingPage> {
   final _scanner = MobileScannerController();
   bool _scannerActive = true;
+  // Guards against [_runPostPairFlow] firing twice — `PairingPaired`
+  // is rebroadcast on every `applyNickname` emit, and we only want to
+  // open the sheet once per pairing.
+  bool _postPairStarted = false;
 
   @override
   void dispose() {
@@ -54,9 +61,11 @@ class _PairingPageState extends State<PairingPage> {
     final vm = context.watch<PairingViewModel>();
     final state = vm.state;
 
-    if (state is PairingPaired) {
+    if (state is PairingPaired && !_postPairStarted) {
+      _postPairStarted = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (context.mounted) context.go('/home');
+        if (!mounted) return;
+        unawaited(_runPostPairFlow(state.hostnameHint));
       });
     }
 
@@ -65,6 +74,22 @@ class _PairingPageState extends State<PairingPage> {
       appBar: AppBar(backgroundColor: kBg, title: const Text('Pair device')),
       body: _buildBody(state, vm),
     );
+  }
+
+  /// Plan/27 Wave A — opens the post-pair nickname sheet, persists
+  /// whatever the user picked, then navigates home. Modal is
+  /// dismissible; either Save, Skip or drag-down all produce a usable
+  /// label so the mesh blob carries a real string for other devices.
+  Future<void> _runPostPairFlow(String? hostnameHint) async {
+    final vm = context.read<PairingViewModel>();
+    final nickname = await showNicknameSheet(
+      context,
+      defaultName: hostnameHint,
+    );
+    if (!mounted) return;
+    await vm.applyNickname(nickname);
+    if (!mounted) return;
+    context.go('/home');
   }
 
   Widget _buildBody(PairingState state, PairingViewModel vm) {

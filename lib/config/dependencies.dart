@@ -85,7 +85,14 @@ Future<void> setupDependencies() async {
   // ViewModels
   _injector.addViewModel<ChatViewModel>(ChatViewModel.new);
   _injector.addViewModel<HomeViewModel>(HomeViewModel.new);
-  _injector.addViewModel<SettingsViewModel>(SettingsViewModel.new);
+  _injector.addViewModel<SettingsViewModel>(
+    () => SettingsViewModel(
+      _injector.get<PairingStorage>(),
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<MeshSyncService>(),
+    ),
+  );
   _injector.addViewModel<PairingViewModel>(
     () => PairingViewModel(
       _injector.get<PairingStorage>(),

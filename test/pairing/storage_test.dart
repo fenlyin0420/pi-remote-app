@@ -3,6 +3,7 @@
 // `wipeAll()` helper that the OwnerIdentityBridge calls on sync-reset.
 
 import 'package:app/pairing/storage.dart';
+import 'package:app/protocol/protocol.dart' show PiHarness;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -144,6 +145,51 @@ void main() {
       final preserved = record.copyWith(sessionName: 'new');
       expect(preserved.nickname, 'old');
       expect(preserved.sessionName, 'new');
+    });
+
+    test('harness round-trips through toJson/fromJson (plan/27 Wave A)', () {
+      const record = PeerRecord(
+        remoteEpk: 'pk1',
+        sessionName: 'name',
+        relayUrl: 'ws://x',
+        pairedAt: '2026-01-01T00:00:00Z',
+        harness: PiHarness(name: 'Pi coding agent', version: '0.4.2'),
+      );
+      final json = record.toJson();
+      expect(json['harness'], {'name': 'Pi coding agent', 'version': '0.4.2'});
+      final restored = PeerRecord.fromJson(json);
+      expect(restored.harness, isNotNull);
+      expect(restored.harness!.name, 'Pi coding agent');
+      expect(restored.harness!.version, '0.4.2');
+    });
+
+    test('legacy record without harness field → fromJson keeps null', () {
+      final restored = PeerRecord.fromJson({
+        'remote_epk': 'pk1',
+        'session_name': 'name',
+        'relay_url': 'ws://x',
+        'paired_at': '2026-01-01T00:00:00Z',
+      });
+      expect(restored.harness, isNull);
+    });
+
+    test('copyWith(harness: ...) updates while preserving other fields', () {
+      const record = PeerRecord(
+        remoteEpk: 'pk1',
+        sessionName: 'n',
+        relayUrl: 'ws://x',
+        pairedAt: '2026-01-01T00:00:00Z',
+        nickname: 'Macbook',
+        harness: PiHarness(name: 'Pi coding agent', version: '0.4.0'),
+      );
+      final updated = record.copyWith(
+        harness: const PiHarness(name: 'Claude Code', version: '0.7.1'),
+      );
+      expect(updated.harness!.name, 'Claude Code');
+      expect(updated.nickname, 'Macbook');
+      // Sentinel default: omitting harness preserves it.
+      final preserved = record.copyWith(nickname: 'mac');
+      expect(preserved.harness!.version, '0.4.0');
     });
 
     test('list/save/load round-trips through fake storage', () async {

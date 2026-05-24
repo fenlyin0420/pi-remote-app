@@ -512,6 +512,37 @@ class Pong extends ServerMessage {
       Pong(inReplyTo: j['in_reply_to'] as String);
 }
 
+/// Plan/27 Wave A — identifies the agent harness the paired PC is
+/// running. Surfaced as a subtitle on the PiCard ("via Pi coding
+/// agent"). Pi-extension is expected to publish this in `pair_ok`
+/// (contract for the next pi-extension dispatch); the app falls back
+/// to a sensible default when the field is absent so legacy Pis keep
+/// working.
+class PiHarness {
+  final String name;
+  final String version;
+  const PiHarness({required this.name, required this.version});
+
+  /// Default used when `pair_ok` omits `harness` (current
+  /// pi-extension behaviour) and when migrating legacy PeerRecords.
+  static const PiHarness piCodingAgentUnknown =
+      PiHarness(name: 'Pi coding agent', version: '—');
+
+  Map<String, dynamic> toJson() => {'name': name, 'version': version};
+
+  static PiHarness fromJson(Map<String, dynamic> j) => PiHarness(
+        name: (j['name'] as String?) ?? piCodingAgentUnknown.name,
+        version: (j['version'] as String?) ?? piCodingAgentUnknown.version,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is PiHarness && other.name == name && other.version == version;
+
+  @override
+  int get hashCode => Object.hash(name, version);
+}
+
 class PairOk extends ServerMessage {
   final String inReplyTo;
   final String sessionName;
@@ -525,20 +556,46 @@ class PairOk extends ServerMessage {
   /// having to wait for subscribe_rooms / discovery. Legacy Pis that
   /// don't emit `room_id` fall back to `'main'`.
   final String roomId;
+  /// Plan/27 Wave A — agent harness identification. `null` when the
+  /// pi-extension hasn't been upgraded to publish it; consumers fall
+  /// back to [PiHarness.piCodingAgentUnknown] so the UI never renders
+  /// an empty subtitle.
+  final PiHarness? harness;
+  /// Plan/27 Wave A — hostname hint for the post-pair nickname modal.
+  /// The pi-extension reports its OS hostname so the modal can
+  /// pre-fill a sensible placeholder ("Mac do Jacob") instead of a
+  /// generic "Pi". `null` on legacy Pis.
+  final String? hostname;
   PairOk({
     required this.inReplyTo,
     required this.sessionName,
     required this.sessionStartedAt,
     required this.roomId,
+    this.harness,
+    this.hostname,
   });
 
-  factory PairOk.fromJson(Map<String, dynamic> j) => PairOk(
-    inReplyTo: j['in_reply_to'] as String,
-    sessionName: j['session_name'] as String,
-    sessionStartedAt: (j['session_started_at'] as num).toInt(),
-    // Backward-compat: pre-fix Pis don't emit room_id → use 'main'.
-    roomId: (j['room_id'] as String?) ?? 'main',
-  );
+  factory PairOk.fromJson(Map<String, dynamic> j) {
+    final harnessJson = j['harness'];
+    final hostname = j['hostname'];
+    final startedAt = j['session_started_at'];
+    return PairOk(
+      inReplyTo: j['in_reply_to'] as String,
+      sessionName: j['session_name'] as String,
+      // Legacy Pis (pre-session_sync) don't emit session_started_at.
+      // The downstream caller treats `0` as "unknown" and skips the
+      // restart-detection branch.
+      sessionStartedAt: startedAt is num ? startedAt.toInt() : 0,
+      // Backward-compat: pre-fix Pis don't emit room_id → use 'main'.
+      // Callers that need to distinguish "Pi said main" from "Pi
+      // omitted room" should peek at the raw JSON instead.
+      roomId: (j['room_id'] as String?) ?? 'main',
+      harness: harnessJson is Map<String, dynamic>
+          ? PiHarness.fromJson(harnessJson)
+          : null,
+      hostname: hostname is String && hostname.isNotEmpty ? hostname : null,
+    );
+  }
 }
 
 /// Mirror of user input typed directly in the Pi's terminal (or injected via

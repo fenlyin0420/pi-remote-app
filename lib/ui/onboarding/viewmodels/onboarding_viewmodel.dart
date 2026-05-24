@@ -96,4 +96,13 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
     await _prefs.setOnboardingCompleted(true);
     emit(const OnboardingComplete());
   }
+
+  /// User dismisses the QR step ("Scan later"). Onboarding is marked
+  /// done so we don't loop back here, but no peer is paired — Home
+  /// will show the "Awaiting pairing" empty state until the user pairs
+  /// from there.
+  Future<void> skipPairing() async {
+    await _prefs.setOnboardingCompleted(true);
+    emit(const OnboardingComplete());
+  }
 }

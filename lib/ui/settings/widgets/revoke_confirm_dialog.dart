@@ -8,10 +8,6 @@ Future<bool> showRevokeConfirmDialog(
   BuildContext context, {
   required PeerRecord peer,
 }) async {
-  final hint = peer.remoteEpk.length >= 8
-      ? peer.remoteEpk.substring(0, 8)
-      : peer.remoteEpk;
-
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -20,11 +16,9 @@ Future<bool> showRevokeConfirmDialog(
         'Revoke "${peer.sessionName}"?',
         style: const TextStyle(color: kText),
       ),
-      content: Text(
-        'You will need to scan a new QR on the Pi to reconnect. The Mac is '
-        'not notified — to remove the pairing on the Mac as well, run '
-        '`/remote-pi revoke $hint` in the terminal.',
-        style: const TextStyle(color: kMuted2),
+      content: const Text(
+        "You'll need to pair again from the PC or Mac to reconnect.",
+        style: TextStyle(color: kMuted2),
       ),
       actions: [
         TextButton(

@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:app/data/transport/relay_config.dart';
+import 'package:app/protocol/protocol.dart' show PairOk;
 import 'package:app/protocol/uuid7.dart';
 
 import 'qr_scanner.dart';
@@ -41,10 +42,26 @@ class PairingError implements Exception {
 }
 
 // ---------------------------------------------------------------------------
+// PairingResult — output of [performPairing]
+// ---------------------------------------------------------------------------
+
+/// Wraps the persisted [PeerRecord] plus side hints the post-pair UI
+/// (nickname modal) needs but that don't belong on the PeerRecord
+/// itself. Plan/27 Wave A added [hostnameHint] so the modal can
+/// pre-fill "Mac do Jacob" instead of the generic "Pi"; legacy Pis
+/// that don't emit `hostname` leave it null and the modal falls back
+/// to `peer.sessionName`.
+class PairingResult {
+  final PeerRecord peer;
+  final String? hostnameHint;
+  const PairingResult({required this.peer, this.hostnameHint});
+}
+
+// ---------------------------------------------------------------------------
 // performPairing
 // ---------------------------------------------------------------------------
 
-Future<PeerRecord> performPairing({
+Future<PairingResult> performPairing({
   required QrPairPayload qr,
   required PeerTransport transport,
   required PairingStorage storage,
@@ -99,25 +116,38 @@ Future<PeerRecord> performPairing({
   final type = inner['type'] as String?;
 
   if (type == 'pair_ok' && inner['in_reply_to'] == id) {
+    // Parse via the canonical decoder so PairOk schema evolutions
+    // (plan/27 Wave A: `harness`, `hostname`) land in one place.
+    final pairOk = PairOk.fromJson(inner);
     // Plan 17 fix — persist the Pi-confirmed room_id (or fall back to
     // the one carried by the QR, then to 'main'). Stored on the
     // PeerRecord so subsequent reconnects address (peer, room)
     // correctly from the very first frame.
-    final piRoomId = (inner['room_id'] as String?) ??
-        qr.roomId ??
-        'main';
+    //
+    // `PairOk.roomId` defaults to 'main' when the Pi omits the field
+    // (plan-17 contract codified in tests). We peek at the raw map to
+    // tell "Pi explicitly said main" from "Pi didn't send a room" —
+    // only in the latter case do we want to fall back to qr.roomId.
+    final rawRoom = inner['room_id'];
+    final piEchoedRoom = rawRoom is String && rawRoom.isNotEmpty;
+    final piRoomId = piEchoedRoom
+        ? pairOk.roomId
+        : (qr.roomId ?? 'main');
     final peer = PeerRecord(
       remoteEpk: qr.epk,
-      sessionName: inner['session_name'] as String,
+      sessionName: pairOk.sessionName,
       // Persist whichever relay we just paired on. For legacy QRs
       // this equals qr.relayUrl (we'd have thrown above otherwise);
       // for new QRs (no `r`) it's the currently configured relay.
       relayUrl: qr.relayUrl ?? currentRelayUrl,
       pairedAt: DateTime.now().toUtc().toIso8601String(),
       roomId: piRoomId,
+      // Plan/27 Wave A — null when pi-extension hasn't been upgraded
+      // yet to publish `harness` in pair_ok.
+      harness: pairOk.harness,
     );
     await storage.savePeer(peer);
-    return peer;
+    return PairingResult(peer: peer, hostnameHint: pairOk.hostname);
   }
 
   if (type == 'pair_error') {
@@ -136,7 +166,7 @@ Future<PeerRecord> performPairing({
 /// Convenience overload that derives `currentRelayUrl` from a
 /// [Preferences]-aware caller. Use directly from production code; tests
 /// can still call [performPairing] with an explicit URL.
-Future<PeerRecord> performPairingWithRelay(
+Future<PairingResult> performPairingWithRelay(
   String currentRelayUrl, {
   required QrPairPayload qr,
   required PeerTransport transport,

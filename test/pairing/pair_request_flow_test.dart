@@ -105,15 +105,15 @@ void main() {
           }))));
         }());
 
-        final peer = await performPairing(
+        final result = await performPairing(
           qr: qr,
           transport: app,
           storage: storage,
           deviceName: 'phone',
           currentRelayUrl: 'ws://localhost',
         );
-        expect(peer.sessionName, 'Pi');
-        expect(peer.relayUrl, 'ws://localhost');
+        expect(result.peer.sessionName, 'Pi');
+        expect(result.peer.relayUrl, 'ws://localhost');
         expect(storage.saved, hasLength(1));
       },
     );
@@ -146,7 +146,7 @@ void main() {
           }))));
         }());
 
-        final peer = await performPairing(
+        final result = await performPairing(
           qr: qr,
           transport: app,
           storage: storage,
@@ -155,7 +155,7 @@ void main() {
         );
 
         // pair_ok.room_id wins over qr.roomId.
-        expect(peer.roomId, 'room-from-pair-ok');
+        expect(result.peer.roomId, 'room-from-pair-ok');
         expect(storage.saved.single.roomId, 'room-from-pair-ok');
       },
     );
@@ -186,7 +186,7 @@ void main() {
           }))));
         }());
 
-        final peer = await performPairing(
+        final result = await performPairing(
           qr: qr,
           transport: app,
           storage: _FakeStorage(),
@@ -194,7 +194,7 @@ void main() {
           currentRelayUrl: 'wss://relay.example',
         );
         // Pi did not echo room_id back → fall back to qr.roomId.
-        expect(peer.roomId, 'room-from-qr-only');
+        expect(result.peer.roomId, 'room-from-qr-only');
       },
     );
 
@@ -219,14 +219,14 @@ void main() {
           }))));
         }());
 
-        final peer = await performPairing(
+        final result = await performPairing(
           qr: qr,
           transport: app,
           storage: storage,
           deviceName: 'phone',
           currentRelayUrl: 'wss://relay.remote-pi.dev',
         );
-        expect(peer.relayUrl, 'wss://relay.remote-pi.dev',
+        expect(result.peer.relayUrl, 'wss://relay.remote-pi.dev',
             reason: 'when QR lacks r=, persist currentRelayUrl');
       },
     );

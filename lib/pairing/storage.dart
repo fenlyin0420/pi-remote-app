@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:app/protocol/protocol.dart' show PiHarness;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -93,6 +94,12 @@ class PeerRecord {
   /// `null` = not yet discovered; outbound sends fall back to 'main'
   /// while ConnectionManager runs the discovery once.
   final String? roomId;
+  /// Plan/27 Wave A — agent harness reported by the PC at pair time.
+  /// Surfaced as the "via Pi coding agent" subtitle on the PiCard.
+  /// `null` for PeerRecords saved before the field existed; consumers
+  /// fall back to [PiHarness.piCodingAgentUnknown] so the UI never
+  /// renders an empty subtitle.
+  final PiHarness? harness;
 
   const PeerRecord({
     required this.remoteEpk,
@@ -101,6 +108,7 @@ class PeerRecord {
     required this.pairedAt,
     this.nickname,
     this.roomId,
+    this.harness,
   });
 
   Map<String, dynamic> toJson() => {
@@ -110,25 +118,36 @@ class PeerRecord {
     'paired_at': pairedAt,
     'nickname': nickname,
     'room_id': roomId,
+    if (harness != null) 'harness': harness!.toJson(),
   };
 
-  factory PeerRecord.fromJson(Map<String, dynamic> j) => PeerRecord(
-    remoteEpk: j['remote_epk'] as String,
-    sessionName: j['session_name'] as String,
-    relayUrl: j['relay_url'] as String,
-    pairedAt: j['paired_at'] as String,
-    // Legacy records (saved before plan 10.3) have no 'nickname' field.
-    nickname: j['nickname'] as String?,
-    // Legacy records (saved before plan 17 fix) have no 'room_id'.
-    // Stays null until ConnectionManager discovers it via subscribe_rooms.
-    roomId: j['room_id'] as String?,
-  );
+  factory PeerRecord.fromJson(Map<String, dynamic> j) {
+    final harnessJson = j['harness'];
+    return PeerRecord(
+      remoteEpk: j['remote_epk'] as String,
+      sessionName: j['session_name'] as String,
+      relayUrl: j['relay_url'] as String,
+      pairedAt: j['paired_at'] as String,
+      // Legacy records (saved before plan 10.3) have no 'nickname' field.
+      nickname: j['nickname'] as String?,
+      // Legacy records (saved before plan 17 fix) have no 'room_id'.
+      // Stays null until ConnectionManager discovers it via subscribe_rooms.
+      roomId: j['room_id'] as String?,
+      // Plan/27 Wave A — harness was added later. Records saved before
+      // it lack the field; null falls back to the default at consumer
+      // side.
+      harness: harnessJson is Map<String, dynamic>
+          ? PiHarness.fromJson(harnessJson)
+          : null,
+    );
+  }
 
   PeerRecord copyWith({
     String? sessionName,
     // Sentinel-typed so the caller can pass `nickname: null` to clear.
     Object? nickname = _unset,
     Object? roomId = _unset,
+    Object? harness = _unset,
   }) => PeerRecord(
     remoteEpk: remoteEpk,
     sessionName: sessionName ?? this.sessionName,
@@ -140,6 +159,9 @@ class PeerRecord {
     roomId: identical(roomId, _unset)
         ? this.roomId
         : roomId as String?,
+    harness: identical(harness, _unset)
+        ? this.harness
+        : harness as PiHarness?,
   );
 
   @override
@@ -150,11 +172,19 @@ class PeerRecord {
       other.relayUrl == relayUrl &&
       other.pairedAt == pairedAt &&
       other.nickname == nickname &&
-      other.roomId == roomId;
+      other.roomId == roomId &&
+      other.harness == harness;
 
   @override
-  int get hashCode =>
-      Object.hash(remoteEpk, sessionName, relayUrl, pairedAt, nickname, roomId);
+  int get hashCode => Object.hash(
+        remoteEpk,
+        sessionName,
+        relayUrl,
+        pairedAt,
+        nickname,
+        roomId,
+        harness,
+      );
 }
 
 // ---------------------------------------------------------------------------

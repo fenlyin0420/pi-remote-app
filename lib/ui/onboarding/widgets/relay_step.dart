@@ -43,7 +43,7 @@ class RelayStep extends StatelessWidget {
         children: [
           const SizedBox(height: 24),
           const Text(
-            'Choose the relay server',
+            'Choose a relay',
             style: TextStyle(
               fontFamily: kMono,
               fontSize: 16,
@@ -53,16 +53,13 @@ class RelayStep extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           const Text(
-            'The relay forwards messages between the app and the Pi.',
+            'Where the app and your PC meet.',
             style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
           ),
           const SizedBox(height: 24),
           _CustomRelayCard(
             badge: 'recommended',
-            description:
-                'Best privacy — host the relay on your own network, '
-                'ideally reachable only through a VPN. Sessions never '
-                'transit a shared server.',
+            description: 'Self-hosted. Best privacy.',
             selected: state.relayChoice == RelayChoice.custom,
             customUrl: state.customRelayUrl,
             error: state.customRelayError,
@@ -72,15 +69,11 @@ class RelayStep extends StatelessWidget {
           const SizedBox(height: 12),
           _RelayCard(
             title: 'Community relay',
-            description: 'Easiest to start. Traffic still passes '
-                'through a server we operate — keep this in mind for '
-                'sensitive workloads.',
+            description: 'Hosted by us. Quick to start.',
             footer: kDefaultRelayUrl,
             selected: state.relayChoice == RelayChoice.community,
             onTap: () => onChoice(RelayChoice.community),
           ),
-          const SizedBox(height: 16),
-          const _SecurityNote(),
           const Spacer(),
           Row(
             children: [
@@ -330,14 +323,6 @@ class _CustomRelayCard extends StatelessWidget {
                     hintText: 'https://my-relay.com',
                     hintStyle:
                         const TextStyle(fontFamily: kMono, color: kMuted),
-                    helperText:
-                        'http(s) only — the app converts to WebSocket '
-                        'internally.',
-                    helperStyle: const TextStyle(
-                      fontFamily: kMono,
-                      fontSize: 10,
-                      color: kMuted,
-                    ),
                     errorText: error,
                     errorStyle: const TextStyle(
                       fontFamily: kMono,
@@ -363,55 +348,3 @@ class _CustomRelayCard extends StatelessWidget {
   }
 }
 
-/// Inline explainer for the security trade-off between the community
-/// relay and self-hosted. Rendered between the two options and the
-/// Back/Continue row.
-class _SecurityNote extends StatelessWidget {
-  const _SecurityNote();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: kBg,
-        border: Border.all(color: kBorder),
-        borderRadius: const BorderRadius.all(Radius.circular(6)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: const [
-              Icon(Icons.lock_outline, size: 14, color: kAccent),
-              SizedBox(width: 8),
-              Text(
-                'Security',
-                style: TextStyle(
-                  fontFamily: kMono,
-                  fontSize: 11,
-                  color: kAccent,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Both options use WSS in transit and a pairing key the Pi '
-            'generates. The community relay is convenient but the '
-            'operator can still see metadata (which devices talk to '
-            'which Pi, when). Running your own relay — ideally only '
-            'reachable through a VPN — removes that exposure entirely.',
-            style: TextStyle(
-              fontFamily: kMono,
-              fontSize: 10,
-              color: kMuted,
-              height: 1.5,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

@@ -74,6 +74,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       vm.completePairing();
                     },
                     onBack: vm.back,
+                    onSkip: () {
+                      // ignore: unawaited_futures
+                      vm.skipPairing();
+                    },
                   ),
                 ],
               ),

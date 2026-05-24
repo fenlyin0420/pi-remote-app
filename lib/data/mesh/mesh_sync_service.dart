@@ -162,7 +162,13 @@ class MeshSyncService extends ChangeNotifier {
   /// Conflict (409) → re-fetch then publish again with the higher
   /// version. Network failure leaves the cache as-is — the next
   /// [pullAndApply] tick will reconcile (LWW from plan/24 § Q5).
-  Future<MeshPublishResult> publish() async {
+  ///
+  /// [allowEmpty] opts out of the empty-on-existing safety net (see
+  /// [_publishOnce]). Used by the revoke-last-peer flow, which is the
+  /// only legitimate caller of "publish members=[] on top of a
+  /// non-zero version watermark" — every other caller leaves the
+  /// default `false` so the safety net still protects against races.
+  Future<MeshPublishResult> publish({bool allowEmpty = false}) async {
     if (_publishing) {
       return const MeshPublishFailure('already in flight');
     }
@@ -172,7 +178,11 @@ class MeshSyncService extends ChangeNotifier {
     }
     _publishing = true;
     try {
-      return await _publishOnce(pk, refetchOnConflict: true);
+      return await _publishOnce(
+        pk,
+        refetchOnConflict: true,
+        allowEmpty: allowEmpty,
+      );
     } finally {
       _publishing = false;
     }
@@ -181,17 +191,19 @@ class MeshSyncService extends ChangeNotifier {
   Future<MeshPublishResult> _publishOnce(
     Uint8List pk, {
     required bool refetchOnConflict,
+    required bool allowEmpty,
   }) async {
     final peers = await _storage.listPeers();
     // Safety net (plan/24-fix-app-publish-race): never overwrite a
-    // non-empty membership with members=[]. The app has no UX flow for
-    // "revoke every peer at once" — a caller arriving here with an
-    // empty list AND a non-zero version watermark is always a race
-    // (transient PairingStorage state, apply mid-flight, mistaken
-    // Owner-key reset). pi-extension would self-revoke from members=[]
-    // and silently disconnect every Pi the user owns. Refuse loudly
-    // instead of shipping the destructive blob.
-    if (peers.isEmpty && _lastVersion > 0) {
+    // non-empty membership with members=[] UNLESS the caller opted in
+    // via [allowEmpty]. The only legitimate "empty on top of non-zero
+    // version" path is the user revoking their last paired peer
+    // (SettingsViewModel.revoke); every other caller passes
+    // `allowEmpty:false` so we still refuse races (transient
+    // PairingStorage state, apply mid-flight, mistaken Owner-key
+    // reset) that would self-revoke pi-extension on every Pi the user
+    // owns.
+    if (peers.isEmpty && _lastVersion > 0 && !allowEmpty) {
       return const MeshPublishFailure('refused empty-on-existing');
     }
     // Encoding gotcha: `PairingStorage.PeerRecord.remoteEpk` is whatever
@@ -229,7 +241,11 @@ class MeshSyncService extends ChangeNotifier {
       case MeshPublishConflict():
         if (!refetchOnConflict) return result;
         await pullOnDemand();
-        return _publishOnce(pk, refetchOnConflict: false);
+        return _publishOnce(
+          pk,
+          refetchOnConflict: false,
+          allowEmpty: allowEmpty,
+        );
       case MeshPublishBadRequest():
         return result;
       case MeshPublishForbidden():
