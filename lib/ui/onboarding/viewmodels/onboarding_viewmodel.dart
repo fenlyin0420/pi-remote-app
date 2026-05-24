@@ -2,7 +2,6 @@ import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/onboarding/states/onboarding_state.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Owns the 3-step onboarding flow. Pure state machine — the actual
 /// pairing happens via [PairingViewModel] surfaced inside `pair_step.dart`.
@@ -28,10 +27,9 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
         // is allowed — it falls back to the default community relay.
         if (s.relayChoice == RelayChoice.custom &&
             s.customRelayUrl.isNotEmpty) {
-          if (!isValidRelayUrl(s.customRelayUrl)) {
-            emit(s.copyWith(
-              customRelayError: 'URL must start with ws://, wss://, http://, or https://',
-            ));
+          final reason = relayUrlValidationMessage(s.customRelayUrl);
+          if (reason != null) {
+            emit(s.copyWith(customRelayError: reason));
             return;
           }
         }
@@ -46,7 +44,6 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
       case OnboardingStep.pair:
         // Advancing from pair happens via `completePairing` (callback
         // when pair_ok lands). Manual `next()` from pair is a no-op.
-        debugPrint('[onboarding] next() ignored on pair step — use completePairing');
     }
   }
 
@@ -79,10 +76,7 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
   void setCustomRelayUrl(String url) {
     final s = state;
     if (s is! OnboardingInProgress) return;
-    String? error;
-    if (url.isNotEmpty && !isValidRelayUrl(url)) {
-      error = 'URL must start with ws://, wss://, http://, or https://';
-    }
+    final error = url.isEmpty ? null : relayUrlValidationMessage(url);
     emit(s.copyWith(
       customRelayUrl: url,
       customRelayError: error,

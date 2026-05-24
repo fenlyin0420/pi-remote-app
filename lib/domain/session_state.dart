@@ -12,16 +12,39 @@ sealed class ChatMessage {
   const ChatMessage({required this.id});
 }
 
+/// Plan/24-fix-app-source-of-truth: every UserMsg is tagged with the
+/// lifecycle stage of its rebroadcast. `pending` = sent over WS but Pi
+/// hasn't echoed it back yet; `confirmed` = Pi rebroadcast it (or it
+/// came from `session_history` / another device's echo); `failed` =
+/// 15s elapsed without echo, user can retry.
+///
+/// Default is `confirmed` for back-compat — every persisted UserMsg
+/// from before this fix was effectively confirmed (the Pi wasn't
+/// rebroadcasting then, but the local cache treated it as
+/// authoritative).
+enum UserMsgStatus { pending, confirmed, failed }
+
 class UserMsg extends ChatMessage {
   final String text;
-  const UserMsg({required super.id, required this.text});
+  final UserMsgStatus status;
+  const UserMsg({
+    required super.id,
+    required this.text,
+    this.status = UserMsgStatus.confirmed,
+  });
+
+  UserMsg copyWith({UserMsgStatus? status}) =>
+      UserMsg(id: id, text: text, status: status ?? this.status);
 
   @override
   bool operator ==(Object other) =>
-      other is UserMsg && other.id == id && other.text == text;
+      other is UserMsg &&
+      other.id == id &&
+      other.text == text &&
+      other.status == status;
 
   @override
-  int get hashCode => Object.hash(id, text);
+  int get hashCode => Object.hash(id, text, status);
 }
 
 class AssistantMsg extends ChatMessage {

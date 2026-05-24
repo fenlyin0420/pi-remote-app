@@ -1,6 +1,7 @@
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
+import 'package:app/ui/pairing/widgets/paste_qr_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
@@ -33,12 +34,24 @@ class _PairStepState extends State<PairStep> {
     for (final code in capture.barcodes) {
       final raw = code.rawValue;
       if (raw == null) continue;
-      _scannerActive = false;
-      // ignore: unawaited_futures
-      _scanner.stop();
-      vm.onQrScanned(raw);
+      _submitRaw(raw, vm);
       break;
     }
+  }
+
+  /// Shared path between camera scan and manual paste. Disarms the
+  /// scanner so the camera doesn't double-fire if both happen to
+  /// resolve the QR at the same time.
+  void _submitRaw(String raw, PairingViewModel vm) {
+    if (!_scannerActive) return;
+    _scannerActive = false;
+    // ignore: unawaited_futures
+    _scanner.stop();
+    vm.onQrScanned(raw);
+  }
+
+  Future<void> _openPasteSheet(PairingViewModel vm) async {
+    await showPasteQrSheet(context, onSubmit: (raw) => _submitRaw(raw, vm));
   }
 
   @override
@@ -103,7 +116,26 @@ class _PairStepState extends State<PairStep> {
               child: _buildScannerBody(state, vm),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          // Camera-less fallback: paste the QR payload as text.
+          if (state is PairingScanning || state is PairingIdle)
+            TextButton.icon(
+              onPressed: () => _openPasteSheet(vm),
+              icon: const Icon(Icons.content_paste_rounded,
+                  size: 16, color: kAccent),
+              label: const Text(
+                "Can't scan? Paste code instead",
+                style: TextStyle(
+                  fontFamily: kMono,
+                  fontSize: 12,
+                  color: kAccent,
+                ),
+              ),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+            ),
+          const SizedBox(height: 8),
           OutlinedButton(
             onPressed: widget.onBack,
             style: OutlinedButton.styleFrom(

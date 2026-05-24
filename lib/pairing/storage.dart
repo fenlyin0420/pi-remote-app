@@ -171,20 +171,42 @@ class PeerRecord {
 class PairingStorage extends ChangeNotifier {
   final FlutterSecureStorage _store;
 
+  /// Plan 24 — optional fire-and-forget hook that runs after every
+  /// peer mutation (`savePeer` / `deletePeer`). The `MeshSyncService`
+  /// registers this so changes propagate to the relay's
+  /// `mesh_versions` row in the background. Failures of the hook are
+  /// the hook's problem — local mutation is already committed and
+  /// observers were notified by the time the hook fires.
+  ///
+  /// Room mutations are intentionally NOT hooked — rooms are a
+  /// per-device cache, not synced membership.
+  void Function()? _onPeersMutated;
+
   PairingStorage([FlutterSecureStorage? store])
     : _store = store ?? const FlutterSecureStorage();
+
+  /// Plug the mesh-publish callback. The hook fires after the local
+  /// write completes and after [notifyListeners], so UI sees the
+  /// change before the relay does. Pass `null` to detach.
+  void attachPeerMutationHook(void Function()? hook) {
+    _onPeersMutated = hook;
+  }
 
   // ---- Peer records --------------------------------------------------------
 
   String _peerKey(String remoteEpk) => '$_kPeersService:$remoteEpk';
 
   Future<void> savePeer(PeerRecord record) async {
-    await _store.write(
-      key: _peerKey(record.remoteEpk),
-      value: jsonEncode(record.toJson()),
-    );
-    notifyListeners();
+    await _writePeer(record);
+    _onPeersMutated?.call();
   }
+
+  /// Same as [savePeer] but skips the mutation hook. Used by the
+  /// MeshSyncService when applying a verified mesh blob to the local
+  /// cache — without this we'd round-trip back to the relay
+  /// (pull→apply→savePeer→hook→publish) and a race could publish an
+  /// empty members list (see plan/24-fix-app-publish-race).
+  Future<void> savePeerSilent(PeerRecord record) => _writePeer(record);
 
   Future<PeerRecord?> loadPeer(String remoteEpk) async {
     final raw = await _store.read(key: _peerKey(remoteEpk));
@@ -193,6 +215,23 @@ class PairingStorage extends ChangeNotifier {
   }
 
   Future<void> deletePeer(String remoteEpk) async {
+    await _erasePeer(remoteEpk);
+    _onPeersMutated?.call();
+  }
+
+  /// Same as [deletePeer] but skips the mutation hook — see
+  /// [savePeerSilent] for the rationale.
+  Future<void> deletePeerSilent(String remoteEpk) => _erasePeer(remoteEpk);
+
+  Future<void> _writePeer(PeerRecord record) async {
+    await _store.write(
+      key: _peerKey(record.remoteEpk),
+      value: jsonEncode(record.toJson()),
+    );
+    notifyListeners();
+  }
+
+  Future<void> _erasePeer(String remoteEpk) async {
     await _store.delete(key: _peerKey(remoteEpk));
     notifyListeners();
   }

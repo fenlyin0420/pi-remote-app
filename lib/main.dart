@@ -1,4 +1,5 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/session_history_store.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -23,18 +24,47 @@ class RemotePiApp extends StatefulWidget {
   State<RemotePiApp> createState() => _RemotePiAppState();
 }
 
-class _RemotePiAppState extends State<RemotePiApp> {
+class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
   late final _router = buildRouter(
     injector.get<PairingStorage>(),
     injector.get<ConnectionManager>(),
     injector.get<Preferences>(),
     injector.get<OwnerIdentityBridge>(),
+    injector.get<MeshSyncService>(),
   );
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     disposeDependencies();
     super.dispose();
+  }
+
+  /// Plan 24 — keep the mesh poll timer aligned with the app's
+  /// foreground lifecycle. Polling runs ONLY while resumed; in
+  /// inactive/paused/hidden/detached we cancel so we don't drain the
+  /// battery (and we'll resync via `pullOnDemand` on the next resume +
+  /// boot path).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final meshSync = injector.get<MeshSyncService>();
+    switch (state) {
+      case AppLifecycleState.resumed:
+        meshSync.startPolling();
+        // ignore: unawaited_futures
+        meshSync.pullOnDemand();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        meshSync.stopPolling();
+    }
   }
 
   @override

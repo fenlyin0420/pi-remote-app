@@ -157,6 +157,14 @@ class _RelaySectionState extends State<_RelaySection> {
                   hintText: 'Default Relay ($kDefaultRelayUrl)',
                   hintStyle:
                       const TextStyle(fontFamily: kMono, color: kMuted, fontSize: 12),
+                  helperText:
+                      'http(s) only — the app converts to WebSocket '
+                      'internally.',
+                  helperStyle: const TextStyle(
+                    fontFamily: kMono,
+                    fontSize: 10,
+                    color: kMuted,
+                  ),
                   errorText: _error,
                   errorStyle: const TextStyle(
                     fontFamily: kMono,

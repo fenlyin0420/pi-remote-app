@@ -16,7 +16,6 @@
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Convert an epk (possibly base64url from QR/storage) to base64 standard
 /// for wire frames the relay reads. Idempotent — already-standard epks
@@ -29,7 +28,6 @@ String toStandardB64(String b64) {
     final bytes = base64Url.decode(b64 + '=' * pad);
     final out = base64.encode(bytes);
     if (out != b64) {
-      debugPrint('[conn] presence-encoding normalized: $b64 → $out');
     }
     return out;
   } catch (_) {

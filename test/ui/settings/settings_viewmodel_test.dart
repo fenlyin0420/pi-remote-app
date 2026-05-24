@@ -232,10 +232,10 @@ void main() {
       final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
       await Future<void>.delayed(Duration.zero);
 
-      final err = await vm.saveRelayUrl('wss://custom.example');
+      final err = await vm.saveRelayUrl('https://custom.example');
       expect(err, isNull);
-      expect(prefs.relayUrl, 'wss://custom.example');
-      expect(vm.effectiveRelayUrl, 'wss://custom.example');
+      expect(prefs.relayUrl, 'https://custom.example');
+      expect(vm.effectiveRelayUrl, 'https://custom.example');
 
       vm.dispose();
     });
@@ -255,12 +255,27 @@ void main() {
       },
     );
 
+    test('saveRelayUrl rejects ws:// / wss:// with the scheme-specific hint',
+        () async {
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+      await Future<void>.delayed(Duration.zero);
+
+      final err = await vm.saveRelayUrl('wss://relay.example');
+      expect(err, isNotNull);
+      expect(err, contains('ws://'));
+      expect(err, contains('http://'));
+      expect(prefs.relayUrl, isNull);
+
+      vm.dispose();
+    });
+
     test(
       'saveRelayUrl with empty / null clears the override (falls back '
       'to kDefaultRelayUrl via effectiveRelayUrl)',
       () async {
         final prefs = Preferences(_FakeSecureStorage());
-        await prefs.setRelayUrl('wss://x.example');
+        await prefs.setRelayUrl('https://x.example');
         final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
         await Future<void>.delayed(Duration.zero);
 

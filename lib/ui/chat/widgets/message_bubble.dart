@@ -12,20 +12,81 @@ class UserBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Plan/24-fix-app-source-of-truth: render the lifecycle stage of
+    // the bubble. `pending` (sent over WS, Pi hasn't echoed yet) gets
+    // reduced opacity + a small spinner; `failed` (no echo in 15s) gets
+    // a red exclamation badge so the user knows to retry.
+    final isPending = message.status == UserMsgStatus.pending;
+    final isFailed = message.status == UserMsgStatus.failed;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 300),
-        child: Container(
-          decoration: BoxDecoration(
-            color: kUserBubble,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-          child: Text(
-            message.text,
-            style: kSansBody.copyWith(color: kText),
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Opacity(
+              opacity: isPending ? 0.6 : 1.0,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: kUserBubble,
+                  borderRadius: BorderRadius.circular(12),
+                  border: isFailed
+                      ? Border.all(color: Colors.redAccent, width: 1)
+                      : null,
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 10,
+                ),
+                child: Text(
+                  message.text,
+                  style: kSansBody.copyWith(color: kText),
+                ),
+              ),
+            ),
+            if (isPending || isFailed)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, right: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isPending) ...[
+                      const SizedBox(
+                        width: 10,
+                        height: 10,
+                        child: CircularProgressIndicator(
+                          color: kMuted,
+                          strokeWidth: 1.2,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'sending…',
+                        style: kSansBody.copyWith(
+                          color: kMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ] else ...[
+                      const Icon(
+                        Icons.error_outline,
+                        size: 12,
+                        color: Colors.redAccent,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'not delivered',
+                        style: kSansBody.copyWith(
+                          color: Colors.redAccent,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );

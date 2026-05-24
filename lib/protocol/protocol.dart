@@ -413,7 +413,13 @@ sealed class ServerMessage {
       'pong' => Pong.fromJson(json),
       'pair_ok' => PairOk.fromJson(json),
       'pair_error' => PairError.fromJson(json),
-      'user_input' => UserInput.fromJson(json),
+      // Plan/24-fix-app-source-of-truth + follow-up: Pi rebroadcasts
+      // every accepted user_message via this stream. Some Pi-extension
+      // versions emit `type: "user_input"` (mirror of a terminal-side
+      // input), others reuse the original `user_message` type when
+      // echoing back. Treat both as the same payload — `UserInput`
+      // here is the "user-text-arrived" event regardless of origin.
+      'user_input' || 'user_message' => UserInput.fromJson(json),
       'agent_message' => AgentMessage.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
       'bye' => Bye.fromJson(json),

@@ -275,5 +275,31 @@ void main() {
         expect((play.messages.single as UserMsg).text, 'other');
       },
     );
+
+    test(
+      'standard-base64 epk with "/" + "=" does not blow up the file '
+      'path (regression: PathNotFoundException on iOS after mesh '
+      'normalisation made remoteEpk standard-base64 instead of url-safe)',
+      () async {
+        // This epk has both `/` and `=` — the two characters that break
+        // path-based Hive box names. Pre-fix this threw inside `loadFor`
+        // and aborted `_bootstrap` → `requestSync` never ran → empty
+        // history forever.
+        const epk =
+            'Bz02uLiwrmQZ0S8qiwtFJAt0KzUvrgepYO/oMQ6yyQE=';
+        final store = SessionHistoryStore();
+        await store.replaceFor(
+          epk,
+          const [UserMsg(id: 'u1', text: 'hi from standard-b64 epk')],
+          roomId: 'main',
+          sessionStartedAt: 1,
+          lastTs: 10,
+        );
+        final loaded = await store.loadFor(epk, roomId: 'main');
+        expect(loaded.messages, hasLength(1));
+        expect((loaded.messages.single as UserMsg).text,
+            'hi from standard-b64 epk');
+      },
+    );
   });
 }

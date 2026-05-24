@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:app/pairing/storage.dart';
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
+import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:remote_pi_identity/remote_pi_identity.dart';
 
 /// Outcome of a `bridge.boot()` call. The router uses this to decide
@@ -62,23 +62,20 @@ class OwnerIdentityBridge extends ChangeNotifier {
   /// Idempotent — repeated calls are cheap once `_current` is populated.
   Future<OwnerIdentityBootResult> boot() async {
     if (!await _store.isSyncAvailable()) {
-      debugPrint('[owner-bridge] boot: sync UNAVAILABLE');
       return const SyncUnavailableResult();
     }
     try {
       final loaded = await _store.load();
       if (loaded != null) {
         _current = loaded;
-        debugPrint('[owner-bridge] boot: loaded existing identity');
         return IdentityReady(loaded, generated: false);
       }
-    } on IdentityStoreError catch (e) {
-      debugPrint('[owner-bridge] boot: load failed ($e) — treating as fresh');
+    } on IdentityStoreError {
+      // Load failed — fall through and generate a fresh identity.
     }
 
     final generated = await _generateAndSave();
     _current = generated;
-    debugPrint('[owner-bridge] boot: generated NEW identity');
     return IdentityReady(generated, generated: true);
   }
 
@@ -117,21 +114,39 @@ class OwnerIdentityBridge extends ChangeNotifier {
   ///
   /// Same-pk events are dropped — re-saves of identical content (echo
   /// from our own write) shouldn't reset state.
+  ///
+  /// Initial-emit race: both the iOS plugin (`KeychainSyncStore`
+  /// onListen → emitIfChanged) and the Android plugin (initial
+  /// `store.load()` on subscribe) push the current blob to the event
+  /// channel as soon as we `.listen()`. If we subscribed before
+  /// [boot] populated `_current`, that initial emit would look like
+  /// a "different owner_pk" (because current is null) and trigger a
+  /// spurious `wipeAll`. That cleared the freshly-paired peer set,
+  /// and a downstream `_maybeAdoptLegacyRoom` (driven by an incoming
+  /// `room_announced`) would then re-publish v=N+1 with members=[],
+  /// causing the pi-extension to self-revoke ~60s later.
+  ///
+  /// Defence: when `_current` is null at observation time, treat the
+  /// event as the platform's initial-snapshot and *adopt without
+  /// wiping*. The host should also order calls so `startWatching`
+  /// runs after `boot()` whenever possible, but this guard makes the
+  /// bridge correct even when the order is reversed (e.g. router
+  /// boot is fire-and-forget).
   void startWatching({required Future<void> Function() onReset}) {
     _watchSub?.cancel();
     _watchSub = _store.watch().listen((incoming) async {
       final current = _current;
-      if (current != null && _bytesEqual(current.ownerPk, incoming.ownerPk)) {
+      if (current == null) {
+        _current = incoming;
         return;
       }
-      debugPrint(
-        '[owner-bridge] watch: Owner-pk changed via sync — wiping peers',
-      );
+      if (_bytesEqual(current.ownerPk, incoming.ownerPk)) {
+        return;
+      }
       _current = incoming;
       await _pairing.wipeAll();
       await onReset();
     }, onError: (Object e) {
-      debugPrint('[owner-bridge] watch error: $e');
     });
   }
 

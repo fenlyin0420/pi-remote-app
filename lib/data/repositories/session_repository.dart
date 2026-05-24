@@ -18,7 +18,8 @@ import 'package:app/domain/contracts/repository.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:app/protocol/uuid7.dart';
+import 'package:flutter/foundation.dart';
 
 class SessionRepository extends Repository implements ISessionRepository {
   final ConnectionManager _conn;
@@ -44,7 +45,27 @@ class SessionRepository extends Repository implements ISessionRepository {
   int? _lastSessionStartedAt;
   Timer? _syncDebounce;
 
-  SessionRepository(this._conn, this._store) {
+  /// Plan/24-fix-app-source-of-truth: outstanding `UserMessage`s
+  /// awaiting the Pi-side rebroadcast. Keyed by message id. The
+  /// timer fires after [_echoTimeout] and marks the matching UserMsg
+  /// as `failed` so the user can retry. The timer is cancelled
+  /// either by the Pi's echo arriving via [_onServerMessage] or by
+  /// the channel falling offline.
+  final Map<String, Timer> _pendingEchoTimers = {};
+  final Duration _echoTimeout;
+
+  /// Plan/24-fix-session-sync: set when [requestSync] is invoked but
+  /// the channel / active peer are not yet ready (early-return path).
+  /// The next StatusOnline → [_onlineActivated] transition checks this
+  /// and fires the deferred sync. Without it, the chat opens with
+  /// stale cache and never asks the Pi for the latest history (Bug 1).
+  bool _pendingSyncRequest = false;
+
+  SessionRepository(
+    this._conn,
+    this._store, {
+    Duration echoTimeout = const Duration(seconds: 15),
+  }) : _echoTimeout = echoTimeout {
     _connSub = _conn.statusStream.listen(_onStatusChange);
     // The status stream is a plain broadcast (no replay). If the
     // ConnectionManager already emitted `StatusOnline` BEFORE this repo
@@ -56,10 +77,6 @@ class SessionRepository extends Repository implements ISessionRepository {
     //
     // Replay-via-seed: invoke the handler synchronously with the
     // manager's current status so the repo picks up where things are.
-    debugPrint(
-      '[chat-state] SessionRepository ctor seed: '
-      'conn=${_conn.status.runtimeType}',
-    );
     _onStatusChange(_conn.status);
   }
 
@@ -143,18 +160,10 @@ class SessionRepository extends Repository implements ISessionRepository {
   }
 
   Future<void> _hotSwapRoomCache(String epk, String roomId) async {
-    debugPrint(
-      '[chat-state] hotSwap load epk=${_short(epk)} room=$roomId '
-      '(was room=$_activeRoomId)',
-    );
     final cached = await _store.loadFor(epk, roomId: roomId);
     _activeRoomId = roomId;
     _lastSyncedTs = cached.lastTs;
     _lastSessionStartedAt = cached.sessionStartedAt;
-    debugPrint(
-      '[chat-state] hotSwap loaded epk=${_short(epk)} room=$roomId '
-      'messages=${cached.messages.length}',
-    );
     _emit(_state.copyWith(
       messages: cached.messages,
       clearStreaming: true,
@@ -177,10 +186,6 @@ class SessionRepository extends Repository implements ISessionRepository {
     final effectiveRoom = (roomId == null || roomId.isEmpty)
         ? kDefaultRoomId
         : roomId;
-    debugPrint(
-      '[chat-state] setActivePeer load epk=${_short(peer.remoteEpk)} '
-      'room=$effectiveRoom (requested=$roomId)',
-    );
     final cached = await _store.loadFor(
       peer.remoteEpk,
       roomId: effectiveRoom,
@@ -189,33 +194,33 @@ class SessionRepository extends Repository implements ISessionRepository {
     _activeRoomId = effectiveRoom;
     _lastSyncedTs = cached.lastTs;
     _lastSessionStartedAt = cached.sessionStartedAt;
-    debugPrint(
-      '[chat-state] setActivePeer loaded epk=${_short(peer.remoteEpk)} '
-      'room=$effectiveRoom messages=${cached.messages.length} '
-      'lastTs=${cached.lastTs}',
-    );
     _emit(_state.copyWith(
       messages: cached.messages,
       clearStreaming: true,
     ));
   }
 
-  static String _short(String? s) {
-    if (s == null) return '—';
-    return s.length <= 8 ? s : s.substring(0, 8);
-  }
-
   @override
   void requestSync() {
     final ch = _conn.channel;
     final epk = _activeEpk;
-    if (ch == null || epk == null) return;
-    debugPrint('[chat-state] requestSync epk=$epk (mirror)');
+    if (ch == null || epk == null) {
+      // Plan/24-fix-session-sync: don't drop sync requests silently.
+      // Mark the intent so the next StatusOnline transition can fire
+      // it for us. This was Bug 1: ChatViewModel's bootstrap called
+      // requestSync while the channel was still in StatusConnecting
+      // (post-reinstall cold-boot race) and the early return left the
+      // chat with cache-only state forever.
+      _pendingSyncRequest = true;
+      return;
+    }
     // Plan 16 mirror-cache: app does NOT cap the history. Pi decides
     // how many events to return based on its own env config; the app
     // just renders whatever arrives. Pi sets `truncated:true` if it
     // dropped events; we surface that to logs only (D1=B).
-    ch.send(SessionSync(id: _newId()));
+    final syncId = _newId();
+    _pendingSyncRequest = false;
+    ch.send(SessionSync(id: syncId));
   }
 
   // ---------------------------------------------------------------------------
@@ -227,35 +232,102 @@ class SessionRepository extends Repository implements ISessionRepository {
     final msg = UserMessage(id: _newId(), text: text);
     final ch = _conn.channel;
 
-    // Always add the bubble locally — even when the channel is down
-    // (Pi offline, app booting, reconnecting, etc). Without this the
-    // user typing while Pi is `stop`-ed lost every prompt silently.
+    // Plan/24-fix-app-source-of-truth (Option A): Pi is the
+    // source-of-truth for the user_message stream. We still write a
+    // local UserMsg synchronously — but it goes in as `pending`,
+    // rendered with reduced opacity / a spinner, and is promoted to
+    // `confirmed` only when Pi echoes the same id back via the
+    // `user_input` (rebroadcast) frame. Mirrors how the chat already
+    // treats `session_history` arrivals as authoritative.
     //
-    // When the channel IS up, also arm `streaming` so the typing
-    // indicator + input-disabled state behave as before. When it's
-    // down, leave streaming alone so the user can keep typing more
-    // pending messages — AgentDone won't come to clear it anyway.
+    // The bubble persists even when the channel is offline (Pi
+    // stopped, app reconnecting); status stays `pending` and the
+    // echo-timeout will eventually mark it `failed` so the user can
+    // retry without typing again.
+    final initial = UserMsg(
+      id: msg.id,
+      text: text,
+      status: UserMsgStatus.pending,
+    );
+    final next = _state.copyWith(
+      messages: [..._state.messages, initial],
+      streaming: ch != null
+          ? StreamingMessage(inReplyTo: msg.id)
+          : _state.streaming,
+    );
+    _emit(next);
+    unawaited(_persistSnapshot());
     if (ch != null) {
-      debugPrint('[chat-state] sendMessage id=${msg.id}, awaiting → true');
-      _emit(
-        _state.copyWith(
-          messages: [..._state.messages, UserMsg(id: msg.id, text: text)],
-          streaming: StreamingMessage(inReplyTo: msg.id),
-        ),
-      );
-      unawaited(_persistSnapshot());
+      _armEchoTimeout(msg.id);
+      // The only outbound log we keep (alongside its echo counterpart
+      // in `case UserInput`). Together they form the canonical send→
+      // confirm cycle for the optimistic UI.
+      debugPrint('[msg-send] id=${msg.id} text=${_preview(text)}');
       await ch.send(msg);
     } else {
       debugPrint(
-        '[chat-state] sendMessage id=${msg.id}, channel=null → '
-        'held locally as cli_* (no transmit, no streaming indicator)',
+        '[msg-send] id=${msg.id} text=${_preview(text)} (channel offline → held pending)',
       );
-      _emit(
-        _state.copyWith(
-          messages: [..._state.messages, UserMsg(id: msg.id, text: text)],
-        ),
-      );
+    }
+  }
+
+  static String _preview(String s) =>
+      s.length <= 60 ? s : '${s.substring(0, 60)}…';
+
+  /// Schedule the `pending → failed` transition for [id] if Pi's
+  /// rebroadcast doesn't arrive within [_echoTimeout].
+  /// Cancelled either by [_onServerMessage] receiving a matching
+  /// `UserInput`, or by [_clearAllPending] (when the channel drops).
+  void _armEchoTimeout(String id) {
+    _pendingEchoTimers[id]?.cancel();
+    _pendingEchoTimers[id] = Timer(_echoTimeout, () {
+      _pendingEchoTimers.remove(id);
+      final messages = _state.messages;
+      var changed = false;
+      final updated = [
+        for (final m in messages)
+          if (m is UserMsg && m.id == id && m.status == UserMsgStatus.pending)
+            () {
+              changed = true;
+              return m.copyWith(status: UserMsgStatus.failed);
+            }()
+          else
+            m,
+      ];
+      if (!changed) return;
+      _emit(_state.copyWith(messages: updated));
       unawaited(_persistSnapshot());
+    });
+  }
+
+  /// Cancel every outstanding echo timer WITHOUT touching state.
+  /// Called when the channel drops so we don't fire spurious `failed`
+  /// transitions while the app is just waiting for the Pi to come
+  /// back; the pending bubbles stay in state as `pending` until either
+  /// (a) the echo arrives via UserInput / SessionHistory, or (b)
+  /// [_rearmPendingAfterReconnect] schedules a fresh timeout.
+  void _clearAllPending() {
+    if (_pendingEchoTimers.isEmpty) return;
+    for (final t in _pendingEchoTimers.values) {
+      t.cancel();
+    }
+    _pendingEchoTimers.clear();
+  }
+
+  /// Walk current state for `UserMsg(status: pending)` and arm a fresh
+  /// echo timer for each. Invoked from [_onlineActivated] so a reconnect
+  /// gives the Pi another window to rebroadcast the pending message
+  /// before we surrender to `failed`. The bubble survives the reconnect
+  /// visually (still in `pending`) because the user's WS state is the
+  /// model's, not the timer's.
+  void _rearmPendingAfterReconnect() {
+    final pending = _state.messages
+        .whereType<UserMsg>()
+        .where((m) => m.status == UserMsgStatus.pending)
+        .toList(growable: false);
+    if (pending.isEmpty) return;
+    for (final m in pending) {
+      _armEchoTimeout(m.id);
     }
   }
 
@@ -289,7 +361,6 @@ class SessionRepository extends Repository implements ISessionRepository {
   // ---------------------------------------------------------------------------
 
   void _onStatusChange(ConnectionStatus s) {
-    final hadSub = _msgSub != null;
     _msgSub?.cancel();
     _msgSub = null;
 
@@ -297,26 +368,19 @@ class SessionRepository extends Repository implements ISessionRepository {
       _msgSub = s.channel.serverMessages.listen(
         _onServerMessage,
         onDone: () {
-          debugPrint(
-            '[chat-state] _msgSub DONE — channel.serverMessages closed; '
-            'no more inbound until next StatusOnline',
-          );
         },
         onError: (Object e, StackTrace st) {
-          debugPrint('[chat-state] _msgSub ERROR: $e');
         },
-      );
-      debugPrint(
-        '[chat-state] _msgSub subscribed (status=StatusOnline, '
-        'prev_sub=$hadSub) — chat will receive inbound from this channel',
       );
       // ignore: unawaited_futures
       _onlineActivated();
     } else {
-      debugPrint(
-        '[chat-state] _msgSub cancelled (status=${s.runtimeType}, '
-        'prev_sub=$hadSub) — inbound stream is now SILENT until reconnect',
-      );
+      // Plan/24-fix-app-source-of-truth: channel went away — cancel
+      // any echo timers. Without this we'd race the disconnect:
+      // pending UserMsgs would flip to `failed` while the Pi is
+      // simply unreachable (and would echo on reconnect). Leaving
+      // them as `pending` keeps the UI honest until reconnect.
+      _clearAllPending();
     }
     _emit(_state.copyWith(connection: s));
   }
@@ -331,46 +395,32 @@ class SessionRepository extends Repository implements ISessionRepository {
     }
     _syncDebounce?.cancel();
     _syncDebounce = Timer(const Duration(milliseconds: 200), requestSync);
+    // Plan/24-fix-session-sync: if a deferred sync request is queued
+    // (the ChatViewModel asked for it before the channel was open),
+    // honour it now alongside the debounce-scheduled one. requestSync
+    // clears the flag itself when it succeeds.
+    if (_pendingSyncRequest) {
+      requestSync();
+    }
+    // Plan/24-fix-pending: WS is back. Re-arm echo timers for any
+    // UserMsg(pending) that survived the disconnect. Without this,
+    // a transient reconnect leaves the bubble stuck in 'sending…'
+    // forever — no timer to ever flip it to failed, no rebroadcast
+    // expectation set up. The bubble will resolve naturally if the
+    // Pi rebroadcasts during this fresh timeout window; otherwise it
+    // flips to failed as in the no-reconnect path.
+    _rearmPendingAfterReconnect();
   }
 
   void _onServerMessage(ServerMessage msg) {
-    // Plan 17 diagnostic — confirm the pipeline
-    //   WsTransport → PlainPeerChannel → SessionRepository
-    // is delivering. If `[ws-rx] frame ok` is logged but THIS line
-    // is silent, the subscription chain is broken (look for
-    // `_msgSub` cancellation logs around the same timestamp).
-    final peerTag = _activeEpk == null
-        ? '—'
-        : _activeEpk!.length <= 8
-            ? _activeEpk!
-            : _activeEpk!.substring(0, 8);
-    debugPrint(
-      '[chat-state] _onServerMessage IN: type=${msg.runtimeType} '
-      'active_peer=$peerTag active_room=$_activeRoomId',
-    );
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
-        final tail = delta.length > 3
-            ? delta.substring(delta.length - 3)
-            : delta;
-        debugPrint(
-          '[chat-state] AgentChunk in_reply_to=$inReplyTo '
-          "len=${delta.length} tail='$tail'",
-        );
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
         _flushTimer?.cancel();
         _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
 
       case AgentDone(:final inReplyTo):
-        debugPrint(
-          '[chat-state] SessionRepository got AgentDone '
-          'in_reply_to=$inReplyTo, dispatching to chat',
-        );
-        debugPrint(
-          '[chat-state] AgentDone in_reply_to=$inReplyTo, awaiting → false '
-          '(current streaming.in_reply_to=${_state.streaming?.inReplyTo ?? "—"})',
-        );
         _flushTimer?.cancel();
         _flushTimer = null;
         final pendingDelta = _chunkBuffer.toString();
@@ -414,15 +464,51 @@ class SessionRepository extends Repository implements ISessionRepository {
         unawaited(_persistSnapshot());
 
       case UserInput(:final id, :final text):
-        // Dedup against history: if a `session_history` batch already
-        // populated this UserMsg (same id), Pi may also echo it as a
-        // real-time `user_input`. Skip to avoid duplicate bubbles.
-        if (_state.messages.any((m) => m is UserMsg && m.id == id)) {
+        // Plan/24-fix-app-source-of-truth: Pi rebroadcasts every
+        // user_message it accepts (including ones the local device
+        // sent). Three cases:
+        //
+        // 1. We have a `pending` UserMsg with the same id → this is
+        //    the echo we were waiting for. Promote to `confirmed`,
+        //    cancel the echo timer. Don't insert a duplicate.
+        //
+        // 2. We have a `confirmed` UserMsg with the same id (came in
+        //    via session_history earlier) → idempotent skip.
+        //
+        // 3. We've never seen this id → message came from another
+        //    device of the same Owner. Insert as `confirmed` and arm
+        //    the streaming indicator (we expect the agent to reply).
+        final pendingTimer = _pendingEchoTimers.remove(id);
+        pendingTimer?.cancel();
+        final existingIdx =
+            _state.messages.indexWhere((m) => m is UserMsg && m.id == id);
+        if (existingIdx >= 0) {
+          final existing = _state.messages[existingIdx] as UserMsg;
+          if (existing.status == UserMsgStatus.confirmed) {
+            debugPrint('[msg-echo] id=$id source=local-confirmed (noop)');
+            break;
+          }
+          final updated = [..._state.messages];
+          updated[existingIdx] = existing.copyWith(
+            status: UserMsgStatus.confirmed,
+          );
+          // The echo we were waiting for. Pair with the [msg-send]
+          // log emitted in `sendMessage` to follow a single optimistic
+          // bubble's lifecycle in the console.
+          debugPrint('[msg-echo] id=$id source=local-pending → confirmed');
+          _emit(_state.copyWith(messages: updated));
+          unawaited(_persistSnapshot());
           break;
         }
+        debugPrint(
+          '[msg-echo] id=$id source=foreign-device (inserted as confirmed)',
+        );
         _emit(
           _state.copyWith(
-            messages: [..._state.messages, UserMsg(id: id, text: text)],
+            messages: [
+              ..._state.messages,
+              UserMsg(id: id, text: text, status: UserMsgStatus.confirmed),
+            ],
             streaming: StreamingMessage(inReplyTo: id),
           ),
         );
@@ -472,7 +558,6 @@ class SessionRepository extends Repository implements ISessionRepository {
         break;
 
       case Bye(:final rawReason):
-        debugPrint('[chat-state] received bye reason=$rawReason');
         if (!_eventController.isClosed) {
           _eventController.add(PeerWentOffline(rawReason));
         }
@@ -490,13 +575,7 @@ class SessionRepository extends Repository implements ISessionRepository {
           _conn.switchTo(peer);
         }
 
-      case SessionHistory(:final events, :final sessionStartedAt, :final eos):
-        debugPrint(
-          '[chat-state] ← session_history events.len=${events.length} '
-          'session_started_at=$sessionStartedAt eos=$eos '
-          '(cached _lastSessionStartedAt=$_lastSessionStartedAt '
-          '_lastSyncedTs=$_lastSyncedTs)',
-        );
+      case SessionHistory():
         // ignore: unawaited_futures
         _applyHistory(msg);
 
@@ -531,25 +610,56 @@ class SessionRepository extends Repository implements ISessionRepository {
     _lastSessionStartedAt = h.sessionStartedAt;
     _lastSyncedTs = maxTs;
 
+    // Plan/24-fix-pending: cancel echo timers for any pending UserMsg
+    // whose id Pi has now acknowledged via history. The history's
+    // copy of that message is `confirmed` by default (constructed by
+    // _convertHistory), so the visual state flips automatically when
+    // we emit the new messages list; we just need to release the
+    // timer so it can't fire later and overwrite with `failed`.
+    final convertedIds = <String>{
+      for (final m in converted)
+        if (m is UserMsg) m.id,
+    };
+    var resolvedFromHistory = 0;
+    for (final id in convertedIds) {
+      final t = _pendingEchoTimers.remove(id);
+      if (t != null) {
+        t.cancel();
+        resolvedFromHistory++;
+      }
+    }
+    // Plan/24-fix-pending: PRESERVE local pending UserMsgs whose ids
+    // are NOT in Pi's history view. They were sent locally between
+    // our last sync watermark and now; the Pi hasn't echoed them yet
+    // (in-flight, transient disconnect, etc). Dropping them here used
+    // to make the bubble vanish on every sync. Re-emit a merged list
+    // (history first, then survivors in insertion order).
+    final preservedPending = [
+      for (final m in _state.messages)
+        if (m is UserMsg &&
+            m.status == UserMsgStatus.pending &&
+            !convertedIds.contains(m.id))
+          m,
+    ];
+    final merged = preservedPending.isEmpty
+        ? converted
+        : [...converted, ...preservedPending];
+
     // Plan 16 mirror-cache: state.messages = Pi's view exactly.
     // `truncated` is captured for logs only (D1=B).
-    debugPrint(
-      '[chat-state] _applyHistory: REPLACE epk=${_short(_activeEpk)} '
-      'room=$_activeRoomId converted.len=${converted.length} '
-      'existing.len=${_state.messages.length} eos=${h.eos} '
-      'truncated=${h.truncated}',
-    );
-    _emit(_state.copyWith(messages: converted, clearStreaming: false));
+    if (resolvedFromHistory > 0 || preservedPending.isNotEmpty) {
+    }
+    _emit(_state.copyWith(messages: merged, clearStreaming: false));
 
     final epk = _activeEpk;
     if (epk != null) {
-      debugPrint(
-        '[chat-state] _applyHistory persist epk=${_short(epk)} '
-        'room=$_activeRoomId messages=${converted.length}',
-      );
+      // Persist the merged view so a cold restart still shows pending
+      // bubbles — they'll be re-armed in _onlineActivated as soon as
+      // the WS comes back. UserMsgStatus is serialized
+      // (session_history_store.dart) so `pending` round-trips.
       await _store.replaceFor(
         epk,
-        converted,
+        merged,
         roomId: _activeRoomId,
         sessionStartedAt: h.sessionStartedAt,
         lastTs: _lastSyncedTs,
@@ -557,11 +667,6 @@ class SessionRepository extends Repository implements ISessionRepository {
     }
 
     if (h.eos) {
-      debugPrint(
-        '[chat-state] session_history sync complete (eos) '
-        'session_started_at=${h.sessionStartedAt} last_ts=$_lastSyncedTs '
-        'truncated=${h.truncated}',
-      );
     }
   }
 
@@ -618,19 +723,12 @@ class SessionRepository extends Repository implements ISessionRepository {
   Future<void> _persistSnapshot() async {
     final epk = _activeEpk;
     if (epk == null) {
-      debugPrint(
-        '[chat-state] persistSnapshot SKIPPED — no active peer',
-      );
       return;
     }
     // Persist current state to Hive. Pointers (`_lastSessionStartedAt`,
     // `_lastSyncedTs`) are only advanced by `_applyHistory` when actual
     // events arrive; here we just snapshot the rendered message list
     // so a reload-from-cold shows the same view.
-    debugPrint(
-      '[chat-state] persistSnapshot epk=${_short(epk)} '
-      'room=$_activeRoomId messages=${_state.messages.length}',
-    );
     await _store.replaceFor(
       epk,
       _state.messages,
@@ -700,12 +798,20 @@ class SessionRepository extends Repository implements ISessionRepository {
     _syncDebounce?.cancel();
     _connSub?.cancel();
     _msgSub?.cancel();
+    _clearAllPending();
     _conn.dispose();
     _stateController.close();
     _eventController.close();
     _workingController.close();
   }
 
-  static int _counter = 0;
-  static String _newId() => 'cli_${++_counter}';
+  /// Generate a globally-unique client message id. Prefix `cli_`
+  /// preserved for back-compat with existing tests / consumers that
+  /// distinguish app-originated ids from Pi-side ones; the UUIDv7
+  /// tail makes the id collision-free across devices of the same
+  /// Owner (was: per-instance counter, which collided when iPhone
+  /// and Android both produced `cli_4` independently — the Pi
+  /// rebroadcast would prematurely confirm the wrong device's
+  /// pending bubble).
+  static String _newId() => 'cli_${uuid7()}';
 }

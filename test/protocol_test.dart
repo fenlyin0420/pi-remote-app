@@ -195,6 +195,20 @@ void main() {
       expect(msg.text, 'listar arquivos modificados');
     });
 
+    test(
+      'Server-emitted "user_message" is treated as UserInput (Pi rebroadcast '
+      'echo — plan/24-fix-app-source-of-truth follow-up)',
+      () {
+        final msg = decodeServer(
+          '{"type":"user_message","id":"cli_42","text":"hello"}',
+        );
+        expect(msg, isA<UserInput>());
+        final ui = msg as UserInput;
+        expect(ui.id, 'cli_42');
+        expect(ui.text, 'hello');
+      },
+    );
+
     test('PairRequest encodes correctly', () {
       final msg = PairRequest(
         id: '018f9c3a-0000-7000-9a3b-1c2d3e4f5a01',

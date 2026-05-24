@@ -15,7 +15,6 @@ import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/protocol/codec.dart';
 // ControlInbound + IControlLink come from these.
 import 'package:app/protocol/protocol.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 
 class PeerChannelError implements Exception {
   final String message;
@@ -98,35 +97,20 @@ class PlainPeerChannel implements IChannel, IControlLink {
   }
 
   void _handleFrame(Uint8List bytes) {
-    String? line;
     try {
-      line = utf8.decode(bytes);
-      final msg = decodeServer(line);
-      debugPrint('[ws-rx] frame ok type=${msg.runtimeType} bytes=${bytes.length}');
+      final msg = decodeServer(utf8.decode(bytes));
       if (!_controller.isClosed) _controller.add(msg);
-    } on UnsupportedTypeException catch (e) {
+    } on UnsupportedTypeException {
       // Forward-compat: surface unknown server types as ErrorMessage.
-      debugPrint('[ws-rx] unsupported_type: $e (preview=${_preview(line)})');
       if (!_controller.isClosed) {
         _controller.add(
           ErrorMessage(code: 'unsupported_type', message: 'unknown server type'),
         );
       }
-    } catch (e, st) {
-      // Was: silently dropped. Surfacing because we suspect session_history
-      // (and similar protocol frames with nested objects) is being lost
-      // here when a cast fails — bug hunt. Remove once green.
-      debugPrint(
-        '[ws-rx] decode ERROR: $e\n'
-        '       preview=${_preview(line)}\n'
-        '       stack=${st.toString().split("\n").take(3).join(" | ")}',
-      );
+    } catch (_) {
+      // Malformed frame — drop silently. Previous diagnostic logging
+      // for cast / decode errors lived here; we trust upstream codecs
+      // now that the channel pipeline is stable.
     }
-  }
-
-  static String _preview(String? line) {
-    if (line == null) return '<utf8-decode-failed>';
-    const cap = 240;
-    return line.length <= cap ? line : '${line.substring(0, cap)}…';
   }
 }

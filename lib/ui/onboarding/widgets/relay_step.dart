@@ -327,9 +327,17 @@ class _CustomRelayCard extends StatelessWidget {
                   ),
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: kDefaultRelayUrl,
+                    hintText: 'https://my-relay.com',
                     hintStyle:
                         const TextStyle(fontFamily: kMono, color: kMuted),
+                    helperText:
+                        'http(s) only — the app converts to WebSocket '
+                        'internally.',
+                    helperStyle: const TextStyle(
+                      fontFamily: kMono,
+                      fontSize: 10,
+                      color: kMuted,
+                    ),
                     errorText: error,
                     errorStyle: const TextStyle(
                       fontFamily: kMono,

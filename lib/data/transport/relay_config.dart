@@ -6,6 +6,14 @@
 //   1. `prefs.relayUrl` (user override, set via Settings or onboarding)
 //   2. `kDefaultRelayUrl` (the public community relay)
 //
+// Canonical scheme on storage is `http://` or `https://` — this is
+// the form the user types and what we keep in Preferences. The WebSocket
+// transport calls [toWsRelayUrl] right before opening the socket; the
+// mesh HTTP client uses the URL as-is. The legacy `ws://` / `wss://`
+// schemes are NOT accepted on input — the app is pre-release and
+// historical persisted values get re-set by the user during the
+// onboarding gate.
+//
 // `peer.relayUrl` is kept on PeerRecord for legacy QR code payloads but
 // is no longer consulted when opening a connection — the resolution is
 // global, not per-peer.
@@ -16,37 +24,52 @@ import 'package:app/data/preferences/preferences.dart';
 /// to keep the onboarding flow deterministic.
 const String kDefaultRelayUrl = 'https://relay-rp1.jacobmoura.work';
 
+/// User-facing message returned when [isValidRelayUrl] rejects a value.
+/// Surfaced verbatim by Settings and Onboarding — keep stable for
+/// localization later. Empty input gets a more generic message; the
+/// ws/wss case is called out explicitly so the user understands the
+/// app does the conversion internally.
+const String kRelayUrlInvalidScheme =
+    'Use http:// or https:// (not ws:// or wss:// — the app converts '
+    'to WebSocket automatically).';
+
+const String kRelayUrlInvalidGeneric =
+    'Enter a valid URL starting with https:// (or http:// for local '
+    'relays).';
+
 /// Returns the effective relay URL the app should connect to.
 /// Falls back to [kDefaultRelayUrl] when no user override is set.
+/// Always returns an `http(s)://` URL — caller is responsible for
+/// applying [toWsRelayUrl] when opening a WebSocket.
 String resolveRelayUrl(Preferences prefs) =>
     prefs.relayUrl ?? kDefaultRelayUrl;
 
-/// Normalises any accepted relay URL into the WebSocket form expected by
-/// the underlying transport. `http://` and `https://` are translated to
-/// `ws://` and `wss://` respectively; `ws://` and `wss://` are returned
-/// unchanged. The caller is expected to have validated the URL via
-/// [isValidRelayUrl] first.
+/// Translates the canonical HTTP-form relay URL into the WebSocket
+/// form expected by the underlying transport. `https://` → `wss://`,
+/// `http://` → `ws://`. Pre-existing `ws(s)://` URLs (legacy QR
+/// payloads, old peer records) pass through unchanged so the relay
+/// mismatch check in `pair_request_flow` can still compare them.
 String toWsRelayUrl(String url) {
   if (url.startsWith('https://')) return 'wss://${url.substring(8)}';
   if (url.startsWith('http://')) return 'ws://${url.substring(7)}';
   return url;
 }
 
-/// Validates a candidate relay URL.
+/// Validates a candidate relay URL the user typed into Settings or
+/// the onboarding form.
 ///
 /// Rules:
 /// - Non-empty.
-/// - Scheme must be `ws://`, `wss://`, `http://`, or `https://`.
+/// - Scheme must be `http://` or `https://`. Returns `false` (with the
+///   ws/wss-specific reason via [relayUrlValidationMessage]) for the
+///   legacy `ws://` / `wss://` schemes — the app converts internally.
 /// - Must be parseable by `Uri.parse` AND yield a non-empty `host`.
-///
-/// Returns `true` if the URL is acceptable. Use this in the Settings
-/// form and during onboarding step 2 before writing to [Preferences].
 bool isValidRelayUrl(String url) {
   if (url.isEmpty) return false;
-  if (!url.startsWith('ws://') &&
-      !url.startsWith('wss://') &&
-      !url.startsWith('http://') &&
-      !url.startsWith('https://')) {
+  if (url.startsWith('ws://') || url.startsWith('wss://')) {
+    return false;
+  }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return false;
   }
   final Uri uri;
@@ -57,4 +80,17 @@ bool isValidRelayUrl(String url) {
   }
   if (uri.host.isEmpty) return false;
   return true;
+}
+
+/// Returns the user-facing rejection message for [url]. Returns `null`
+/// when the URL is valid. Distinguishes the ws/wss case (specific
+/// hint about internal conversion) from generic invalid scheme /
+/// malformed input.
+String? relayUrlValidationMessage(String url) {
+  if (url.isEmpty) return kRelayUrlInvalidGeneric;
+  if (url.startsWith('ws://') || url.startsWith('wss://')) {
+    return kRelayUrlInvalidScheme;
+  }
+  if (isValidRelayUrl(url)) return null;
+  return kRelayUrlInvalidGeneric;
 }

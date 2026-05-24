@@ -8,7 +8,6 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 
 /// ChatViewModel — owns the chat connection lifecycle.
 ///
@@ -33,6 +32,14 @@ class ChatViewModel extends ViewModel<ChatState> {
   bool _roomLive = false;
   bool _bootstrapping = true;
   bool _disposed = false;
+  /// Plan/24-fix-session-sync: tracks whether we've asked the Pi for
+  /// session_history during the current StatusOnline window. We reset
+  /// it whenever the channel drops so a fresh reconnect always
+  /// re-syncs. Belt-and-suspenders for the case where `_bootstrap`'s
+  /// own requestSync raced the channel coming up — `_onSession` will
+  /// fire one as soon as it sees StatusOnline for the first time.
+  bool _didRequestSync = false;
+  ConnectionStatus? _lastSeenConnection;
 
   /// Active room metadata (name, cwd, etc) for the AppBar title.
   /// Refreshed on every rooms snapshot. `null` until first snapshot.
@@ -62,11 +69,45 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   ChatViewModel(this._repo, this._prefs, this._storage)
     : super(const ChatConnecting()) {
+    // Seed _activeRoomId from prefs synchronously so the very first
+    // _onSession (seeded below) and _onRooms emissions can already
+    // evaluate isRoomLive against the room the user actually picked,
+    // not the default 'main'. _activePeer follows in _bootstrap once
+    // we've loaded the PeerRecord from storage.
+    final seedRoomId = _prefs.selectedRoomId;
+    if (seedRoomId != null && seedRoomId.isNotEmpty) {
+      _activeRoomId = seedRoomId;
+    }
     _sub = _repo.sessionStream.listen(_onSession);
     _eventSub = _repo.eventStream.listen(_onEvent);
     _roomsSub = _repo.roomsStream.listen(_onRooms);
+    // Seed the chat surface from the repo's CURRENT state before
+    // `_bootstrap` runs. `SessionRepository` is instantiated lazily
+    // by the injector — typically when /home builds its
+    // HomeViewModel, which is well before /chat opens. By the time
+    // ChatViewModel is constructed the repo's `_state.connection` is
+    // often already `StatusOnline`, but the broadcast emit happened
+    // before this listener was attached, so the listener would never
+    // see it. Reading `_repo.current` synchronously here closes that
+    // gap — the user no longer sees a "Connecting…" splash on /chat
+    // entry while the WS is in fact alive.
+    _onSession(_repo.current);
     // ignore: unawaited_futures
     _bootstrap();
+  }
+
+  /// Recompute the room-live flag from the live `ConnectionManager`
+  /// state. Called from every `_onSession` so a status transition
+  /// (Connecting → Online) flips presence even when no `roomsStream`
+  /// event accompanied it. Without this, the cached `_roomLive=false`
+  /// from the initial seed survives the transition and the chat keeps
+  /// rendering "offline" until the next `room_announced` from the Pi
+  /// (which only happens spontaneously when the Pi reacts to a
+  /// terminal command — exactly the symptom the user reported).
+  void _refreshRoomLive() {
+    final epk = _activePeer?.remoteEpk ?? _prefs.selectedPeerEpk;
+    if (epk == null) return;
+    _roomLive = _repo.isRoomLive(epk, _activeRoomId);
   }
 
   // ---------------------------------------------------------------------------
@@ -77,16 +118,13 @@ class ChatViewModel extends ViewModel<ChatState> {
     final epk = _prefs.selectedPeerEpk;
     final roomId = _prefs.selectedRoomId ?? 'main';
     if (epk == null) {
-      debugPrint('[chat-state] bootstrap: no selectedPeerEpk → ChatNoPeer');
       _bootstrapping = false;
       emit(const ChatNoPeer());
       return;
     }
-    debugPrint('[chat-state] bootstrap: target peer=$epk room=$roomId');
     final peer = await _storage.loadPeer(epk);
     if (_disposed) return;
     if (peer == null) {
-      debugPrint('[chat-state] bootstrap: selectedPeerEpk=$epk not in storage');
       _bootstrapping = false;
       emit(const ChatNoPeer());
       return;
@@ -94,10 +132,6 @@ class ChatViewModel extends ViewModel<ChatState> {
     _activePeer = peer;
     _activeRoomId = roomId;
     _roomLive = _repo.isRoomLive(peer.remoteEpk, roomId);
-    debugPrint(
-      '[chat-state] bootstrap: peer=${peer.remoteEpk} room=$roomId '
-      'live=$_roomLive',
-    );
     // Plan 17 — make sure the destination room id is propagated to
     // ConnectionManager / WS transport on cold start (Home's
     // openSession already does this when the user taps a tile; this
@@ -119,11 +153,9 @@ class ChatViewModel extends ViewModel<ChatState> {
     final cur = _repo.activePeer;
     final alreadyDriving = cur?.remoteEpk == peer.remoteEpk;
     if (!alreadyDriving) {
-      debugPrint('[chat-state] bootstrap: openSession (peer switch needed)');
       await _repo.openSession(peer);
       if (_disposed) return;
     } else {
-      debugPrint('[chat-state] bootstrap: already driving target peer');
     }
 
     // Seed from the repo's current snapshot so the view leaves
@@ -142,9 +174,6 @@ class ChatViewModel extends ViewModel<ChatState> {
   // ---------------------------------------------------------------------------
 
   Future<void> sendMessage(String text) {
-    debugPrint(
-      '[chat-state] ChatViewModel.sendMessage text.len=${text.length}',
-    );
     return _repo.sendMessage(text);
   }
 
@@ -158,7 +187,6 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<void> reconnect() async {
     final peer = _activePeer;
     if (peer == null) return;
-    debugPrint('[chat-state] manual reconnect epk=${peer.remoteEpk}');
     _peerOfflineReason = null;
     _bootstrapping = true;
     emit(const ChatConnecting());
@@ -170,32 +198,53 @@ class ChatViewModel extends ViewModel<ChatState> {
   // ---------------------------------------------------------------------------
 
   void _onSession(SessionState s) {
+    // Plan/24-fix-session-sync (follow-up): the SessionRepository's
+    // own `_onlineActivated` debounce sometimes never reaches us —
+    // the bootstrap race put `_activeEpk=null` at the moment of the
+    // first StatusOnline emit (it gets set later by setActivePeer),
+    // so `_onlineActivated` early-returned (`if (peer == null)`).
+    // Belt-and-suspenders: every time the chat viewmodel observes a
+    // Connecting/whatever → StatusOnline edge, ask for a sync
+    // ourselves. `_didRequestSync` keeps it one-per-online-window;
+    // a channel drop resets the flag so reconnects also re-sync.
+    final prevConn = _lastSeenConnection;
+    final isOnlineNow = s.connection is StatusOnline;
+    final wasOnline = prevConn is StatusOnline;
+    if (isOnlineNow && !wasOnline) {
+      _didRequestSync = false; // fresh online window
+    }
+    if (!isOnlineNow && wasOnline) {
+      _didRequestSync = false; // dropped — next online retriggers
+    }
+    if (isOnlineNow && !_didRequestSync) {
+      _didRequestSync = true;
+      _repo.requestSync();
+    }
+    _lastSeenConnection = s.connection;
+
     final cur = state;
     final wasStreaming =
         cur is ChatReady && cur.streaming != null;
     final isStreaming = s.streaming != null;
     if (wasStreaming != isStreaming) {
-      debugPrint(
-        '[chat-state] ChatViewModel streaming transition: '
-        '$wasStreaming → $isStreaming '
-        '(in_reply_to=${s.streaming?.inReplyTo ?? "—"})',
-      );
     }
     if (_bootstrapping && s.connection is! StatusNoPeer) {
       _bootstrapping = false;
     }
+    // Re-check _roomLive against the connection manager's live view
+    // every time we re-render. A Connecting→Online transition arrives
+    // here via the session stream, but `isRoomLive` only flips its
+    // own answer once status is Online — so the stale `_roomLive=false`
+    // captured during bootstrap would otherwise survive the
+    // transition and keep the chat "offline" until the next
+    // room_announced. See `_refreshRoomLive` for the full rationale.
+    _refreshRoomLive();
     final next = _toChat(
       s,
       _pairingRevoked,
       _peerOfflineReason,
       _roomLive,
       _bootstrapping,
-    );
-    debugPrint(
-      '[chat-state] _onSession emit: '
-      '${next.runtimeType} (conn=${s.connection.runtimeType} '
-      'msgs=${s.messages.length} streaming=${s.streaming != null} '
-      'bootstrapping=$_bootstrapping)',
     );
     emit(next);
   }
@@ -233,21 +282,13 @@ class ChatViewModel extends ViewModel<ChatState> {
     if (next == _roomLive) return;
     final wasLive = _roomLive;
     _roomLive = next;
-    debugPrint(
-      '[chat-state] room live transition: $wasLive → $next '
-      '(peer=$epk room=$_activeRoomId)',
-    );
 
     // Auto-recovery: room just came back online — clear the sticky
     // banner from a previous Bye and ask Pi for the latest history.
     if (next && !wasLive) {
       if (_peerOfflineReason != null) {
-        debugPrint(
-          '[chat-state] room back live → clearing offlineReason banner',
-        );
         _peerOfflineReason = null;
       }
-      debugPrint('[chat-state] room back live → triggering requestSync');
       _repo.requestSync();
     }
 

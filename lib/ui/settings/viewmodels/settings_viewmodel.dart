@@ -4,7 +4,6 @@ import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Settings is config-only (nickname + revoke). The peer switcher moved
 /// to Home; the connection itself is shared and owned by
@@ -68,13 +67,10 @@ class SettingsViewModel extends ViewModel<SettingsState> {
     if (trimmed == null || trimmed.isEmpty) {
       await _prefs.setRelayUrl(null);
     } else {
-      if (!isValidRelayUrl(trimmed)) {
-        return 'URL must start with ws://, wss://, http://, or https://';
-      }
+      final reason = relayUrlValidationMessage(trimmed);
+      if (reason != null) return reason;
       await _prefs.setRelayUrl(trimmed);
     }
-    final after = resolveRelayUrl(_prefs);
-    debugPrint('[settings] saveRelayUrl → restarting WS against $after');
     await _conn.disconnect();
     // Fire-and-forget; boot resolves the URL fresh via the production
     // connect factory (`resolveRelayUrl(prefs)`), so the new endpoint

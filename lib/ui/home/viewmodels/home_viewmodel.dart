@@ -145,12 +145,28 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// `roomId='main'` when the caller doesn't supply one (legacy /
   /// pre-room-announce). Also flips the ConnectionManager's active
   /// room so subsequent sends carry the right outer envelope.
+  ///
+  /// Plan-24 follow-up: when the peer record in storage has no
+  /// `roomId` yet (post-mesh-restore: the mesh blob doesn't carry
+  /// per-device room data, so `PeerRecord.roomId` is null until the
+  /// relay announces the room and `ConnectionManager._maybeAdoptLegacyRoom`
+  /// catches up), persist the tapped roomId on the PeerRecord too.
+  /// Without this, the next cold-start reads `peer.roomId=null` →
+  /// `ConnectionManager._connect` falls back to room `'main'` → Pi
+  /// never sees the frame → ChatViewModel sits on Connecting/offline
+  /// even though the WS is alive.
   Future<void> openSession(String epk, {String? roomId}) async {
     final peers = await _storage.listPeers();
     if (_disposed) return;
-    if (!peers.any((p) => p.remoteEpk == epk)) return;
+    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
+    if (match.isEmpty) return;
+    final peer = match.first!;
     final effectiveRoom = (roomId == null || roomId.isEmpty) ? 'main' : roomId;
     await _prefs.setSelectedRoom(epk: epk, roomId: effectiveRoom);
+    if (peer.roomId != effectiveRoom) {
+      // ignore: unawaited_futures
+      _storage.savePeer(peer.copyWith(roomId: effectiveRoom));
+    }
     // Tell the manager which Pi-side room to address. Safe to call
     // even if the manager is mid-connect (room is applied on the next
     // send and any active StatusOnline channel).

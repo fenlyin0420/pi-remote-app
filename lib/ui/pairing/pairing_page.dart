@@ -1,6 +1,7 @@
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
+import 'package:app/ui/pairing/widgets/paste_qr_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -31,11 +32,21 @@ class _PairingPageState extends State<PairingPage> {
     if (!_scannerActive) return;
     final raw = capture.barcodes.firstOrNull?.rawValue;
     if (raw == null) return;
+    _submitRaw(raw);
+  }
 
+  /// Common path for any QR payload — same whether it came from the
+  /// camera (`_onDetect`) or the manual paste sheet. Disarms the
+  /// scanner so we don't double-fire if the camera also catches it.
+  void _submitRaw(String raw) {
+    if (!_scannerActive) return;
     setState(() => _scannerActive = false);
     _scanner.stop();
-
     context.read<PairingViewModel>().onQrScanned(raw);
+  }
+
+  Future<void> _openPasteSheet() async {
+    await showPasteQrSheet(context, onSubmit: _submitRaw);
   }
 
   @override
@@ -100,7 +111,7 @@ class _PairingPageState extends State<PairingPage> {
         ),
         if (!isConnecting) ..._cornerBrackets(),
         Positioned(
-          bottom: 48,
+          bottom: isConnecting ? 48 : 110,
           left: 0,
           right: 0,
           child: Text(
@@ -111,6 +122,33 @@ class _PairingPageState extends State<PairingPage> {
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
         ),
+        if (!isConnecting)
+          Positioned(
+            bottom: 32,
+            left: 32,
+            right: 32,
+            child: OutlinedButton.icon(
+              onPressed: _openPasteSheet,
+              icon: const Icon(Icons.content_paste_rounded,
+                  size: 16, color: kAccent),
+              label: const Text(
+                "Can't scan? Paste code instead",
+                style: TextStyle(
+                  color: kAccent,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                backgroundColor: Colors.black54,
+                side: const BorderSide(color: kAccent, width: 1),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(8)),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

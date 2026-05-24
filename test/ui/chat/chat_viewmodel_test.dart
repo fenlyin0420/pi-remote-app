@@ -519,7 +519,14 @@ void main() {
           storage: _FakeStorage({'epk_A': _peerA}),
           seedRepoState: SessionState(connection: StatusOnline(ch)),
         );
-        expect(s.repo.requestSyncCalls, 1,
+        // Plan/24-fix-session-sync (follow-up): the bootstrap calls
+        // requestSync once; the ChatViewModel's Online-edge detector
+        // (in _onSession) also fires one when the first seed emit
+        // arrives with StatusOnline. Either path on its own is enough
+        // to recover the history — coexisting is harmless (Pi is
+        // idempotent on session_sync) and gives us belt-and-suspenders
+        // against bootstrap races.
+        expect(s.repo.requestSyncCalls, greaterThanOrEqualTo(1),
             reason:
                 'session_sync would never fire on its own when '
                 'switchTo no-ops — bootstrap must force it');

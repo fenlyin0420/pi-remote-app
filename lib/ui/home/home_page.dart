@@ -1,5 +1,6 @@
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
+import 'package:app/protocol/protocol.dart' show RoomInfo;
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -273,7 +274,8 @@ class HomePage extends StatelessWidget {
           isReconnecting: isReconnecting,
           isWorking: isWorking,
           room: it.room,
-          onOpen: () => _open(context, vm, it.peer.remoteEpk, it.room.roomId),
+          onOpen: () =>
+              _open(context, vm, it.peer, it.room),
           onLongPress: () =>
               _showSessionMenu(context, vm, it, isLive: isLive),
         ),
@@ -409,10 +411,33 @@ class HomePage extends StatelessWidget {
   }
 
   static Future<void> _open(
-      BuildContext context, HomeViewModel vm, String epk, String roomId) async {
-    await vm.openSession(epk, roomId: roomId);
+    BuildContext context,
+    HomeViewModel vm,
+    PeerRecord peer,
+    RoomInfo room,
+  ) async {
+    await vm.openSession(peer.remoteEpk, roomId: room.roomId);
     if (!context.mounted) return;
-    context.push('/chat');
+    // Plan/24-fix-title: hand Chat the peer label we already know
+    // here, so its AppBar doesn't show '—' / 'Remote Pi' until the
+    // ChatViewModel finishes loading the PeerRecord + the first
+    // room_meta_updated arrives. Prefer room.name (per-cwd title)
+    // when available so the AppBar can show "remote_pi/site" instead
+    // of "Mac do Jacob" right away.
+    final roomCwdTail = room.cwd
+        ?.split('/')
+        .where((s) => s.isNotEmpty)
+        .lastOrNull;
+    final title = (room.name?.isNotEmpty ?? false)
+        ? room.name!
+        : (roomCwdTail != null && roomCwdTail.isNotEmpty)
+            ? roomCwdTail
+            : (peer.nickname?.isNotEmpty ?? false)
+                ? peer.nickname!
+                : peer.sessionName.isNotEmpty
+                    ? peer.sessionName
+                    : peer.remoteEpk.substring(0, 8);
+    context.push('/chat', extra: {'title': title});
   }
 }
 

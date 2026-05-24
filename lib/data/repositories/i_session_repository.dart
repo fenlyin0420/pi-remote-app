@@ -1,4 +1,5 @@
 import 'package:app/data/transport/channel.dart';
+import 'package:app/domain/contracts/repository.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -24,7 +25,7 @@ class PeerWentOffline extends SessionEvent {
 }
 
 /// Abstract session repository — injectable for tests.
-abstract class ISessionRepository {
+abstract class ISessionRepository extends Repository {
   SessionState get current;
   Stream<SessionState> get sessionStream;
 
@@ -36,6 +37,7 @@ abstract class ISessionRepository {
   Future<void> sendMessage(String text);
   Future<void> cancel(String targetId);
   Future<void> approveTool(String toolCallId, ApproveDecision decision);
+  @override
   void dispose();
 
   /// Transfer a live channel established by the pairing flow so the

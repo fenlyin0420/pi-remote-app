@@ -14,7 +14,14 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 class ChatPage extends StatelessWidget {
-  const ChatPage({super.key});
+  /// Plan/24-fix-title: optional title hint passed via `go_router`
+  /// `extra` from the Home tile. Used as the peer-label fallback in
+  /// the AppBar so the user sees the right name *immediately* on
+  /// navigation, instead of "—" / "Remote Pi" until the PeerRecord
+  /// is loaded by the ViewModel and the first `room_meta_updated`
+  /// arrives.
+  final String? initialTitle;
+  const ChatPage({super.key, this.initialTitle});
 
   @override
   Widget build(BuildContext context) {
@@ -60,8 +67,12 @@ class ChatPage extends StatelessWidget {
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
 
-    final roomName = _roomDisplayName(room, state);
-    final peerLabel = _peerDisplayName(peer);
+    // Plan/24-fix-title: pass the navigation hint into the helpers so
+    // either line of the AppBar (room or peer) shows it instead of
+    // the generic placeholders when the ViewModel hasn't finished
+    // bootstrapping yet.
+    final roomName = _roomDisplayName(room, state, initialTitle);
+    final peerLabel = _peerDisplayName(peer, initialTitle);
 
     return Container(
       height: 56,
@@ -161,7 +172,11 @@ class ChatPage extends StatelessWidget {
     );
   }
 
-  static String _roomDisplayName(RoomInfo? room, ChatState state) {
+  static String _roomDisplayName(
+    RoomInfo? room,
+    ChatState state,
+    String? initialTitle,
+  ) {
     if (room != null) {
       if (room.name != null && room.name!.isNotEmpty) return room.name!;
       final cwd = room.cwd;
@@ -173,11 +188,21 @@ class ChatPage extends StatelessWidget {
     if (state is ChatReady && state.messages.isNotEmpty) {
       return _inferSessionName(state.messages);
     }
+    // Plan/24-fix-title: Home knows the peer label before /chat
+    // mounts; use it instead of the generic 'Remote Pi' placeholder
+    // while we wait for the first room_meta_updated to populate
+    // `room.name`.
+    if (initialTitle != null && initialTitle.isNotEmpty) return initialTitle;
     return 'Remote Pi';
   }
 
-  static String _peerDisplayName(PeerRecord? peer) {
-    if (peer == null) return '—';
+  static String _peerDisplayName(PeerRecord? peer, String? initialTitle) {
+    if (peer == null) {
+      // Plan/24-fix-title: while the ViewModel hasn't loaded the
+      // PeerRecord yet, fall back to whatever Home passed us.
+      if (initialTitle != null && initialTitle.isNotEmpty) return initialTitle;
+      return '—';
+    }
     if (peer.nickname != null && peer.nickname!.isNotEmpty) {
       return peer.nickname!;
     }

@@ -9,10 +9,10 @@
 // the JSON in plaintext (transparent to PeerTransport implementations).
 
 import 'dart:convert';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:app/data/transport/relay_config.dart';
+import 'package:app/protocol/uuid7.dart';
 
 import 'qr_scanner.dart';
 import 'storage.dart';
@@ -85,7 +85,7 @@ Future<PeerRecord> performPairing({
     // routing is symbolic there, so no harm done.
   }
 
-  final id = _uuid7();
+  final id = uuid7();
   final req = {
     'type': 'pair_request',
     'id': id,
@@ -157,32 +157,3 @@ Future<PeerRecord> performPairingWithRelay(
 // ignore: unused_element
 void _keepRelayConfigImport() => resolveRelayUrl;
 
-// ---------------------------------------------------------------------------
-// UUIDv7 — random-based, sufficient for inner correlation IDs.
-// Layout: 48-bit unix_ts_ms | ver=7 | 12-bit rand_a | variant=10 | 62-bit rand_b
-// ---------------------------------------------------------------------------
-
-final _rng = Random.secure();
-
-String _uuid7() {
-  final ms = DateTime.now().millisecondsSinceEpoch;
-  final bytes = Uint8List(16);
-
-  bytes[0] = (ms >> 40) & 0xff;
-  bytes[1] = (ms >> 32) & 0xff;
-  bytes[2] = (ms >> 24) & 0xff;
-  bytes[3] = (ms >> 16) & 0xff;
-  bytes[4] = (ms >> 8) & 0xff;
-  bytes[5] = ms & 0xff;
-
-  for (var i = 6; i < 16; i++) {
-    bytes[i] = _rng.nextInt(256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x70; // version 7
-  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-
-  String hex(int b) => b.toRadixString(16).padLeft(2, '0');
-  final h = bytes.map(hex).join();
-  return '${h.substring(0, 8)}-${h.substring(8, 12)}-'
-      '${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}';
-}

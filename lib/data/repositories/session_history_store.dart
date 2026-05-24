@@ -23,6 +23,7 @@
 
 import 'dart:async';
 
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
@@ -70,13 +71,28 @@ class SessionHistoryStore {
 
   // Plan 17 — keys now include the room id. Default room is 'main',
   // which preserves single-cwd Pis from earlier versions.
+  //
+  // Plan/24-fix-app-source-of-truth (encoding regression): the box
+  // name is used by Hive as the filename on disk. Once PeerRecord
+  // started carrying base64-STANDARD epks (after the mesh-publish
+  // encoding normalization), the `/` and `=` characters in
+  // `peer.remoteEpk` produced paths like
+  // `session_Bz02uLi.../OMq6yyqe=__main.hive` — the embedded `/`
+  // makes Hive try to create a subdirectory that doesn't exist
+  // (`PathNotFoundException` on iOS), which threw inside
+  // `setActivePeer` and aborted `_bootstrap` before it could call
+  // `requestSync` (that was Bug 1 — never seen `session_sync` in
+  // the logs because `_bootstrap` died on the cache load). Sanitise
+  // the epk to its filename-safe form (url-safe base64, no padding)
+  // before composing the box name. `toAppEpk` is idempotent on
+  // already-url-safe input, so legacy caches continue to load.
   String _boxName(String epk, String roomId) =>
-      '$_kBoxPrefix$epk$_kRoomSeparator$roomId';
+      '$_kBoxPrefix${toAppEpk(epk)}$_kRoomSeparator$roomId';
 
   /// Legacy (pre-plan-17) box name — keyed by epk only. Still read on
   /// first `loadFor(epk, 'main')` so users don't lose their offline
   /// view on upgrade.
-  String _legacyBoxName(String epk) => '$_kBoxPrefix$epk';
+  String _legacyBoxName(String epk) => '$_kBoxPrefix${toAppEpk(epk)}';
 
   Future<Box<dynamic>> _open(String epk, String roomId) =>
       Hive.openBox<dynamic>(_boxName(epk, roomId));
@@ -227,8 +243,8 @@ class SessionHistoryStore {
 
 Map<String, dynamic> _messageToJson(ChatMessage m) {
   return switch (m) {
-    UserMsg(:final id, :final text) =>
-      {'kind': 'user', 'id': id, 'text': text},
+    UserMsg(:final id, :final text, :final status) =>
+      {'kind': 'user', 'id': id, 'text': text, 'status': status.name},
     AssistantMsg(:final id, :final text) =>
       {'kind': 'assistant', 'id': id, 'text': text},
     ToolEvent(
@@ -255,7 +271,16 @@ Map<String, dynamic> _messageToJson(ChatMessage m) {
 
 ChatMessage? _messageFromJson(Map<String, dynamic> j) {
   return switch (j['kind'] as String?) {
-    'user' => UserMsg(id: j['id'] as String, text: j['text'] as String),
+    'user' => UserMsg(
+        id: j['id'] as String,
+        text: j['text'] as String,
+        // Back-compat: persisted UserMsgs pre-`status` field are
+        // implicitly `confirmed`.
+        status: UserMsgStatus.values.firstWhere(
+          (s) => s.name == j['status'],
+          orElse: () => UserMsgStatus.confirmed,
+        ),
+      ),
     'assistant' => AssistantMsg(
         id: j['id'] as String,
         text: j['text'] as String,

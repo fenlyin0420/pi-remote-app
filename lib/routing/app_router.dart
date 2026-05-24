@@ -1,4 +1,5 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
@@ -25,18 +26,33 @@ class _BootState extends ChangeNotifier {
   bool _hasPeer = false;
   bool _onboarded = false;
   bool _syncAvailable = true;
+  bool _identityWasGenerated = false;
 
   bool get ready => _ready;
   bool get hasPeer => _hasPeer;
   bool get onboarded => _onboarded;
   bool get syncAvailable => _syncAvailable;
 
+  /// True when this run is the very first time the Owner key materialised
+  /// on this account (the bridge just generated it). Restored identities
+  /// — anything coming back from iCloud Keychain / Block Store, including
+  /// the "reinstalled the app on the same device" case where the platform
+  /// re-hands the previous key — set this to false.
+  ///
+  /// Drives the redirect: only fresh identities **and** an empty peer
+  /// list get sent to the onboarding stepper; everything else lands on
+  /// /home (which itself shows a friendly "pair your first Pi" state
+  /// when peers is empty).
+  bool get identityWasGenerated => _identityWasGenerated;
+
   Future<void> load(
     PairingStorage storage,
     ConnectionManager conn,
     Preferences prefs,
     OwnerIdentityBridge ownerBridge,
-  ) async {
+    MeshSyncService meshSync, {
+    void Function()? installWatcherAfterBoot,
+  }) async {
     await prefs.load();
 
     // Plan 23 — block bootstrap until the platform's key-sync surface
@@ -52,6 +68,21 @@ class _BootState extends ChangeNotifier {
       return;
     }
     _syncAvailable = true;
+    _identityWasGenerated =
+        ownerResult is IdentityReady && ownerResult.generated;
+
+    // Install the platform-sync watcher *after* boot completes so its
+    // initial-emit race (see OwnerIdentityBridge.startWatching) can't
+    // ever observe a null _current. The bridge has its own defence
+    // for the null case; this is the belt to its suspenders.
+    installWatcherAfterBoot?.call();
+
+    // Plan 24 — pull mesh_versions from the relay BEFORE listing peers
+    // so a reinstall on a new device materialises the same membership
+    // the user had on the old one. Failure (offline, relay down, 4xx)
+    // is logged inside the service and we fall back gracefully on the
+    // local cache.
+    await meshSync.pullOnDemand();
 
     final peers = await storage.listPeers();
     _hasPeer = peers.isNotEmpty;
@@ -100,19 +131,51 @@ GoRouter buildRouter(
   ConnectionManager conn,
   Preferences prefs,
   OwnerIdentityBridge ownerBridge,
+  MeshSyncService meshSync,
 ) {
   final boot = _BootState();
-  boot.load(storage, conn, prefs, ownerBridge);
 
   // Plan 23 — watch for Owner-key drift on the sync surface. When the
   // platform delivers a different keypair (restored on a new device,
   // user wiped and re-installed elsewhere), the bridge wipes peers/rooms
   // and we reset the boot state so the router redirects through /boot.
-  ownerBridge.startWatching(onReset: () async {
-    await conn.disconnect();
-    boot.onOwnerKeyReplaced();
-    await boot.load(storage, conn, prefs, ownerBridge);
-  });
+  // Plan 24 — reset the mesh version watermark too, otherwise the
+  // first fetch against the new Owner-pk would use a stale `since`.
+  //
+  // Hook is captured here but only installed AFTER boot() succeeds —
+  // see _BootState.load's `installWatcherAfterBoot` parameter. That
+  // ordering matters: the platform plugin emits an initial blob the
+  // moment we subscribe; we must have `_current` populated by boot()
+  // first, otherwise the bridge would see "different owner_pk" (vs
+  // null) and wipe the freshly-loaded peer set.
+  var watcherInstalled = false;
+  void installWatcher() {
+    if (watcherInstalled) return;
+    watcherInstalled = true;
+    ownerBridge.startWatching(
+      onReset: () async {
+        await conn.disconnect();
+        meshSync.resetVersionWatermark();
+        boot.onOwnerKeyReplaced();
+        await boot.load(storage, conn, prefs, ownerBridge, meshSync);
+      },
+    );
+  }
+
+  boot.load(
+    storage,
+    conn,
+    prefs,
+    ownerBridge,
+    meshSync,
+    installWatcherAfterBoot: installWatcher,
+  );
+
+  // Plan 24 — start foreground polling. The router doesn't have
+  // direct access to AppLifecycleState; main.dart wires
+  // [MeshSyncService.startPolling/stopPolling] to the lifecycle so
+  // this initial start covers the "app launched in foreground" case.
+  meshSync.startPolling();
 
   return GoRouter(
     initialLocation: '/boot',
@@ -125,28 +188,24 @@ GoRouter buildRouter(
       if (!boot.syncAvailable) {
         return state.uri.path == '/sync-required' ? null : '/sync-required';
       }
-      if (state.uri.path == '/sync-required') {
-        return boot.hasPeer ? '/home' : '/onboarding';
-      }
-      if (state.uri.path == '/boot') {
-        // No peer == no app surface to render. Always route to
-        // /onboarding when peers are empty — this covers both the
-        // first-install case AND the "user revoked everything"
-        // case. The `onboardingCompleted` flag is preserved for
-        // analytics / migration purposes but no longer gates the
-        // redirect (was confusing: after revoke the app would land
-        // on a near-empty /home with just a Scan QR button instead
-        // of the full onboarding).
-        return boot.hasPeer ? '/home' : '/onboarding';
+      // Onboarding stepper only runs on a truly fresh install — when
+      // the Owner key was generated this run AND there is no
+      // membership to inherit. Restored identities (iCloud Keychain /
+      // Block Store handed us back the key, including the
+      // "reinstalled on the same device" case) skip straight to home,
+      // even if peers are empty. Home has a first-pair empty state
+      // that covers that case more cleanly than re-running the welcome
+      // wizard a second time.
+      final shouldOnboard = boot.identityWasGenerated && !boot.hasPeer;
+      final target = shouldOnboard ? '/onboarding' : '/home';
+      if (state.uri.path == '/sync-required' || state.uri.path == '/boot') {
+        return target;
       }
       return null;
     },
     routes: [
       // Splash while boot.load() is in flight
-      GoRoute(
-        path: '/boot',
-        builder: (ctx, st) => const _BootSplash(),
-      ),
+      GoRoute(path: '/boot', builder: (ctx, st) => const _BootSplash()),
 
       // Plan 23 — first-launch gate when iCloud Keychain / Google
       // Backup is off. Sticky route: redirect keeps the user here
@@ -159,19 +218,15 @@ GoRouter buildRouter(
       // Home — list of paired sessions, entry point post-boot
       GoRoute(
         path: '/home',
-        builder: (ctx, st) => MultiProvider(
-          providers: [ViewmodelProvider<HomeViewModel>()],
-          child: const HomePage(),
-        ),
+        builder: (ctx, st) =>
+            ViewmodelProvider<HomeViewModel>(child: const HomePage()),
       ),
 
       // QR pairing flow
       GoRoute(
         path: '/pair',
-        builder: (ctx, st) => MultiProvider(
-          providers: [ViewmodelProvider<PairingViewModel>()],
-          child: const PairingPage(),
-        ),
+        builder: (ctx, st) =>
+            ViewmodelProvider<PairingViewModel>(child: const PairingPage()),
       ),
 
       // Onboarding (plan 14) — 3-step flow shown when the app has
@@ -189,22 +244,33 @@ GoRouter buildRouter(
         ),
       ),
 
-      // Chat screen (entered by tapping a session in /home)
+      // Chat screen (entered by tapping a session in /home).
+      // Plan/24-fix-title: Home passes the already-known peer label
+      // (nickname / sessionName) via `extra` so the AppBar renders
+      // the right title from frame 1 instead of waiting for the
+      // first `room_meta_updated` to arrive. Keeps reactivity to
+      // room metadata changes that come later through the
+      // ChatViewModel.
       GoRoute(
         path: '/chat',
-        builder: (ctx, st) => MultiProvider(
-          providers: [ViewmodelProvider<ChatViewModel>()],
-          child: const ChatPage(),
-        ),
+        builder: (ctx, st) {
+          final extra = st.extra;
+          String? initialTitle;
+          if (extra is Map) {
+            final t = extra['title'];
+            if (t is String && t.isNotEmpty) initialTitle = t;
+          }
+          return ViewmodelProvider<ChatViewModel>(
+            child: ChatPage(initialTitle: initialTitle),
+          );
+        },
       ),
 
       // Settings (entered from /home menu)
       GoRoute(
         path: '/settings',
-        builder: (ctx, st) => MultiProvider(
-          providers: [ViewmodelProvider<SettingsViewModel>()],
-          child: const SettingsPage(),
-        ),
+        builder: (ctx, st) =>
+            ViewmodelProvider<SettingsViewModel>(child: const SettingsPage()),
       ),
     ],
   );

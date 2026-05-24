@@ -20,7 +20,6 @@ import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -86,63 +85,27 @@ class WsTransport implements PeerTransport, IControlLink {
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
-            final senderRoomFmt = senderRoom == null
-                ? 'absent'
-                : senderRoom.length > 16
-                    ? '${senderRoom.substring(0, 16)}…'
-                    : senderRoom;
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
             // AgentChunks for a chat the user just left bleed into
-            // the chat they're now viewing (singleton _state.streaming
-            // gets contaminated). When senderRoom doesn't match the
-            // currently-addressed Pi cwd, drop the payload. The
-            // missed messages get reconciled via session_sync the
-            // next time the user enters that room.
-            //
-            // Legacy Pis that don't carry `room` (senderRoom == null)
-            // are still routed through unconditionally — same
-            // behaviour as before the room demux landed.
+            // the chat they're now viewing. When senderRoom doesn't
+            // match the currently-addressed Pi cwd, drop the payload.
+            // Legacy Pis without `room` route unconditionally.
             if (senderRoom != null && senderRoom != transport._activeRoom) {
-              debugPrint(
-                '[ws-raw] envelope DROPPED room-mismatch '
-                'peer=${(frame['peer'] as String).substring(0, 8)}… '
-                'sender_room=$senderRoomFmt '
-                'active_room=${transport._activeRoom} '
-                'ct.bytes=${bytes.length} '
-                '(reconciled via session_sync on next visit)',
-              );
               return;
             }
-            debugPrint(
-              '[ws-raw] envelope peer=${(frame['peer'] as String).substring(0, 8)}… '
-              'sender_room=$senderRoomFmt ct.bytes=${bytes.length}',
-            );
             transport._queue.add(bytes);
             return;
           }
           // Control: top-level `type` only → presence stream.
           final ctrl = ControlInbound.tryFromJson(frame);
           if (ctrl != null && !transport._controlController.isClosed) {
-            debugPrint('[ws-raw] control type=${frame['type']}');
             transport._controlController.add(ctrl);
             return;
           }
-          // Anything else: unknown shape. Was silently dropped — surface
-          // it so we can diagnose "session_history nunca chegou" cases.
-          final rawStr = raw.toString();
-          final preview =
-              rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
-          debugPrint('[ws-raw] UNKNOWN frame shape: $preview');
-        } catch (e, st) {
-          // Was silently dropped → kept us blind to malformed payloads.
-          final rawStr = raw.toString();
-          final preview =
-              rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
-          debugPrint(
-            '[ws-raw] decode ERROR: $e | preview=$preview '
-            '| stack=${st.toString().split("\n").take(2).join(" | ")}',
-          );
+          // Anything else: unknown shape — drop silently.
+        } catch (_) {
+          // Malformed payload — drop.
         }
       },
       onError: (e) {
@@ -210,29 +173,13 @@ class WsTransport implements PeerTransport, IControlLink {
   /// 'main' room itself (that's what we sent in `hello.room_id`).
   void setActiveRoom(String room) {
     if (room == _activeRoom) {
-      debugPrint(
-        '[ws-tx] setActiveRoom no-op (already $_activeRoom)',
-      );
       return;
     }
-    debugPrint('[ws-tx] setActiveRoom $_activeRoom → $room');
     _activeRoom = room;
   }
 
   @override
   Future<void> send(Uint8List data) async {
-    // Peek the inner JSON to log the outbound message type — helpful
-    // when chasing "why didn't this reach Pi" issues.
-    String typePeek = '?';
-    try {
-      final inner = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-      typePeek = inner['type']?.toString() ?? '?';
-    } catch (_) {/* keep '?' */}
-    debugPrint(
-      '[ws-tx] type=$typePeek bytes=${data.length} '
-      'peer=${_peerPubkey.isEmpty ? "?" : "${_peerPubkey.substring(0, 8)}…"} '
-      'room=$_activeRoom',
-    );
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'room': _activeRoom,

@@ -110,13 +110,13 @@ void main() {
         final s = await _setup();
         s.vm.next(); // → relay
         s.vm.setRelayChoice(RelayChoice.custom);
-        s.vm.setCustomRelayUrl('wss://my-relay.example');
+        s.vm.setCustomRelayUrl('https://my-relay.example');
         s.vm.next();
         expect((s.vm.state as OnboardingInProgress).step, OnboardingStep.pair);
         // setRelayUrl is await-able but called fire-and-forget inside
         // the VM. Give the microtask a tick.
         await Future<void>.delayed(Duration.zero);
-        expect(s.prefs.relayUrl, 'wss://my-relay.example');
+        expect(s.prefs.relayUrl, 'https://my-relay.example');
       },
     );
 
@@ -148,8 +148,31 @@ void main() {
         s.vm.setCustomRelayUrl('');
         expect((s.vm.state as OnboardingInProgress).customRelayError, isNull);
 
-        s.vm.setCustomRelayUrl('ws://localhost');
+        s.vm.setCustomRelayUrl('https://localhost');
         expect((s.vm.state as OnboardingInProgress).customRelayError, isNull);
+      },
+    );
+
+    test(
+      'setCustomRelayUrl flags ws:// and wss:// with the scheme-specific '
+      'hint about internal conversion',
+      () async {
+        final s = await _setup();
+        s.vm.next();
+        s.vm.setRelayChoice(RelayChoice.custom);
+
+        s.vm.setCustomRelayUrl('ws://localhost');
+        final err1 =
+            (s.vm.state as OnboardingInProgress).customRelayError;
+        expect(err1, isNotNull);
+        expect(err1, contains('ws://'));
+        expect(err1, contains('http://'));
+
+        s.vm.setCustomRelayUrl('wss://relay.example');
+        final err2 =
+            (s.vm.state as OnboardingInProgress).customRelayError;
+        expect(err2, isNotNull);
+        expect(err2, contains('ws://'));
       },
     );
 

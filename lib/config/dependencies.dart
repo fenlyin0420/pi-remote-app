@@ -1,7 +1,10 @@
 import 'dart:async';
 
 import 'package:app/config/utils/injector.dart';
+import 'package:app/data/mesh/mesh_client.dart';
+import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/repositories/i_session_repository.dart';
 import 'package:app/data/repositories/session_history_store.dart';
 import 'package:app/data/repositories/session_repository.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
@@ -43,11 +46,32 @@ Future<void> setupDependencies() async {
   // between it and the rest of the app, owning boot + watch-for-reset.
   final OwnerIdentityStore ownerStore = MethodChannelOwnerIdentityStore();
   _injector.addInstance<OwnerIdentityStore>(ownerStore);
-  _injector.addInstance<OwnerIdentityBridge>(
-    OwnerIdentityBridge(ownerStore, _injector.get<PairingStorage>()),
+  final ownerBridge = OwnerIdentityBridge(
+    ownerStore,
+    _injector.get<PairingStorage>(),
   );
+  _injector.addInstance<OwnerIdentityBridge>(ownerBridge);
 
-  // ConnectionManager — production factory wired here.
+  // Plan 24 — mesh_versions HTTP client + sync service. Base URL is
+  // the user-configured relay verbatim (always http(s):// per the
+  // post-Wave-2 URL scheme decision — see plan/24-fix-app-url-scheme).
+  // No translation needed: the relay's `/mesh` endpoint shares host +
+  // port with the WebSocket.
+  final meshClient = MeshClient(baseUrlProvider: () => resolveRelayUrl(prefs));
+  _injector.addInstance<MeshClient>(meshClient);
+  final meshSync = MeshSyncService(
+    meshClient,
+    ownerBridge,
+    _injector.get<PairingStorage>(),
+  );
+  _injector.addInstance<MeshSyncService>(meshSync);
+  _injector.get<PairingStorage>().attachPeerMutationHook(() {
+    // ignore: unawaited_futures
+    meshSync.publish();
+  });
+
+  // ConnectionManager — factory function injected manually (function typedefs
+  // cannot be resolved by auto_injector via Type.new).
   _injector.addService<ConnectionManager>(
     () => ConnectionManager(
       factory: _productionConnectionFactory,
@@ -56,48 +80,22 @@ Future<void> setupDependencies() async {
   );
 
   // Repositories
-  _injector.addRepository<SessionRepository>(
-    () => SessionRepository(
-      _injector.get<ConnectionManager>(),
-      _injector.get<SessionHistoryStore>(),
-    ),
-  );
+  _injector.addRepository<ISessionRepository>(SessionRepository.new);
 
   // ViewModels
-  _injector.addViewModel<ChatViewModel>(
-    () => ChatViewModel(
-      _injector.get<SessionRepository>(),
-      _injector.get<Preferences>(),
-      _injector.get<PairingStorage>(),
-    ),
-  );
-  _injector.addViewModel<HomeViewModel>(
-    () => HomeViewModel(
-      _injector.get<PairingStorage>(),
-      _injector.get<Preferences>(),
-      _injector.get<ConnectionManager>(),
-      _injector.get<SessionRepository>(),
-    ),
-  );
-  _injector.addViewModel<SettingsViewModel>(
-    () => SettingsViewModel(
-      _injector.get<PairingStorage>(),
-      _injector.get<Preferences>(),
-      _injector.get<ConnectionManager>(),
-    ),
-  );
+  _injector.addViewModel<ChatViewModel>(ChatViewModel.new);
+  _injector.addViewModel<HomeViewModel>(HomeViewModel.new);
+  _injector.addViewModel<SettingsViewModel>(SettingsViewModel.new);
   _injector.addViewModel<PairingViewModel>(
     () => PairingViewModel(
       _injector.get<PairingStorage>(),
       _productionPairingTransportFactory,
-      _injector.get<SessionRepository>(),
+      _injector.get<ISessionRepository>(),
       _injector.get<Preferences>(),
       _injector.get<OwnerIdentityBridge>(),
     ),
   );
-  _injector.addViewModel<OnboardingViewModel>(
-    () => OnboardingViewModel(_injector.get<Preferences>()),
-  );
+  _injector.addViewModel<OnboardingViewModel>(OnboardingViewModel.new);
 
   _injector.commit();
 }
@@ -130,17 +128,18 @@ Future<IChannel> _productionConnectionFactory(
   // `peer.relayUrl` is kept on PeerRecord for legacy QR payloads but is
   // no longer consulted when opening a connection.
   final relayUrl = resolveRelayUrl(_injector.get<Preferences>());
-  final transport = await WsTransport.connect(
-    relayUrl: relayUrl,
-    peerPubkey: peer.remoteEpk,
-    ed25519Key: ownerKey,
-  ).timeout(
-    wsConnectTimeout,
-    onTimeout: () => throw TimeoutException(
-      'WS connect to $relayUrl timed out after '
-      '${wsConnectTimeout.inSeconds}s',
-    ),
-  );
+  final transport =
+      await WsTransport.connect(
+        relayUrl: relayUrl,
+        peerPubkey: peer.remoteEpk,
+        ed25519Key: ownerKey,
+      ).timeout(
+        wsConnectTimeout,
+        onTimeout: () => throw TimeoutException(
+          'WS connect to $relayUrl timed out after '
+          '${wsConnectTimeout.inSeconds}s',
+        ),
+      );
 
   if (cancel.isCancelled) {
     await transport.close();

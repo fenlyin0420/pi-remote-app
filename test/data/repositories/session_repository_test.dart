@@ -54,13 +54,21 @@ class _FakeStorage extends PairingStorage {
 int _epkCounter = 0;
 
 Future<({SessionRepository repo, ConnectionManager cm, _FakeChannel ch})>
-    _setup({SessionHistoryStore? store, String? epkOverride}) async {
+    _setup({
+  SessionHistoryStore? store,
+  String? epkOverride,
+  Duration echoTimeout = const Duration(seconds: 15),
+}) async {
   final ch = _FakeChannel();
   final cm = ConnectionManager(
     factory: (_, _) async => ch,
     storage: _FakeStorage(),
   );
-  final repo = SessionRepository(cm, store ?? SessionHistoryStore());
+  final repo = SessionRepository(
+    cm,
+    store ?? SessionHistoryStore(),
+    echoTimeout: echoTimeout,
+  );
   final epk = epkOverride ?? 'epk_${++_epkCounter}';
   cm.adopt(ch, PeerRecord(
     remoteEpk: epk,
@@ -688,9 +696,22 @@ void main() {
         final ids = s.repo.current.messages
             .map((m) => (m as dynamic).id as String)
             .toList();
-        expect(ids, ['local_a', 'local_a', 'local_b', 'local_b'],
-            reason: 'cli_* tentatives must be upgraded in place; no dups');
-        expect(s.repo.current.messages, hasLength(4));
+        // Plan/24-fix-session-sync-and-pending: under the new
+        // source-of-truth contract, the locally-sent cli_* message
+        // is `pending` until Pi echoes it BY ITS ID. When the Pi's
+        // SessionHistory uses a different id (`local_b`), it does
+        // NOT confirm cli_*; the bubble survives the history merge
+        // as pending. Caller will see local_a/local_b confirmed
+        // (Pi's view) plus the unconfirmed cli_* hanging around
+        // until echo timeout flips it to failed.
+        expect(
+          ids.sublist(0, 4),
+          ['local_a', 'local_a', 'local_b', 'local_b'],
+          reason: "Pi's confirmed history is mirrored at the head",
+        );
+        expect(ids.length, 5,
+            reason: 'cli_* pending survives merge — Pi did not ack its id');
+        expect(ids.last.startsWith('cli_'), isTrue);
 
         s.repo.dispose();
       },
@@ -752,9 +773,21 @@ void main() {
         final ids = s.repo.current.messages
             .map((m) => (m as dynamic).id as String)
             .toList();
-        // First "ok" tentative → X1; second "ok" tentative → X2.
-        expect(ids, ['X1', 'X1', 'X2', 'X2']);
-        expect(s.repo.current.messages, hasLength(4));
+        // Plan/24-fix-session-sync-and-pending: with source-of-truth,
+        // cli_* pending bubbles survive the merge because Pi's
+        // SessionHistory used different ids (X1/X2). The Pi-confirmed
+        // view sits at the head; the two unconfirmed cli_* tail.
+        // Echo-timeout would eventually flip them to failed if Pi
+        // never rebroadcasts them with their original cli_* id.
+        expect(
+          ids.sublist(0, 4),
+          ['X1', 'X1', 'X2', 'X2'],
+          reason: "Pi's confirmed history is mirrored at the head",
+        );
+        expect(ids.length, 6,
+            reason: 'both cli_* pendings survive merge — id mismatch');
+        expect(ids[4].startsWith('cli_'), isTrue);
+        expect(ids[5].startsWith('cli_'), isTrue);
 
         s.repo.dispose();
       },
@@ -983,13 +1016,29 @@ void main() {
         ));
         await Future<void>.delayed(const Duration(milliseconds: 30));
 
-        // Mirror: state must EQUAL Pi\'s view exactly. Local round-trip
-        // is overwritten.
-        final ids = s.repo.current.messages
-            .map((m) => (m as dynamic).id as String)
-            .toList();
-        expect(ids, ['pi_u1', 'pi_u1']);
-        expect(s.repo.current.messages, hasLength(2));
+        // Plan/24-fix-session-sync-and-pending: mirror is now
+        // "Pi's confirmed view, with locally-pending bubbles
+        // preserved at the tail". The local round-trip's UserMsg
+        // is `pending` (never confirmed by Pi via UserInput echo
+        // with cli_* id), so it survives the merge alongside the
+        // Pi-supplied entries. AssistantMsg for the local round-
+        // trip IS dropped (no longer in Pi's view + not pending).
+        final msgs = s.repo.current.messages;
+        // Head reflects Pi's confirmed slice exactly.
+        expect((msgs[0] as UserMsg).id, 'pi_u1');
+        expect((msgs[0] as UserMsg).status, UserMsgStatus.confirmed);
+        expect((msgs[1] as AssistantMsg).id, 'pi_u1');
+        // Tail keeps the local pending UserMsg (id starts with cli_).
+        final tail = msgs.skip(2).toList();
+        expect(tail, hasLength(1));
+        expect(
+          tail.single,
+          isA<UserMsg>().having(
+            (m) => m.status,
+            'status',
+            UserMsgStatus.pending,
+          ),
+        );
 
         s.repo.dispose();
       },
@@ -1055,6 +1104,276 @@ void main() {
         expect(s.repo.current.messages, hasLength(2));
         expect((s.repo.current.messages[0] as UserMsg).text, 'q');
         expect((s.repo.current.messages[1] as AssistantMsg).text, 'a');
+
+        s.repo.dispose();
+      },
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan/24-fix-app-source-of-truth — UserMsg pending → confirmed flow.
+  // The app inserts the bubble in `pending`; Pi rebroadcasts via
+  // `user_input`; arrival flips the status to `confirmed`. No echo →
+  // failed after 15s.
+  // ---------------------------------------------------------------------------
+
+  group('SessionRepository — user_message pending/confirm', () {
+    test('sendMessage inserts UserMsg with status=pending', () async {
+      final s = await _setup();
+
+      await s.repo.sendMessage('hi');
+      await Future<void>.delayed(Duration.zero);
+
+      final msgs = s.repo.current.messages.whereType<UserMsg>().toList();
+      expect(msgs, hasLength(1));
+      expect(msgs.single.text, 'hi');
+      expect(msgs.single.status, UserMsgStatus.pending);
+
+      s.repo.dispose();
+    });
+
+    test(
+      'Pi echo via UserInput with same id flips pending → confirmed '
+      '(no duplicate bubble)',
+      () async {
+        final s = await _setup();
+
+        await s.repo.sendMessage('hello');
+        final id = _lastUserMessage(s.ch).id;
+        expect(
+          (s.repo.current.messages.whereType<UserMsg>().single).status,
+          UserMsgStatus.pending,
+        );
+
+        // Pi rebroadcasts the user_message it accepted.
+        s.ch.push(UserInput(id: id, text: 'hello'));
+        await Future<void>.delayed(Duration.zero);
+
+        final msgs = s.repo.current.messages.whereType<UserMsg>().toList();
+        expect(msgs, hasLength(1),
+            reason: 'echo must not insert a second bubble');
+        expect(msgs.single.status, UserMsgStatus.confirmed);
+
+        s.repo.dispose();
+      },
+    );
+
+    test(
+      'UserInput from foreign device (unknown id) appends a confirmed '
+      'UserMsg + arms streaming',
+      () async {
+        final s = await _setup();
+
+        s.ch.push(UserInput(id: 'foreign_42', text: 'from iPhone'));
+        await Future<void>.delayed(Duration.zero);
+
+        final msgs = s.repo.current.messages.whereType<UserMsg>().toList();
+        expect(msgs.single.id, 'foreign_42');
+        expect(msgs.single.text, 'from iPhone');
+        expect(msgs.single.status, UserMsgStatus.confirmed);
+        expect(s.repo.current.streaming?.inReplyTo, 'foreign_42');
+
+        s.repo.dispose();
+      },
+    );
+
+    test('no echo within echoTimeout → pending flips to failed', () async {
+      // Use a short timeout so the test doesn't actually wait 15s.
+      final s = await _setup(
+        echoTimeout: const Duration(milliseconds: 80),
+      );
+
+      await s.repo.sendMessage('vanishing');
+      expect(
+        s.repo.current.messages.whereType<UserMsg>().single.status,
+        UserMsgStatus.pending,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(
+        s.repo.current.messages.whereType<UserMsg>().single.status,
+        UserMsgStatus.failed,
+      );
+
+      s.repo.dispose();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan/24-fix-session-sync-and-pending — deferred session_sync +
+  // pending-survives-reconnect.
+  // ---------------------------------------------------------------------------
+
+  group('SessionRepository — session_sync + pending resilience', () {
+    test(
+      'requestSync before channel ready defers; fires on StatusOnline',
+      () async {
+        // Build the manager and repo BEFORE adopting a channel so
+        // `_conn.channel` is null at the time we call requestSync.
+        final ch = _FakeChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage(),
+        );
+        final repo = SessionRepository(cm, SessionHistoryStore());
+
+        // Make activeEpk non-null without yet adopting (simulates
+        // ChatViewModel's _bootstrap calling setActivePeer before WS
+        // is up). setActivePeer is part of the public surface.
+        await repo.setActivePeer(
+          const PeerRecord(
+            remoteEpk: 'epk_deferred',
+            sessionName: 'pi',
+            relayUrl: 'ws://x',
+            pairedAt: '2026-01-01T00:00:00Z',
+          ),
+          roomId: 'main',
+        );
+
+        // No channel yet: requestSync should defer.
+        repo.requestSync();
+        expect(
+          ch.sent.whereType<SessionSync>(),
+          isEmpty,
+          reason: 'sync must defer when channel is null',
+        );
+
+        // Bring channel online.
+        cm.adopt(ch, const PeerRecord(
+          remoteEpk: 'epk_deferred',
+          sessionName: 'pi',
+          relayUrl: 'ws://x',
+          pairedAt: '2026-01-01T00:00:00Z',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+
+        expect(
+          ch.sent.whereType<SessionSync>(),
+          isNotEmpty,
+          reason: 'deferred sync must fire on the next StatusOnline',
+        );
+
+        repo.dispose();
+      },
+    );
+
+    test(
+      'pending UserMsg survives WS reconnect and timer is re-armed',
+      () async {
+        final s = await _setup(
+          echoTimeout: const Duration(milliseconds: 200),
+        );
+
+        await s.repo.sendMessage('hello');
+        final msgs = s.repo.current.messages.whereType<UserMsg>().toList();
+        expect(msgs.single.status, UserMsgStatus.pending);
+        final pendingId = msgs.single.id;
+
+        // Drop the channel (simulates relay hiccup). Timer is
+        // cancelled but the bubble stays as pending in state.
+        await s.cm.disconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          s.repo.current.messages.whereType<UserMsg>().single.status,
+          UserMsgStatus.pending,
+          reason: 'reconnect must NOT flip pending to failed',
+        );
+
+        // Adopt a FRESH channel (the old one is closed by disconnect).
+        final ch2 = _FakeChannel();
+        s.cm.adopt(ch2, const PeerRecord(
+          remoteEpk: 'epk_pending',
+          sessionName: 'pi',
+          relayUrl: 'ws://x',
+          pairedAt: '2026-01-01T00:00:00Z',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        // Echo finally arrives — confirms in place.
+        ch2.push(UserInput(id: pendingId, text: 'hello'));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(
+          s.repo.current.messages.whereType<UserMsg>().single.status,
+          UserMsgStatus.confirmed,
+        );
+
+        s.repo.dispose();
+      },
+    );
+
+    test(
+      'pending UserMsg whose id is missing from SessionHistory survives '
+      'as pending (id mismatch case — Pi rebroadcast not yet received)',
+      () async {
+        final s = await _setup();
+        await s.repo.sendMessage('mine');
+        final cliId = s.ch.sent.whereType<UserMessage>().last.id;
+        expect(
+          s.repo.current.messages.whereType<UserMsg>().single.status,
+          UserMsgStatus.pending,
+        );
+
+        // Pi sync arrives with DIFFERENT id (the Pi did not echo our
+        // cli_* yet; common during in-flight reconnect).
+        s.ch.push(SessionHistory(
+          inReplyTo: 'sync',
+          sessionStartedAt: 100,
+          events: const [
+            UserInputEvt(ts: 50, id: 'pi_other', text: 'something else'),
+          ],
+          eos: true,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        final users =
+            s.repo.current.messages.whereType<UserMsg>().toList();
+        // Pi's confirmed entry at the head; cli_* pending preserved
+        // at the tail.
+        expect(users, hasLength(2));
+        expect(users[0].id, 'pi_other');
+        expect(users[0].status, UserMsgStatus.confirmed);
+        expect(users[1].id, cliId);
+        expect(users[1].status, UserMsgStatus.pending);
+
+        s.repo.dispose();
+      },
+    );
+
+    test(
+      'SessionHistory carrying the pending id cancels the echo timer '
+      '(no spurious failed flip after history arrives)',
+      () async {
+        final s = await _setup(
+          echoTimeout: const Duration(milliseconds: 100),
+        );
+        await s.repo.sendMessage('hi');
+        final cliId = s.ch.sent.whereType<UserMessage>().last.id;
+
+        // Pi sync arrives WITH our cli_* id present.
+        s.ch.push(SessionHistory(
+          inReplyTo: 'sync',
+          sessionStartedAt: 200,
+          events: [
+            UserInputEvt(ts: 100, id: cliId, text: 'hi'),
+          ],
+          eos: true,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        // After history apply, the message is confirmed AND the
+        // echo timer must have been cancelled — wait past the
+        // timeout window and verify it doesn't flip to failed.
+        expect(
+          s.repo.current.messages.whereType<UserMsg>().single.status,
+          UserMsgStatus.confirmed,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(
+          s.repo.current.messages.whereType<UserMsg>().single.status,
+          UserMsgStatus.confirmed,
+          reason: 'history-resolved pending must not flip to failed',
+        );
 
         s.repo.dispose();
       },

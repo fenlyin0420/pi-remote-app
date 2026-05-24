@@ -36,7 +36,6 @@ import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
 
 // ---------------------------------------------------------------------------
 // Status model
@@ -167,11 +166,6 @@ class ConnectionManager extends Service {
       if (_retryTimer != null) return;
       // We SHOULD be reconnecting but nothing's scheduled and no
       // attempt is in flight. Kick the retry chain.
-      debugPrint(
-        '[conn] watchdog: stuck status=${_status.runtimeType} '
-        'peer=${peer.remoteEpk.substring(0, 8)} '
-        '_retryTimer=null _connectInFlight=false → forcing _scheduleRetry',
-      );
       _scheduleRetry(peer);
     });
   }
@@ -229,14 +223,8 @@ class ConnectionManager extends Service {
   /// value. Use when the user taps a different Pi cwd on Home.
   void switchRoom(String roomId) {
     if (roomId == _activeRoomId) {
-      debugPrint(
-        '[conn] switchRoom no-op (already $_activeRoomId) — '
-        'if you expected a switch, check whether the caller is passing '
-        'the right roomId from Preferences.selectedRoomId',
-      );
       return;
     }
-    debugPrint('[conn] switchRoom $_activeRoomId → $roomId');
     _activeRoomId = roomId;
     // Push down to the underlying WS transport so outbound envelopes
     // get the right `room` value.
@@ -244,11 +232,6 @@ class ConnectionManager extends Service {
     if (cur is StatusOnline) {
       _propagateActiveRoom(roomId, cur.channel);
     } else {
-      debugPrint(
-        '[conn] switchRoom: status=${cur.runtimeType}, no channel to '
-        'propagate to — _activeRoomId stored, next StatusOnline will '
-        'use it via send()',
-      );
     }
   }
 
@@ -292,12 +275,8 @@ class ConnectionManager extends Service {
     _subscribedEpks = standard;
     final link = _controlLink;
     if (link == null) {
-      debugPrint(
-        '[conn] subscribeToPeers deferred (no link yet) n=${standard.length}',
-      );
       return;
     }
-    debugPrint('[conn] subscribe_presence + subscribe_rooms n=${standard.length}');
     link.sendControl(subscribePresenceFrame(standard));
     link.sendControl(subscribeRoomsFrame(standard));
     if (standard.isNotEmpty) {
@@ -369,9 +348,6 @@ class ConnectionManager extends Service {
     } else {
       target = peers.first;
     }
-    debugPrint(
-      '[conn] boot preferredEpk=$preferredEpk chose=${target.remoteEpk}',
-    );
     await _connect(target);
   }
 
@@ -388,10 +364,6 @@ class ConnectionManager extends Service {
     if (fromEpk == peer.remoteEpk && _status is StatusOnline) {
       return;
     }
-    debugPrint(
-      '[conn] switchTo from=$fromEpk to=${peer.remoteEpk} '
-      'emit_no_peer=false',
-    );
     await _teardownActive(emitNoPeer: false);
     await _connect(peer);
   }
@@ -490,17 +462,9 @@ class ConnectionManager extends Service {
     // `room_announced` push and then update _activeRoomId + persist.
     final boundRoom = peer.roomId ?? 'main';
     if (boundRoom != _activeRoomId) {
-      debugPrint(
-        '[conn] _connect adopting peer.roomId=$boundRoom '
-        '(was $_activeRoomId)',
-      );
       _activeRoomId = boundRoom;
     }
     _emit(const StatusConnecting());
-    debugPrint(
-      '[conn] _connect attempt=$_retryAttempt peer=${peer.remoteEpk} '
-      'room=$_activeRoomId (from PeerRecord.roomId=${peer.roomId})',
-    );
 
     try {
       final ch = await _factory(peer, token);
@@ -518,9 +482,7 @@ class ConnectionManager extends Service {
       _watchChannel(peer, ch);
       _watchControl(ch);
       _replaySubscriptions();
-      debugPrint('[conn] online (waiting for first inbound to reset backoff)');
     } catch (e) {
-      debugPrint('[conn] _connect failed: $e (cancelled=${token.isCancelled})');
       if (!token.isCancelled) _scheduleRetry(peer);
     } finally {
       // Only clear the flight flag if THIS call is still the active
@@ -549,11 +511,9 @@ class ConnectionManager extends Service {
     switch (c) {
       case PeerOnline(:final peer):
         _presence[toStandardB64(peer)] = const PresenceOnline();
-        debugPrint('[conn] presence: peer_online $peer');
         presenceDirty = true;
       case PeerOffline(:final peer, :final sinceTs):
         _presence[toStandardB64(peer)] = PresenceOffline(sinceTs: sinceTs);
-        debugPrint('[conn] presence: peer_offline $peer ($sinceTs)');
         presenceDirty = true;
       case PresenceSnapshot(:final states):
         for (final s in states) {
@@ -561,7 +521,6 @@ class ConnectionManager extends Service {
               ? PresenceOnline(sinceTs: s.sinceTs)
               : PresenceOffline(sinceTs: s.sinceTs);
         }
-        debugPrint('[conn] presence: snapshot n=${states.length}');
         presenceDirty = true;
       case RoomAnnounced(
           :final peer,
@@ -591,8 +550,6 @@ class ConnectionManager extends Service {
         ));
         _roomsByPeer[key] = list;
         (_liveRoomIds[key] ??= <String>{}).add(roomId);
-        debugPrint('[conn] rooms: announced peer=$peer room=$roomId '
-            'model=${model ?? "—"}');
         roomsDirty = true;
         // Persist the new view so cold restart shows the same tiles.
         // ignore: unawaited_futures
@@ -612,7 +569,6 @@ class ConnectionManager extends Service {
         if (_liveRoomIds[key]?.isEmpty ?? false) {
           _liveRoomIds.remove(key);
         }
-        debugPrint('[conn] rooms: ended peer=$peer room=$roomId (kept cached)');
         roomsDirty = true;
       case RoomMetaUpdated(:final peer, :final roomId, :final model):
         final key = toStandardB64(peer);
@@ -621,10 +577,6 @@ class ConnectionManager extends Service {
         final idx = list.indexWhere((r) => r.roomId == roomId);
         if (idx < 0) break;
         list[idx] = list[idx].copyWith(model: model);
-        debugPrint(
-          '[conn] rooms: meta_updated peer=$peer room=$roomId '
-          'model=${model ?? "—"}',
-        );
         roomsDirty = true;
         // ignore: unawaited_futures
         _persistRoomsForPeer(key);
@@ -648,8 +600,6 @@ class ConnectionManager extends Service {
         }
         _roomsByPeer[key] = byId.values.toList();
         _liveRoomIds[key] = rooms.map((r) => r.roomId).toSet();
-        debugPrint('[conn] rooms: snapshot peer=$peer n=${rooms.length} '
-            '(merged into cached, live=${_liveRoomIds[key]?.length ?? 0})');
         roomsDirty = true;
         // ignore: unawaited_futures
         _persistRoomsForPeer(key);
@@ -818,10 +768,6 @@ class ConnectionManager extends Service {
     if (active.roomId != null && active.roomId == _activeRoomId) {
       return; // already bound — discovery is a no-op
     }
-    debugPrint(
-      '[conn] legacy room discovery: peer=${active.remoteEpk} '
-      'persisted=${active.roomId} → adopting $discoveredRoom',
-    );
     _activeRoomId = discoveredRoom;
     final cur = _status;
     if (cur is StatusOnline) {
@@ -833,12 +779,7 @@ class ConnectionManager extends Service {
     _activePeer = updated;
     // ignore: unawaited_futures
     _storage.savePeer(updated).then((_) {
-      debugPrint(
-        '[conn] legacy room discovery: persisted roomId=$discoveredRoom '
-        'on peer=${active.remoteEpk}',
-      );
     }).catchError((Object e, StackTrace _) {
-      debugPrint('[conn] legacy room discovery: save FAILED: $e');
     });
   }
 
@@ -852,10 +793,8 @@ class ConnectionManager extends Service {
     if (_subscribedEpks.isEmpty) return;
     final link = _controlLink;
     if (link == null) return;
-    debugPrint('[conn] replay subscribe_presence n=${_subscribedEpks.length}');
     link.sendControl(subscribePresenceFrame(_subscribedEpks));
     link.sendControl(presenceCheckFrame(_subscribedEpks));
-    debugPrint('[conn] replay subscribe_rooms n=${_subscribedEpks.length}');
     link.sendControl(subscribeRoomsFrame(_subscribedEpks));
     link.sendControl(roomsCheckFrame(_subscribedEpks));
   }
@@ -868,13 +807,8 @@ class ConnectionManager extends Service {
         // both the ping miss counter and the retry backoff.
         final wasMissed = _missedPings;
         if (wasMissed > 0) {
-          debugPrint(
-            '[conn] heartbeat: inbound (${msg.runtimeType}) → '
-            'reset missedPings=$wasMissed → 0',
-          );
         }
         if (_retryAttempt != 0) {
-          debugPrint('[conn] inbound received → retry attempt reset 0');
         }
         _missedPings = 0;
         _retryAttempt = 0;
@@ -892,20 +826,14 @@ class ConnectionManager extends Service {
       // relay typically kicks the previous WS when our retry authenticates
       // again — that close would otherwise trigger an immediate
       // self-sustaining retry loop.
-      debugPrint('[conn] _onChannelLost: stale channel ignored');
       return;
     }
-    debugPrint('[conn] _onChannelLost: live channel → scheduling retry');
     _cancelPing();
     _scheduleRetry(peer);
   }
 
   void _scheduleRetry(PeerRecord peer) {
     final delay = _backoffFor(_retryAttempt);
-    debugPrint(
-      '[conn] scheduleRetry attempt=$_retryAttempt delay=${delay.inSeconds}s '
-      'peer=${peer.remoteEpk.substring(0, 8)}',
-    );
     _emit(StatusRetrying(nextRetry: delay, attempt: _retryAttempt));
     // Cancel any previous timer before scheduling — prevents the
     // "two timers firing back-to-back" footgun.
@@ -913,7 +841,6 @@ class ConnectionManager extends Service {
     _retryTimer = Timer(delay, () {
       _retryTimer = null;
       _retryAttempt++;
-      debugPrint('[conn] retry tick fired → _connect(attempt=$_retryAttempt)');
       _connect(peer);
     });
   }
@@ -941,14 +868,7 @@ class ConnectionManager extends Service {
       // onError / onDone, both of which still trigger
       // `_onChannelLost`.
       _missedPings++;
-      debugPrint(
-        '[conn] heartbeat tick: missedPings=$_missedPings room=$_activeRoomId',
-      );
       if (_missedPings == 3) {
-        debugPrint(
-          '[conn] heartbeat: Pi unresponsive in room=$_activeRoomId '
-          '— marking room offline (WS↔relay stays up)',
-        );
         _markActiveRoomOffline();
         // No `return` — keep firing pings. When Pi comes back, the
         // inbound Pong (or any other frame) resets _missedPings via
@@ -959,12 +879,7 @@ class ConnectionManager extends Service {
       try {
         final id = _newId();
         await ch.send(Ping(id: id));
-        debugPrint('[conn] heartbeat: ping sent id=$id room=$_activeRoomId');
       } catch (e) {
-        debugPrint(
-          '[conn] heartbeat: ping SEND failed: $e — '
-          'WS is dead, declaring channel lost',
-        );
         _cancelPing();
         _onChannelLost(peer, ch);
       }
