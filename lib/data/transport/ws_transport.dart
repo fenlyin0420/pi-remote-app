@@ -14,12 +14,12 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -67,7 +67,18 @@ class WsTransport implements PeerTransport, IControlLink {
 
     final sub = ws.stream.listen(
       (raw) {
+        // Volume probe: log every frame the relay pushes onto this
+        // socket, with a classification of what we do with it. Helps
+        // diagnose "is the app drinking from a firehose?" — high
+        // chatter (e.g. presence churn, rooms snapshot on every WS
+        // tick, etc.) becomes visible without per-feature logs.
+        final rawStr = raw is String ? raw : raw.toString();
+        final preview =
+            rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
         if (!authDone) {
+          debugPrint(
+            '[ws-in] bytes=${rawStr.length} stage=preauth body=$preview',
+          );
           try {
             challengeCompleter.complete(
               jsonDecode(raw as String) as Map<String, dynamic>,
@@ -85,6 +96,10 @@ class WsTransport implements PeerTransport, IControlLink {
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
+            final peerTag = (frame['peer'] as String?) ?? '?';
+            final peerPreview = peerTag.length > 8
+                ? peerTag.substring(0, 8)
+                : peerTag;
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
             // AgentChunks for a chat the user just left bleed into
@@ -92,20 +107,40 @@ class WsTransport implements PeerTransport, IControlLink {
             // match the currently-addressed Pi cwd, drop the payload.
             // Legacy Pis without `room` route unconditionally.
             if (senderRoom != null && senderRoom != transport._activeRoom) {
+              debugPrint(
+                '[ws-in] bytes=${rawStr.length} kind=envelope '
+                'peer=$peerPreview… sender_room=$senderRoom '
+                'active_room=${transport._activeRoom} DROPPED (room-mismatch)',
+              );
               return;
             }
+            debugPrint(
+              '[ws-in] bytes=${rawStr.length} kind=envelope '
+              'peer=$peerPreview… sender_room=${senderRoom ?? "—"} '
+              'ct.bytes=${bytes.length} → queue',
+            );
             transport._queue.add(bytes);
             return;
           }
           // Control: top-level `type` only → presence stream.
           final ctrl = ControlInbound.tryFromJson(frame);
           if (ctrl != null && !transport._controlController.isClosed) {
+            debugPrint(
+              '[ws-in] bytes=${rawStr.length} kind=control '
+              'type=${frame['type']} body=$preview',
+            );
             transport._controlController.add(ctrl);
             return;
           }
           // Anything else: unknown shape — drop silently.
-        } catch (_) {
-          // Malformed payload — drop.
+          debugPrint(
+            '[ws-in] bytes=${rawStr.length} kind=unknown DROPPED body=$preview',
+          );
+        } catch (e) {
+          debugPrint(
+            '[ws-in] bytes=${rawStr.length} kind=malformed DROPPED '
+            'err=$e body=$preview',
+          );
         }
       },
       onError: (e) {

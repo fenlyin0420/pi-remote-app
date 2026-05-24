@@ -82,19 +82,49 @@ class HomeList extends HomeState {
   /// 'main') destination the Pi was no longer listening on — sending
   /// there got dropped by the relay AND the row felt like a ghost. The
   /// user only wants live rooms in the list.
+  ///
+  /// Ordering: peers are sorted by display name (nickname → sessionName
+  /// → epk prefix), case-insensitive. Within each peer, rooms are
+  /// sorted by their display name (room.name → cwd basename → roomId),
+  /// also case-insensitive. Keeps the list stable and predictable as
+  /// the relay reorders its push payloads.
   List<HomeItem> items({String Function(String)? normalizeEpk}) {
+    final sortedPeers = [...peers]
+      ..sort((a, b) => _peerLabel(a).toLowerCase().compareTo(
+            _peerLabel(b).toLowerCase(),
+          ));
     final out = <HomeItem>[];
-    for (final p in peers) {
+    for (final p in sortedPeers) {
       final key = normalizeEpk != null
           ? normalizeEpk(p.remoteEpk)
           : p.remoteEpk;
       final rooms = roomsByPeer[key];
       if (rooms == null || rooms.isEmpty) continue;
-      for (final r in rooms) {
+      final sortedRooms = [...rooms]
+        ..sort((a, b) => _roomLabel(a).toLowerCase().compareTo(
+              _roomLabel(b).toLowerCase(),
+            ));
+      for (final r in sortedRooms) {
         out.add(HomeItem(peer: p, room: r));
       }
     }
     return out;
+  }
+
+  static String _peerLabel(PeerRecord p) {
+    if (p.nickname != null && p.nickname!.isNotEmpty) return p.nickname!;
+    if (p.sessionName.isNotEmpty) return p.sessionName;
+    return p.remoteEpk;
+  }
+
+  static String _roomLabel(RoomInfo r) {
+    if (r.name != null && r.name!.isNotEmpty) return r.name!;
+    final cwd = r.cwd;
+    if (cwd != null && cwd.isNotEmpty) {
+      final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
+      if (segs.isNotEmpty) return segs.last;
+    }
+    return r.roomId;
   }
 
   @override
