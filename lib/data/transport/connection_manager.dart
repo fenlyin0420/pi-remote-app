@@ -145,11 +145,25 @@ class ConnectionManager extends Service {
   // whether a connect is in flight (without poking at the live token).
   bool _connectInFlight = false;
 
+  // Debounce timers — relay's control-frame firehose (peer_online +
+  // presence + rooms snapshots, often dozens per second when multiple
+  // devices reconnect) is filtered upstream by the dedup in
+  // [_onControl], but legitimate changes still arrive in tight bursts
+  // (e.g. cwd switch publishes a new RoomAnnounced + RoomsSnapshot
+  // back-to-back). Coalesce those into a single emit per window so
+  // downstream listeners (HomeViewModel → Flutter widget rebuilds)
+  // see one update instead of three.
+  Timer? _presenceEmitTimer;
+  Timer? _roomsEmitTimer;
+  final Duration _emitDebounce;
+
   ConnectionManager({
     required ConnectionFactory factory,
     required PairingStorage storage,
-  }) : _factory = factory,
-       _storage = storage {
+    Duration emitDebounce = const Duration(milliseconds: 50),
+  })  : _factory = factory,
+        _storage = storage,
+        _emitDebounce = emitDebounce {
     _startWatchdog();
   }
 
@@ -430,6 +444,10 @@ class ConnectionManager extends Service {
     _cancelPing();
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
+    _presenceEmitTimer?.cancel();
+    _presenceEmitTimer = null;
+    _roomsEmitTimer?.cancel();
+    _roomsEmitTimer = null;
     _channelSub?.cancel();
     _channelSub = null;
     _controlSub?.cancel();
@@ -506,22 +524,46 @@ class ConnectionManager extends Service {
     // is always keyed in the same canonical form regardless of what we
     // received on the wire — and so consumer-side lookups via
     // `presenceFor` (which coerces) round-trip.
+    //
+    // Dedup contract: relay re-pushes `peer_online`, `presence`, and
+    // `rooms` aggressively (every reconnect of every device, every
+    // pi-extension restart, periodically as keep-alive). Without
+    // de-duplication every push fires `_presenceController` /
+    // `_roomsController`, which propagates to `HomeViewModel`, which
+    // rebuilds the whole list, which keeps the CPU busy and the
+    // device hot. Each case below only flips its `*Dirty` flag if
+    // the incoming payload actually changes our cached view.
     var presenceDirty = false;
     var roomsDirty = false;
     switch (c) {
       case PeerOnline(:final peer):
-        _presence[toStandardB64(peer)] = const PresenceOnline();
-        presenceDirty = true;
+        final key = toStandardB64(peer);
+        final prev = _presence[key];
+        const next = PresenceOnline();
+        if (!_presenceEquals(prev, next)) {
+          _presence[key] = next;
+          presenceDirty = true;
+        }
       case PeerOffline(:final peer, :final sinceTs):
-        _presence[toStandardB64(peer)] = PresenceOffline(sinceTs: sinceTs);
-        presenceDirty = true;
+        final key = toStandardB64(peer);
+        final prev = _presence[key];
+        final next = PresenceOffline(sinceTs: sinceTs);
+        if (!_presenceEquals(prev, next)) {
+          _presence[key] = next;
+          presenceDirty = true;
+        }
       case PresenceSnapshot(:final states):
         for (final s in states) {
-          _presence[toStandardB64(s.peer)] = s.online
+          final key = toStandardB64(s.peer);
+          final prev = _presence[key];
+          final next = s.online
               ? PresenceOnline(sinceTs: s.sinceTs)
               : PresenceOffline(sinceTs: s.sinceTs);
+          if (!_presenceEquals(prev, next)) {
+            _presence[key] = next;
+            presenceDirty = true;
+          }
         }
-        presenceDirty = true;
       case RoomAnnounced(
           :final peer,
           :final roomId,
@@ -540,14 +582,24 @@ class ConnectionManager extends Service {
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
         }
-        list.removeWhere((r) => r.roomId == roomId);
-        list.add(RoomInfo(
+        final next = RoomInfo(
           roomId: roomId,
           name: preservedName ?? name,
           cwd: cwd,
           startedAt: startedAt,
           model: model,
-        ));
+        );
+        final liveAlready =
+            _liveRoomIds[key]?.contains(roomId) ?? false;
+        final identicalEntry =
+            existingIdx >= 0 && list[existingIdx] == next;
+        if (identicalEntry && liveAlready) {
+          // No-op announce — relay re-broadcast. Skip to keep the UI
+          // quiet.
+          break;
+        }
+        list.removeWhere((r) => r.roomId == roomId);
+        list.add(next);
         _roomsByPeer[key] = list;
         (_liveRoomIds[key] ??= <String>{}).add(roomId);
         roomsDirty = true;
@@ -565,17 +617,18 @@ class ConnectionManager extends Service {
         // Mark the room offline but KEEP it in the cached set so the
         // tile stays in Home (now grey). Removing from _liveRoomIds
         // is enough.
-        _liveRoomIds[key]?.remove(roomId);
+        final removed = _liveRoomIds[key]?.remove(roomId) ?? false;
         if (_liveRoomIds[key]?.isEmpty ?? false) {
           _liveRoomIds.remove(key);
         }
-        roomsDirty = true;
+        if (removed) roomsDirty = true;
       case RoomMetaUpdated(:final peer, :final roomId, :final model):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);
         if (idx < 0) break;
+        if (list[idx].model == model) break; // dedup: same model already
         list[idx] = list[idx].copyWith(model: model);
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -598,8 +651,18 @@ class ConnectionManager extends Service {
             model: preservedModel,
           );
         }
-        _roomsByPeer[key] = byId.values.toList();
-        _liveRoomIds[key] = rooms.map((r) => r.roomId).toSet();
+        final newList = byId.values.toList();
+        final newLive = rooms.map((r) => r.roomId).toSet();
+        final liveChanged =
+            !_setEquals(newLive, _liveRoomIds[key] ?? const <String>{});
+        final listChanged = !_roomListEquals(newList, existing);
+        if (!liveChanged && !listChanged) {
+          // Relay re-emitted a snapshot identical to what we already
+          // have. Skip — no listeners need to know.
+          break;
+        }
+        _roomsByPeer[key] = newList;
+        _liveRoomIds[key] = newLive;
         roomsDirty = true;
         // ignore: unawaited_futures
         _persistRoomsForPeer(key);
@@ -608,12 +671,71 @@ class ConnectionManager extends Service {
           _maybeAdoptLegacyRoom(key, rooms.first.roomId);
         }
     }
-    if (presenceDirty && !_presenceController.isClosed) {
+    if (presenceDirty) _schedulePresenceEmit();
+    if (roomsDirty) _scheduleRoomsEmit();
+  }
+
+  /// Coalesce presence emits within `_emitDebounce`. Each call resets
+  /// the timer; the snapshot sent at fire time is whatever `_presence`
+  /// looks like then (always the latest view).
+  void _schedulePresenceEmit() {
+    _presenceEmitTimer?.cancel();
+    _presenceEmitTimer = Timer(_emitDebounce, () {
+      _presenceEmitTimer = null;
+      if (_presenceController.isClosed) return;
       _presenceController.add(Map.unmodifiable(_presence));
-    }
-    if (roomsDirty && !_roomsController.isClosed) {
+    });
+  }
+
+  /// Same shape as [_schedulePresenceEmit] but for the rooms stream.
+  void _scheduleRoomsEmit() {
+    _roomsEmitTimer?.cancel();
+    _roomsEmitTimer = Timer(_emitDebounce, () {
+      _roomsEmitTimer = null;
+      if (_roomsController.isClosed) return;
       _roomsController.add(_roomsSnapshot());
+    });
+  }
+
+  /// Value-equality helper for [PresenceState] — the sealed classes
+  /// don't define their own `==`, and identity equality misfires
+  /// because we construct fresh `PresenceOnline(...)` / `PresenceOffline(...)`
+  /// objects on each control frame.
+  bool _presenceEquals(PresenceState? a, PresenceState? b) {
+    if (a == null) return b == null;
+    if (b == null) return false;
+    if (a.runtimeType != b.runtimeType) return false;
+    if (a is PresenceOnline && b is PresenceOnline) {
+      return a.sinceTs == b.sinceTs;
     }
+    if (a is PresenceOffline && b is PresenceOffline) {
+      return a.sinceTs == b.sinceTs;
+    }
+    // PresenceUnknown has no fields — same type ⇒ equal.
+    return true;
+  }
+
+  /// `Set<String>` deep-equality (Dart sets don't have value-equality
+  /// by default).
+  bool _setEquals(Set<String> a, Set<String> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final x in a) {
+      if (!b.contains(x)) return false;
+    }
+    return true;
+  }
+
+  /// `List<RoomInfo>` order-insensitive equality keyed by `roomId`.
+  /// `RoomInfo` already defines value `==`.
+  bool _roomListEquals(List<RoomInfo> a, List<RoomInfo> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    final byIdB = {for (final r in b) r.roomId: r};
+    for (final r in a) {
+      if (byIdB[r.roomId] != r) return false;
+    }
+    return true;
   }
 
   Map<String, List<RoomInfo>> _roomsSnapshot() => Map.unmodifiable(

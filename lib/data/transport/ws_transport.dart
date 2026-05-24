@@ -68,17 +68,13 @@ class WsTransport implements PeerTransport, IControlLink {
     final sub = ws.stream.listen(
       (raw) {
         // Volume probe: log every frame the relay pushes onto this
-        // socket, with a classification of what we do with it. Helps
-        // diagnose "is the app drinking from a firehose?" — high
-        // chatter (e.g. presence churn, rooms snapshot on every WS
-        // tick, etc.) becomes visible without per-feature logs.
+        // socket so we can spot firehose patterns (e.g. presence
+        // churn, repeated room snapshots) by counting prefix
+        // occurrences — body kept compact so the log stays grep-able
+        // even when the relay is chatty.
         final rawStr = raw is String ? raw : raw.toString();
-        final preview =
-            rawStr.length > 160 ? '${rawStr.substring(0, 160)}…' : rawStr;
         if (!authDone) {
-          debugPrint(
-            '[ws-in] bytes=${rawStr.length} stage=preauth body=$preview',
-          );
+          debugPrint('[ws-in] bytes=${rawStr.length} stage=preauth');
           try {
             challengeCompleter.complete(
               jsonDecode(raw as String) as Map<String, dynamic>,
@@ -96,10 +92,6 @@ class WsTransport implements PeerTransport, IControlLink {
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
-            final peerTag = (frame['peer'] as String?) ?? '?';
-            final peerPreview = peerTag.length > 8
-                ? peerTag.substring(0, 8)
-                : peerTag;
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
             // AgentChunks for a chat the user just left bleed into
@@ -109,15 +101,13 @@ class WsTransport implements PeerTransport, IControlLink {
             if (senderRoom != null && senderRoom != transport._activeRoom) {
               debugPrint(
                 '[ws-in] bytes=${rawStr.length} kind=envelope '
-                'peer=$peerPreview… sender_room=$senderRoom '
-                'active_room=${transport._activeRoom} DROPPED (room-mismatch)',
+                'sender_room=$senderRoom DROPPED (room-mismatch)',
               );
               return;
             }
             debugPrint(
               '[ws-in] bytes=${rawStr.length} kind=envelope '
-              'peer=$peerPreview… sender_room=${senderRoom ?? "—"} '
-              'ct.bytes=${bytes.length} → queue',
+              'ct.bytes=${bytes.length}',
             );
             transport._queue.add(bytes);
             return;
@@ -127,19 +117,16 @@ class WsTransport implements PeerTransport, IControlLink {
           if (ctrl != null && !transport._controlController.isClosed) {
             debugPrint(
               '[ws-in] bytes=${rawStr.length} kind=control '
-              'type=${frame['type']} body=$preview',
+              'type=${frame['type']}',
             );
             transport._controlController.add(ctrl);
             return;
           }
           // Anything else: unknown shape — drop silently.
-          debugPrint(
-            '[ws-in] bytes=${rawStr.length} kind=unknown DROPPED body=$preview',
-          );
+          debugPrint('[ws-in] bytes=${rawStr.length} kind=unknown DROPPED');
         } catch (e) {
           debugPrint(
-            '[ws-in] bytes=${rawStr.length} kind=malformed DROPPED '
-            'err=$e body=$preview',
+            '[ws-in] bytes=${rawStr.length} kind=malformed DROPPED err=$e',
           );
         }
       },

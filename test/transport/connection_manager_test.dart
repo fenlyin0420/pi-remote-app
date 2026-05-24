@@ -105,6 +105,7 @@ void main() {
       final cm = ConnectionManager(
         factory: (peer, cancel) async => _makeChannel(),
         storage: _FakeStorage([]),
+        emitDebounce: Duration.zero,
       );
 
       final states = <ConnectionStatus>[];
@@ -125,6 +126,7 @@ void main() {
           return _makeChannel();
         },
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       cm.statusStream.listen(states.add);
@@ -143,6 +145,7 @@ void main() {
       final cm = ConnectionManager(
         factory: (peer, cancel) async => throw Exception('connection refused'),
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       cm.statusStream.listen(states.add);
@@ -161,6 +164,7 @@ void main() {
       final cm = ConnectionManager(
         factory: (peer, cancel) async => _makeChannel(),
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       await cm.boot();
@@ -182,6 +186,7 @@ void main() {
           throw Exception('refused');
         },
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       cm.statusStream
@@ -206,6 +211,7 @@ void main() {
           return _makeChannel();
         },
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       final fakeChannel = _makeChannel();
@@ -227,6 +233,7 @@ void main() {
       final cm = ConnectionManager(
         factory: (_, _) async => _makeChannel(),
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
       expect(cm.activePeer, isNull);
 
@@ -247,6 +254,7 @@ void main() {
           return _makeChannel();
         },
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
       cm.adopt(_makeChannel(), _fakePeer());
       expect(cm.activePeer?.remoteEpk, 'epk_test');
@@ -273,6 +281,7 @@ void main() {
           return _makeChannel();
         },
         storage: _FakeStorage([_fakePeer(), other]),
+        emitDebounce: Duration.zero,
       );
       cm.adopt(_makeChannel(), _fakePeer());
 
@@ -312,7 +321,8 @@ void main() {
           factoryCalls.add(peer.remoteEpk);
           return hang.future;
         },
-        storage: _FakeStorage([a, b]), // peers.first = A
+        storage: _FakeStorage([a, b]), // peers.first = A,
+        emitDebounce: Duration.zero,
       );
 
       // Kick off a switch to B (in-flight).
@@ -339,6 +349,7 @@ void main() {
           return _makeChannel();
         },
         storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
       );
 
       final fakeChannel = _makeChannel();
@@ -385,6 +396,7 @@ void main() {
             return [chA, chB][idx++];
           },
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.connectTo(_fakePeer()); // → chA
@@ -432,6 +444,7 @@ void main() {
             return ch;
           },
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
 
         final retries = <StatusRetrying>[];
@@ -476,6 +489,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([a, b]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.boot();
@@ -498,6 +512,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -525,6 +540,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -546,6 +562,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -559,6 +576,108 @@ void main() {
         expect(cm.presenceFor('epk_A'), isA<PresenceOnline>());
         expect(cm.presenceFor('epk_B'), isA<PresenceOffline>());
         expect((cm.presenceFor('epk_B') as PresenceOffline).sinceTs, 100);
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'dedup: repeated identical peer_online does not emit again '
+      '(relay firehose mitigation)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final emits = <Map<String, PresenceState>>[];
+        cm.presenceStream.listen(emits.add);
+        ch.pushControl(const PeerOnline(peer: 'epk_test'));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final afterFirst = emits.length;
+        expect(afterFirst, greaterThan(0));
+
+        // Three more identical pushes — dedup must suppress them all.
+        ch.pushControl(const PeerOnline(peer: 'epk_test'));
+        ch.pushControl(const PeerOnline(peer: 'epk_test'));
+        ch.pushControl(const PeerOnline(peer: 'epk_test'));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(emits.length, afterFirst,
+            reason: 'repeated identical peer_online must be deduped');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'dedup: identical rooms snapshot does not re-emit',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final emits = <Map<String, List<RoomInfo>>>[];
+        cm.roomsStream.listen(emits.add);
+        final snapshot = RoomsSnapshot(peer: 'epk_test', rooms: const [
+          RoomInfo(roomId: 'r1', name: 'work', cwd: '/x', startedAt: 1),
+        ]);
+        ch.pushControl(snapshot);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final afterFirst = emits.length;
+        expect(afterFirst, greaterThan(0));
+
+        // Re-push exact same snapshot multiple times.
+        ch.pushControl(snapshot);
+        ch.pushControl(snapshot);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(emits.length, afterFirst,
+            reason: 'identical rooms snapshot must be deduped');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'debounce coalesces a burst of distinct presence changes into '
+      'a single emit',
+      () async {
+        final ch = _ControllableChannel();
+        // Use a non-zero debounce so the burst observably coalesces.
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: const Duration(milliseconds: 30),
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final emits = <Map<String, PresenceState>>[];
+        cm.presenceStream.listen(emits.add);
+
+        // Three different presence states arriving quickly — each is
+        // a real change (different peer), but should fire only one
+        // combined emit at the debounce edge.
+        ch.pushControl(const PeerOnline(peer: 'epk_A'));
+        ch.pushControl(const PeerOnline(peer: 'epk_B'));
+        ch.pushControl(const PeerOffline(peer: 'epk_A', sinceTs: 99));
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+
+        expect(emits.length, 1,
+            reason: 'burst within debounce window must coalesce');
+        // The single emit reflects the FINAL state (Offline for A).
+        expect(emits.single['epk_A'], isA<PresenceOffline>());
+        expect(emits.single['epk_B'], isA<PresenceOnline>());
 
         cm.dispose();
       },
@@ -590,6 +709,7 @@ void main() {
             return _ControllableChannel();
           },
           storage: _FakeStorage([a, b]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.boot(preferredEpk: 'epk_B');
@@ -624,6 +744,7 @@ void main() {
             return _ControllableChannel();
           },
           storage: _FakeStorage([a, b]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.boot();
@@ -651,6 +772,7 @@ void main() {
             return _ControllableChannel();
           },
           storage: _FakeStorage([a]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.boot(preferredEpk: 'epk_does_not_exist');
@@ -680,6 +802,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => _ControllableChannel(),
           storage: _FakeStorage([a, b]),
+          emitDebounce: Duration.zero,
         );
         cm.adopt(_ControllableChannel(), a);
 
@@ -707,6 +830,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => _ControllableChannel(),
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         cm.adopt(_ControllableChannel(), _fakePeer());
 
@@ -743,6 +867,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([peer]),
+          emitDebounce: Duration.zero,
         );
 
         await cm.boot();
@@ -776,6 +901,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -804,6 +930,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -831,6 +958,7 @@ void main() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.boot();
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -865,6 +993,7 @@ void main() {
             return ch;
           },
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
 
         final retries = <StatusRetrying>[];
@@ -968,6 +1097,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([]),
+          emitDebounce: Duration.zero,
         );
         cm.subscribeToPeers(['Bz02uLi']);
         await cm.connectTo(_fakePeer());
@@ -990,6 +1120,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([]),
+          emitDebounce: Duration.zero,
         );
         await cm.connectTo(_fakePeer());
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1048,6 +1179,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([]),
+          emitDebounce: Duration.zero,
         );
         await cm.connectTo(const PeerRecord(
           remoteEpk: 'epk_room_aware',
@@ -1073,6 +1205,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: storage,
+          emitDebounce: Duration.zero,
         );
         // Pre-fix peer record — no roomId.
         const legacyPeer = PeerRecord(
@@ -1115,6 +1248,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.connectTo(_fakePeer());
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1157,6 +1291,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([]),
+          emitDebounce: Duration.zero,
         );
         await cm.connectTo(_fakePeer());
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1182,6 +1317,7 @@ void _registerRoomsTests() {
         final cm = ConnectionManager(
           factory: (_, _) async => ch,
           storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
         );
         await cm.connectTo(_fakePeer());
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1222,6 +1358,7 @@ void _registerRoomsTests() {
       final cm = ConnectionManager(
         factory: (_, _) async => ch,
         storage: _FakeStorage([]),
+        emitDebounce: Duration.zero,
       );
       await cm.connectTo(_fakePeer());
       await Future<void>.delayed(const Duration(milliseconds: 10));
