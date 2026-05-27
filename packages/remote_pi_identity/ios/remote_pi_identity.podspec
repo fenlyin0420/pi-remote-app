@@ -13,7 +13,7 @@ devices of the same Apple ID via iCloud Keychain.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.platform         = :ios, '26.0'
+  s.platform         = :ios, '18.0'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
