@@ -3,6 +3,7 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/chat/quick_actions/widgets/quick_actions_sheet.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
@@ -42,7 +43,7 @@ class ChatPage extends StatelessWidget {
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
             Expanded(child: _buildBody(context, state, vm)),
-            _buildInput(state, vm),
+            _buildInput(context, state, vm),
           ],
         ),
       ),
@@ -244,7 +245,7 @@ class ChatPage extends StatelessWidget {
     };
   }
 
-  Widget _buildInput(ChatState state, ChatViewModel vm) {
+  Widget _buildInput(BuildContext context, ChatState state, ChatViewModel vm) {
     final isReady = state is ChatReady;
     final isOffline = isReady && state.isOffline;
     final isRevoked = isReady && state.pairingRevoked;
@@ -253,6 +254,15 @@ class ChatPage extends StatelessWidget {
     final isPresenceOffline = isReady && state.peerPresence is PresenceOffline;
     final isStreaming = isReady && state.streaming != null;
     final streamingId = isReady ? state.streaming?.inReplyTo : null;
+    // Quick actions need an open channel to dispatch — only offer the
+    // entry point when the chat input itself is enabled. Hiding the
+    // ⚙ button on offline avoids a tap that would just throw inside
+    // the sheet.
+    final actionsEnabled = isReady
+        && !isOffline
+        && !isRevoked
+        && !isPeerOffline
+        && !isPresenceOffline;
 
     return InputBar(
       disabled: !isReady
@@ -263,6 +273,8 @@ class ChatPage extends StatelessWidget {
       streaming: isStreaming,
       onSend: (text) => vm.sendMessage(text),
       onCancel: streamingId != null ? () => vm.cancel(streamingId) : null,
+      onOpenQuickActions:
+          actionsEnabled ? () => showQuickActionsSheet(context) : null,
     );
   }
 

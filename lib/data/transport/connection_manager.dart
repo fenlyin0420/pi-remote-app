@@ -571,6 +571,7 @@ class ConnectionManager extends Service {
           :final cwd,
           :final startedAt,
           :final model,
+          :final thinking,
         ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -578,9 +579,16 @@ class ConnectionManager extends Service {
         // (long-press rename) — only the live metadata comes from the
         // wire, the rename is local-only.
         String? preservedName;
+        // Plan/28 Wave D — also preserve a previously-learned thinking
+        // level when the announce frame omits it. Relays that don't
+        // flatten `meta.thinking` will keep `thinking == null` here;
+        // the previously cached value (if any) survives until the
+        // next genuine `room_meta_updated`.
+        ThinkingLevel? preservedThinking;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
+          preservedThinking = list[existingIdx].thinking;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -588,6 +596,7 @@ class ConnectionManager extends Service {
           cwd: cwd,
           startedAt: startedAt,
           model: model,
+          thinking: thinking ?? preservedThinking,
         );
         final liveAlready =
             _liveRoomIds[key]?.contains(roomId) ?? false;
@@ -622,14 +631,35 @@ class ConnectionManager extends Service {
           _liveRoomIds.remove(key);
         }
         if (removed) roomsDirty = true;
-      case RoomMetaUpdated(:final peer, :final roomId, :final model):
+      case RoomMetaUpdated(
+          :final peer,
+          :final roomId,
+          :final model,
+          :final thinking,
+          :final hasModel,
+          :final hasThinking,
+        ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);
         if (idx < 0) break;
-        if (list[idx].model == model) break; // dedup: same model already
-        list[idx] = list[idx].copyWith(model: model);
+        final current = list[idx];
+        // Plan/28 Wave D — meta is open-ended; only update the fields
+        // the broadcast actually carried. `hasModel` / `hasThinking`
+        // distinguishes "field was absent from the meta envelope"
+        // (preserve previous value) from "field was explicitly null"
+        // (overwrite with null). Without this, a thinking-only update
+        // would clobber the previously cached model with null.
+        final nextModel = hasModel ? model : current.model;
+        final nextThinking = hasThinking ? thinking : current.thinking;
+        if (current.model == nextModel && current.thinking == nextThinking) {
+          break; // dedup: nothing actually changed
+        }
+        list[idx] = current.copyWith(
+          model: nextModel,
+          thinking: nextThinking,
+        );
         roomsDirty = true;
         // ignore: unawaited_futures
         _persistRoomsForPeer(key);
@@ -643,12 +673,16 @@ class ConnectionManager extends Service {
         for (final r in rooms) {
           final preservedName = byId[r.roomId]?.name ?? r.name;
           final preservedModel = r.model ?? byId[r.roomId]?.model;
+          // Plan/28 Wave D — same convention as model: keep the
+          // previously-known thinking when the snapshot omits it.
+          final preservedThinking = r.thinking ?? byId[r.roomId]?.thinking;
           byId[r.roomId] = RoomInfo(
             roomId: r.roomId,
             name: preservedName,
             cwd: r.cwd,
             startedAt: r.startedAt,
             model: preservedModel,
+            thinking: preservedThinking,
           );
         }
         final newList = byId.values.toList();

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/config/utils/injector.dart';
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -16,6 +17,7 @@ import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/qr_scanner.dart';
 import 'package:app/pairing/storage.dart';
+import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -81,6 +83,9 @@ Future<void> setupDependencies() async {
 
   // Repositories
   _injector.addRepository<ISessionRepository>(SessionRepository.new);
+  _injector.addRepository<IActionsRepository>(
+    () => ActionsRepository(_injector.get<ConnectionManager>()),
+  );
 
   // ViewModels
   _injector.addViewModel<ChatViewModel>(ChatViewModel.new);
@@ -103,6 +108,9 @@ Future<void> setupDependencies() async {
     ),
   );
   _injector.addViewModel<OnboardingViewModel>(OnboardingViewModel.new);
+  _injector.addViewModel<QuickActionsViewModel>(
+    () => QuickActionsViewModel(_injector.get<IActionsRepository>()),
+  );
 
   _injector.commit();
 }

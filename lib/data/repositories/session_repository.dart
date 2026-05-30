@@ -557,6 +557,16 @@ class SessionRepository extends Repository implements ISessionRepository {
       case PairError():
         break;
 
+      // Plan/28 — Replies for typed app actions are handled by the
+      // ActionsRepository's correlation map. The SessionRepository
+      // doesn't own action state, so it just lets them pass through
+      // (the underlying channel.serverMessages is a broadcast stream;
+      // the ActionsRepository attaches its own listener).
+      case ActionOk():
+      case ActionError():
+      case ModelsList():
+        break;
+
       case Bye(:final rawReason):
         if (!_eventController.isClosed) {
           _eventController.add(PeerWentOffline(rawReason));

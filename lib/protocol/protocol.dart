@@ -25,14 +25,25 @@ sealed class ControlInbound {
               .map((e) => PeerPresence.fromJson(e as Map<String, dynamic>))
               .toList(),
         ),
-      'room_announced' => RoomAnnounced(
-          peer: j['peer'] as String,
-          roomId: j['room_id'] as String,
-          name: j['name'] as String?,
-          cwd: j['cwd'] as String?,
-          startedAt: (j['started_at'] as num).toInt(),
-          model: j['model'] as String?,
-        ),
+      'room_announced' => () {
+          // Plan/28 Wave D — thinking arrives either as a top-level
+          // field (post-relay-flatten) or nested under `meta.thinking`
+          // (pre-flatten relay forwarding the Pi's room_meta verbatim).
+          // Read both so the app stays forward-compat with either side.
+          final metaJson = j['meta'] as Map<String, dynamic>?;
+          final rawThinking = (j['thinking'] as String?) ??
+              (metaJson?['thinking'] as String?);
+          return RoomAnnounced(
+            peer: j['peer'] as String,
+            roomId: j['room_id'] as String,
+            name: j['name'] as String?,
+            cwd: j['cwd'] as String?,
+            startedAt: (j['started_at'] as num).toInt(),
+            model: j['model'] as String?,
+            thinking:
+                rawThinking != null ? ThinkingLevel.fromWire(rawThinking) : null,
+          );
+        }(),
       'room_ended' => RoomEnded(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -46,10 +57,17 @@ sealed class ControlInbound {
         ),
       'room_meta_updated' => () {
           final meta = j['meta'] as Map<String, dynamic>?;
+          final hasModel = meta?.containsKey('model') ?? false;
+          final hasThinking = meta?.containsKey('thinking') ?? false;
+          final rawThinking = meta?['thinking'] as String?;
           return RoomMetaUpdated(
             peer: j['peer'] as String,
             roomId: j['room_id'] as String,
             model: meta?['model'] as String?,
+            thinking:
+                rawThinking != null ? ThinkingLevel.fromWire(rawThinking) : null,
+            hasModel: hasModel,
+            hasThinking: hasThinking,
           );
         }(),
       _ => null,
@@ -149,6 +167,12 @@ class RoomInfo {
   /// `claude-sonnet-4.5`, `gpt-4o`). Optional; Pi-ext may omit and
   /// the app falls back to `last paired` in the subtitle.
   final String? model;
+  /// Plan/28 Wave D — current thinking level the Pi-extension session
+  /// is running with. Optional; Pi-ext may omit when it cannot resolve
+  /// it from the SDK, and legacy Pis don't publish this field at all.
+  /// Drives the initial highlight of the Quick Actions thinking
+  /// segmented control.
+  final ThinkingLevel? thinking;
 
   const RoomInfo({
     required this.roomId,
@@ -156,15 +180,21 @@ class RoomInfo {
     this.name,
     this.cwd,
     this.model,
+    this.thinking,
   });
 
-  factory RoomInfo.fromJson(Map<String, dynamic> j) => RoomInfo(
-    roomId: j['room_id'] as String,
-    name: j['name'] as String?,
-    cwd: j['cwd'] as String?,
-    startedAt: (j['started_at'] as num).toInt(),
-    model: j['model'] as String?,
-  );
+  factory RoomInfo.fromJson(Map<String, dynamic> j) {
+    final rawThinking = j['thinking'] as String?;
+    return RoomInfo(
+      roomId: j['room_id'] as String,
+      name: j['name'] as String?,
+      cwd: j['cwd'] as String?,
+      startedAt: (j['started_at'] as num).toInt(),
+      model: j['model'] as String?,
+      thinking:
+          rawThinking != null ? ThinkingLevel.fromWire(rawThinking) : null,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'room_id': roomId,
@@ -172,6 +202,7 @@ class RoomInfo {
     'cwd': cwd,
     'started_at': startedAt,
     'model': model,
+    if (thinking != null) 'thinking': thinking!.wire,
   };
 
   RoomInfo copyWith({
@@ -179,6 +210,7 @@ class RoomInfo {
     String? cwd,
     int? startedAt,
     Object? model = _kRoomInfoUnset,
+    Object? thinking = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -187,6 +219,9 @@ class RoomInfo {
     model: identical(model, _kRoomInfoUnset)
         ? this.model
         : model as String?,
+    thinking: identical(thinking, _kRoomInfoUnset)
+        ? this.thinking
+        : thinking as ThinkingLevel?,
   );
 
   @override
@@ -196,10 +231,12 @@ class RoomInfo {
       other.name == name &&
       other.cwd == cwd &&
       other.startedAt == startedAt &&
-      other.model == model;
+      other.model == model &&
+      other.thinking == thinking;
 
   @override
-  int get hashCode => Object.hash(roomId, name, cwd, startedAt, model);
+  int get hashCode =>
+      Object.hash(roomId, name, cwd, startedAt, model, thinking);
 }
 
 class RoomAnnounced extends ControlInbound {
@@ -210,6 +247,10 @@ class RoomAnnounced extends ControlInbound {
   final int startedAt;
   /// Plan 18 — display model the Pi-extension is running with.
   final String? model;
+  /// Plan/28 Wave D — current thinking level the Pi seeds at
+  /// session start. Parsed from `meta.thinking` or top-level
+  /// `thinking` depending on whether the relay flattens metadata.
+  final ThinkingLevel? thinking;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -217,6 +258,7 @@ class RoomAnnounced extends ControlInbound {
     this.name,
     this.cwd,
     this.model,
+    this.thinking,
   });
 }
 
@@ -245,10 +287,31 @@ class RoomMetaUpdated extends ControlInbound {
   final String peer;
   final String roomId;
   final String? model;
+  /// Plan/28 Wave D — current thinking level, parsed from
+  /// `meta.thinking`. Null when the Pi only published a model change.
+  /// The app treats both fields as independently optional so an update
+  /// for only one of them doesn't clobber the other on the cache side.
+  final ThinkingLevel? thinking;
+  /// Plan/28 Wave D — `true` when the `meta` envelope carried a `model`
+  /// key (even if value is null). Lets the ConnectionManager handler
+  /// distinguish "model was not part of this update" from "model was
+  /// explicitly cleared", which matters now that updates can be
+  /// thinking-only.
+  ///
+  /// Defaults to `true` for ergonomic programmatic construction
+  /// (callers / tests can pass `model: x` without also remembering
+  /// the boolean). [RoomMetaUpdated.fromJson] passes the precise
+  /// presence-of-key boolean instead.
+  final bool hasModel;
+  /// Plan/28 Wave D — same convention for `thinking`.
+  final bool hasThinking;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
     this.model,
+    this.thinking,
+    this.hasModel = true,
+    this.hasThinking = true,
   });
 }
 
@@ -394,6 +457,160 @@ class SessionSync extends ClientMessage {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Plan/28 — Typed app actions
+// ---------------------------------------------------------------------------
+
+/// Plan/28 — Curated catalogue of actions the app can dispatch on the
+/// Pi-side session. Each value matches an `action_ok`/`action_error`
+/// reply emitted by the pi-extension handlers in
+/// `pi-extension/src/actions/handlers.ts`.
+enum ActionName {
+  sessionNew('session_new'),
+  sessionCompact('session_compact'),
+  modelSet('model_set'),
+  thinkingSet('thinking_set');
+
+  final String wire;
+  const ActionName(this.wire);
+
+  static ActionName? fromWire(String s) {
+    for (final a in values) {
+      if (a.wire == s) return a;
+    }
+    return null;
+  }
+}
+
+/// Plan/28 — Mirror of the SDK's `ThinkingLevel`. Six fixed values; the
+/// wire format is the lower-case string. `xhigh` is honored only by
+/// select models — the app surfaces every level and the SDK falls back
+/// when the active model doesn't support the requested one.
+enum ThinkingLevel {
+  off('off'),
+  minimal('minimal'),
+  low('low'),
+  medium('medium'),
+  high('high'),
+  xhigh('xhigh');
+
+  final String wire;
+  const ThinkingLevel(this.wire);
+
+  static ThinkingLevel? fromWire(String s) {
+    for (final l in values) {
+      if (l.wire == s) return l;
+    }
+    return null;
+  }
+}
+
+/// Plan/28 — Wire shape for one entry in the model picker. Subset of
+/// the SDK's `Model` interface; matches the `WireModel` declared in
+/// `pi-extension/src/protocol/types.ts`.
+class WireModel {
+  /// Stable id inside the provider's catalog (e.g. `claude-opus-4-7`).
+  final String id;
+  /// Display name shown in the picker (e.g. `Claude Opus 4.7`).
+  final String name;
+  /// Provider slug (e.g. `anthropic`, `openai`).
+  final String provider;
+  /// Whether this model exposes the thinking surface. Drives the
+  /// thinking segmented control's enabled state on the picker side.
+  final bool reasoning;
+  /// Context window in tokens — surfaced as picker subtitle.
+  final int contextWindow;
+
+  const WireModel({
+    required this.id,
+    required this.name,
+    required this.provider,
+    required this.reasoning,
+    required this.contextWindow,
+  });
+
+  factory WireModel.fromJson(Map<String, dynamic> j) => WireModel(
+    id: j['id'] as String,
+    name: j['name'] as String,
+    provider: j['provider'] as String,
+    reasoning: (j['reasoning'] as bool?) ?? false,
+    contextWindow: (j['context_window'] as num?)?.toInt() ?? 0,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'provider': provider,
+    'reasoning': reasoning,
+    'context_window': contextWindow,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is WireModel &&
+      other.id == id &&
+      other.provider == provider &&
+      other.name == name &&
+      other.reasoning == reasoning &&
+      other.contextWindow == contextWindow;
+
+  @override
+  int get hashCode =>
+      Object.hash(id, provider, name, reasoning, contextWindow);
+}
+
+class SessionCompact extends ClientMessage {
+  final String id;
+  SessionCompact({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'session_compact', 'id': id};
+}
+
+class SessionNew extends ClientMessage {
+  final String id;
+  SessionNew({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'session_new', 'id': id};
+}
+
+class ModelSet extends ClientMessage {
+  final String id;
+  final String provider;
+  final String modelId;
+  ModelSet({required this.id, required this.provider, required this.modelId});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'model_set',
+    'id': id,
+    'provider': provider,
+    'model_id': modelId,
+  };
+}
+
+class ThinkingSet extends ClientMessage {
+  final String id;
+  final ThinkingLevel level;
+  ThinkingSet({required this.id, required this.level});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'thinking_set',
+    'id': id,
+    'level': level.wire,
+  };
+}
+
+class ListModels extends ClientMessage {
+  final String id;
+  ListModels({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'list_models', 'id': id};
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -423,6 +640,9 @@ sealed class ServerMessage {
       'agent_message' => AgentMessage.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
       'bye' => Bye.fromJson(json),
+      'action_ok' => ActionOk.fromJson(json),
+      'action_error' => ActionError.fromJson(json),
+      'models_list' => ModelsList.fromJson(json),
       // forward-compat: unknown types are not fatal — callers catch and log
       _ => throw UnsupportedTypeException(type ?? ''),
     };
@@ -761,6 +981,89 @@ class PairError extends ServerMessage {
 /// treats this as a terminal "Pi went offline" signal, stops the retry
 /// loop, and surfaces a banner. Reconnect is manual.
 enum ByeReason { peerStop, sessionReplaced, shutdown, unknown }
+
+// ---------------------------------------------------------------------------
+// Plan/28 — Replies for typed app actions.
+//
+// `action_ok` / `action_error` use the original `ActionName` so the app
+// can demultiplex by intended action (no need to remember every
+// in-flight request id). `models_list` is the reply to `list_models`
+// and optionally echoes the model the Pi is using right now so the
+// picker highlights the right row immediately.
+// ---------------------------------------------------------------------------
+
+class ActionOk extends ServerMessage {
+  final String inReplyTo;
+  final ActionName action;
+  /// Raw wire string for `action` kept verbatim so a future Pi adds
+  /// a new action without us silently dropping the ack.
+  final String rawAction;
+  ActionOk({
+    required this.inReplyTo,
+    required this.action,
+    required this.rawAction,
+  });
+
+  factory ActionOk.fromJson(Map<String, dynamic> j) {
+    final raw = (j['action'] as String?) ?? '';
+    final parsed = ActionName.fromWire(raw);
+    return ActionOk(
+      inReplyTo: j['in_reply_to'] as String,
+      action: parsed ?? ActionName.sessionCompact,
+      rawAction: raw,
+    );
+  }
+}
+
+class ActionError extends ServerMessage {
+  final String inReplyTo;
+  final ActionName action;
+  final String rawAction;
+  final String error;
+  ActionError({
+    required this.inReplyTo,
+    required this.action,
+    required this.rawAction,
+    required this.error,
+  });
+
+  factory ActionError.fromJson(Map<String, dynamic> j) {
+    final raw = (j['action'] as String?) ?? '';
+    final parsed = ActionName.fromWire(raw);
+    return ActionError(
+      inReplyTo: j['in_reply_to'] as String,
+      action: parsed ?? ActionName.sessionCompact,
+      rawAction: raw,
+      error: (j['error'] as String?) ?? '',
+    );
+  }
+}
+
+class ModelsList extends ServerMessage {
+  final String inReplyTo;
+  final List<WireModel> models;
+  /// Echoes the model the Pi is using right now (if it can be
+  /// resolved). `null` is honest absence — the UI should fall back to
+  /// the cached `model_select` event from the rooms layer.
+  final WireModel? current;
+  ModelsList({
+    required this.inReplyTo,
+    required this.models,
+    this.current,
+  });
+
+  factory ModelsList.fromJson(Map<String, dynamic> j) {
+    final list = (j['models'] as List<dynamic>? ?? const <dynamic>[])
+        .map((e) => WireModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+    final cur = j['current'];
+    return ModelsList(
+      inReplyTo: j['in_reply_to'] as String,
+      models: list,
+      current: cur is Map<String, dynamic> ? WireModel.fromJson(cur) : null,
+    );
+  }
+}
 
 class Bye extends ServerMessage {
   final ByeReason reason;
