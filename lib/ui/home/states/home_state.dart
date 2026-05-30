@@ -1,6 +1,6 @@
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:flutter/foundation.dart' show listEquals, mapEquals;
+import 'package:flutter/foundation.dart' show listEquals, mapEquals, setEquals;
 
 sealed class HomeState {
   const HomeState();
@@ -58,22 +58,31 @@ class HomeList extends HomeState {
   final Map<String, PresenceState> statusByEpk;
   final Map<String, List<RoomInfo>> roomsByPeer;
 
+  /// Plan/31 — set of `<standard-epk>:<roomId>` whose session is `working`
+  /// (from the DB session index). Part of the state's identity so a working
+  /// change actually triggers a rebuild — without it, an otherwise-identical
+  /// HomeList would compare equal and `emit` would no-op (the working dot
+  /// would never light up).
+  final Set<String> workingKeys;
+
   const HomeList({
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
+    this.workingKeys = const {},
   });
 
   HomeList copyWith({
     List<PeerRecord>? peers,
     Map<String, PresenceState>? statusByEpk,
     Map<String, List<RoomInfo>>? roomsByPeer,
-  }) =>
-      HomeList(
-        peers: peers ?? this.peers,
-        statusByEpk: statusByEpk ?? this.statusByEpk,
-        roomsByPeer: roomsByPeer ?? this.roomsByPeer,
-      );
+    Set<String>? workingKeys,
+  }) => HomeList(
+    peers: peers ?? this.peers,
+    statusByEpk: statusByEpk ?? this.statusByEpk,
+    roomsByPeer: roomsByPeer ?? this.roomsByPeer,
+    workingKeys: workingKeys ?? this.workingKeys,
+  );
 
   /// Flatten to a single ordered list of items: one row per (peer, room).
   /// **Plan-17 follow-up**: peers without any currently-announced rooms
@@ -90,9 +99,10 @@ class HomeList extends HomeState {
   /// the relay reorders its push payloads.
   List<HomeItem> items({String Function(String)? normalizeEpk}) {
     final sortedPeers = [...peers]
-      ..sort((a, b) => _peerLabel(a).toLowerCase().compareTo(
-            _peerLabel(b).toLowerCase(),
-          ));
+      ..sort(
+        (a, b) =>
+            _peerLabel(a).toLowerCase().compareTo(_peerLabel(b).toLowerCase()),
+      );
     final out = <HomeItem>[];
     for (final p in sortedPeers) {
       final key = normalizeEpk != null
@@ -101,9 +111,11 @@ class HomeList extends HomeState {
       final rooms = roomsByPeer[key];
       if (rooms == null || rooms.isEmpty) continue;
       final sortedRooms = [...rooms]
-        ..sort((a, b) => _roomLabel(a).toLowerCase().compareTo(
-              _roomLabel(b).toLowerCase(),
-            ));
+        ..sort(
+          (a, b) => _roomLabel(
+            a,
+          ).toLowerCase().compareTo(_roomLabel(b).toLowerCase()),
+        );
       for (final r in sortedRooms) {
         out.add(HomeItem(peer: p, room: r));
       }
@@ -132,16 +144,18 @@ class HomeList extends HomeState {
       other is HomeList &&
       listEquals(other.peers, peers) &&
       mapEquals(other.statusByEpk, statusByEpk) &&
-      mapEquals(other.roomsByPeer, roomsByPeer);
+      mapEquals(other.roomsByPeer, roomsByPeer) &&
+      setEquals(other.workingKeys, workingKeys);
 
   @override
   int get hashCode => Object.hash(
-        Object.hashAll(peers),
-        Object.hashAllUnordered(
-          statusByEpk.entries.map((e) => '${e.key}:${e.value.runtimeType}'),
-        ),
-        Object.hashAllUnordered(
-          roomsByPeer.entries.map((e) => '${e.key}:${e.value.length}'),
-        ),
-      );
+    Object.hashAll(peers),
+    Object.hashAllUnordered(
+      statusByEpk.entries.map((e) => '${e.key}:${e.value.runtimeType}'),
+    ),
+    Object.hashAllUnordered(
+      roomsByPeer.entries.map((e) => '${e.key}:${e.value.length}'),
+    ),
+    Object.hashAllUnordered(workingKeys),
+  );
 }

@@ -157,6 +157,72 @@ void main() {
     s.sync.dispose();
   });
 
+  test('isWorking spans the whole turn (echo → agent_done)', () async {
+    final s = await setup();
+    expect(s.sync.isWorking, isFalse);
+    final flags = <bool>[];
+    final sub = s.sync.workingStream.listen(flags.add);
+
+    s.ch.push(UserInput(id: 'u1', text: 'hi'));
+    await _settle();
+    expect(s.sync.isWorking, isTrue, reason: 'working from the echo');
+
+    s.ch.push(AgentDone(inReplyTo: 'u1'));
+    await _settle();
+    expect(s.sync.isWorking, isFalse, reason: 'idle after agent_done');
+    expect(flags, [true, false]);
+
+    await sub.cancel();
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test(
+    'cursor: streaming is seeded EMPTY at turn start, before any chunk',
+    () async {
+      final s = await setup();
+      expect(s.sync.streaming, isNull);
+
+      // Optimistic send seeds the thinking cursor (online).
+      await s.sync.sendMessage('hi');
+      await _settle();
+      expect(s.sync.streaming, isNotNull, reason: 'cursor during thinking');
+      expect(s.sync.streaming!.buffer, isEmpty);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'cursor: foreign echo seeds it; a text-less turn clears it on done',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u9', text: 'from terminal'));
+      await _settle();
+      expect(s.sync.streaming, isNotNull, reason: 'cursor before any chunk');
+      expect(s.sync.streaming!.buffer, isEmpty);
+
+      // Turn produces no text (e.g. only tool calls) → done still clears it.
+      s.ch.push(AgentDone(inReplyTo: 'u9'));
+      await _settle();
+      expect(s.sync.streaming, isNull, reason: 'done clears the cursor');
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test('cursor: a chunk appends onto the seeded empty buffer', () async {
+    final s = await setup();
+    s.ch.push(UserInput(id: 'u1', text: 'hi'));
+    await _settle();
+    s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'tok'));
+    await _settle();
+    expect(s.sync.streaming!.buffer, 'tok', reason: 'appended, not replaced');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test('clearActiveSession wipes the rows + index', () async {
     final s = await setup();
     s.ch.push(UserInput(id: 'u1', text: 'hi'));

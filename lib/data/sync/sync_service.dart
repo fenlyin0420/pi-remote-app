@@ -60,6 +60,18 @@ class SyncService extends Service {
   bool _pendingSyncRequest = false;
   Timer? _syncDebounce;
 
+  // Whether the active session's agent is currently producing a reply. Spans
+  // the WHOLE turn (send/echo → agent_done), not just the token-streaming
+  // window — restoring the old broad "working" signal. Mirrored into the
+  // session index (durable, for Home) and exposed in-memory (for the chat
+  // pill, no box-key matching needed).
+  bool _working = false;
+  // Id of the user message the in-flight reply is answering — the `cancel`
+  // target while working. Null when idle.
+  String? _workingReplyTo;
+  final StreamController<bool> _workingController =
+      StreamController<bool>.broadcast();
+
   SyncService(this._conn, this._boxes) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) => _writeRuntime());
@@ -75,8 +87,12 @@ class SyncService extends Service {
   Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
   Stream<SessionEvent> get events => _eventController.stream;
 
-  /// True while the active session's agent is producing a reply.
-  bool get isWorking => _streaming != null && _activeEpk != null;
+  /// True while the active session's agent is producing a reply (whole turn).
+  bool get isWorking => _working;
+  Stream<bool> get workingStream => _workingController.stream;
+
+  /// `cancel` target for the in-flight reply (null when idle).
+  String? get workingReplyTo => _workingReplyTo;
 
   String? get activeEpk => _activeEpk;
   String get activeRoomId => _activeRoomId;
@@ -112,13 +128,18 @@ class SyncService extends Service {
           pending: true,
         ),
       );
-      _setActivity(SessionActivity.working, preview: _preview(text, image));
+      _setWorking(true, preview: _preview(text, image), replyTo: id);
     }
     final ch = _conn.channel;
     if (ch == null) {
       debugPrint('[msg-send] id=$id (offline → held pending)');
       return;
     }
+    // Seed an EMPTY streaming buffer so the blinking cursor shows during the
+    // "thinking" gap before the first agent_chunk (pre-31 behavior). In-memory
+    // only (#7) — never written to the DB. agent_chunk appends; agent_done
+    // clears it (even for a text-less, tool-only turn).
+    _emitStreaming(StreamingMessage(inReplyTo: id));
     debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
     await ch.send(
       UserMessage(
@@ -224,7 +245,7 @@ class SyncService extends Service {
         _chunkReplyTo = inReplyTo;
         _flushTimer?.cancel();
         _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
-        _setActivity(SessionActivity.working);
+        _setWorking(true, replyTo: inReplyTo);
 
       case AgentDone(:final inReplyTo):
         _flushTimer?.cancel();
@@ -250,7 +271,7 @@ class SyncService extends Service {
                     .copyWith(text: fullText),
           );
         }
-        _setActivity(SessionActivity.idle, preview: fullText);
+        _setWorking(false, preview: fullText);
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -289,7 +310,13 @@ class SyncService extends Service {
                   ts: DateTime.now(),
                 ),
         );
-        _setActivity(SessionActivity.working, preview: text);
+        _setWorking(true, preview: text, replyTo: id);
+        // Show the thinking cursor for this turn (foreign-device echo, or the
+        // local echo when the send-seed was already cleared). Guarded so it
+        // never wipes a buffer that's already accumulating for this id.
+        if (_streaming?.inReplyTo != id) {
+          _emitStreaming(StreamingMessage(inReplyTo: id));
+        }
 
       case ToolRequest(:final toolCallId, :final tool, :final args):
         // ignore: discarded_futures
@@ -339,13 +366,13 @@ class SyncService extends Service {
         _emitStreaming(null);
         // ignore: discarded_futures
         _removeById(targetId);
-        _setActivity(SessionActivity.idle);
+        _setWorking(false);
 
       case Bye(:final rawReason):
         if (!_eventController.isClosed) {
           _eventController.add(PeerWentOffline(rawReason));
         }
-        _setActivity(SessionActivity.idle);
+        _setWorking(false);
         final peer = _conn.activePeer;
         if (peer != null) {
           // ignore: discarded_futures
@@ -363,7 +390,7 @@ class SyncService extends Service {
           }
           break;
         }
-        _setActivity(SessionActivity.idle);
+        _setWorking(false);
         // ignore: discarded_futures
         _upsert(
           MsgRole.assistant,
@@ -568,6 +595,23 @@ class SyncService extends Service {
     );
   }
 
+  /// Single source of "the active session is working". Drives the in-memory
+  /// flag/stream (chat pill) AND the durable session index (Home dot).
+  void _setWorking(bool on, {String? preview, String? replyTo}) {
+    _setActivity(
+      on ? SessionActivity.working : SessionActivity.idle,
+      preview: preview,
+    );
+    if (on) {
+      if (replyTo != null) _workingReplyTo = replyTo;
+    } else {
+      _workingReplyTo = null;
+    }
+    if (_working == on) return;
+    _working = on;
+    if (!_workingController.isClosed) _workingController.add(on);
+  }
+
   void _updateIndex(SessionIndexRecord Function(SessionIndexRecord cur) build) {
     final epk = _activeEpk;
     if (epk == null) return;
@@ -660,5 +704,6 @@ class SyncService extends Service {
     _presenceSub?.cancel();
     _streamingController.close();
     _eventController.close();
+    _workingController.close();
   }
 }

@@ -331,8 +331,12 @@ class ChatPage extends StatelessWidget {
     final isPeerOffline = isReady && state.peerOfflineReason != null;
     // Live relay-reported offline (no `bye`): Pi is just not reachable.
     final isPresenceOffline = isReady && state.peerPresence is PresenceOffline;
-    final isStreaming = isReady && state.streaming != null;
-    final streamingId = isReady ? state.streaming?.inReplyTo : null;
+    // Plan/31 — the composer is locked + the send button becomes "stop" for
+    // the WHOLE working turn (send/echo → agent_done), not just the narrow
+    // token-streaming window. Driven by the broad working signal so it matches
+    // the AppBar/Home "working" indicator.
+    final isWorking = isReady && vm.isWorking;
+    final cancelId = vm.cancelTargetId;
     // Quick actions need an open channel to dispatch — only offer the
     // entry point when the chat input itself is enabled. Hiding the
     // ⚙ button on offline avoids a tap that would just throw inside
@@ -351,8 +355,8 @@ class ChatPage extends StatelessWidget {
           isRevoked ||
           isPeerOffline ||
           isPresenceOffline,
-      streaming: isStreaming,
-      onCancel: streamingId != null ? () => vm.cancel(streamingId) : null,
+      streaming: isWorking,
+      onCancel: cancelId != null ? () => vm.cancel(cancelId) : null,
       onOpenQuickActions: actionsEnabled
           ? () => showQuickActionsSheet(context)
           : null,

@@ -124,6 +124,16 @@ void main() {
       contains('hello from db'),
     );
 
+    // BUG fix (smoke): the chat "working" pill must be on for the whole turn,
+    // not just the token-streaming window — and the composer locks + the send
+    // button becomes "stop" (cancelTargetId points at the in-flight turn).
+    expect(vm.isWorking, isTrue, reason: 'turn started → working');
+    expect(vm.cancelTargetId, 'u1', reason: 'stop button cancels this turn');
+    ch.push(AgentDone(inReplyTo: 'u1'));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(vm.isWorking, isFalse, reason: 'agent_done → idle');
+    expect(vm.cancelTargetId, isNull, reason: 'no turn to cancel when idle');
+
     vm.dispose();
     sync.dispose();
     conn.dispose();

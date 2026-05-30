@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:app/data/local/boxes.dart';
+import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -126,6 +127,44 @@ void main() {
   });
 
   group('HomeViewModel', () {
+    test('isRoomWorking reflects the DB session index (plan/31 fix)', () async {
+      final storage = _FakeStorage([_peerA]);
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _home(),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(vm.isRoomWorking(_peerA.remoteEpk, 'main'), isFalse);
+
+      // SyncService writes this when the agent starts working.
+      await LocalBoxes().sessionsIndexBox().put(
+        '${_peerA.remoteEpk}:main',
+        SessionIndexRecord(
+          epk: _peerA.remoteEpk,
+          roomId: 'main',
+          status: SessionActivity.working,
+        ).toJson(),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(vm.isRoomWorking(_peerA.remoteEpk, 'main'), isTrue);
+
+      // Back to idle clears it.
+      await LocalBoxes().sessionsIndexBox().put(
+        '${_peerA.remoteEpk}:main',
+        SessionIndexRecord(
+          epk: _peerA.remoteEpk,
+          roomId: 'main',
+          status: SessionActivity.idle,
+        ).toJson(),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(vm.isRoomWorking(_peerA.remoteEpk, 'main'), isFalse);
+      vm.dispose();
+    });
+
     test('initial state is HomeLoading', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());

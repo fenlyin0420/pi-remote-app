@@ -43,9 +43,7 @@ class _StreamingBubbleState extends State<StreamingBubble>
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (widget.streaming.buffer.isNotEmpty)
-              Flexible(
-                child: Text(widget.streaming.buffer, style: kMonoStyle),
-              ),
+              Flexible(child: Text(widget.streaming.buffer, style: kMonoStyle)),
             _BlinkingCursor(controller: _blink),
           ],
         ),
@@ -63,6 +61,7 @@ class _BlinkingCursor extends AnimatedWidget {
     final controller = listenable as AnimationController;
     final visible = controller.value < 0.5;
     return Container(
+      key: const Key('streaming-cursor'),
       width: 7,
       height: 14,
       margin: const EdgeInsets.only(left: 3, bottom: 1),

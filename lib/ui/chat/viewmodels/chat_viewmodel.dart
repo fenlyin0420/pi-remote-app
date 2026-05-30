@@ -30,6 +30,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamSubscription<List<MessageRecord>>? _msgsSub;
   StreamSubscription<RuntimeRecord>? _runtimeSub;
   StreamSubscription<StreamingMessage?>? _streamingSub;
+  StreamSubscription<bool>? _workingSub;
   StreamSubscription<SessionEvent>? _eventSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -41,6 +42,7 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   List<ChatMessage> _messages = const [];
   StreamingMessage? _streaming;
+  bool _working = false;
   RuntimeRecord _runtime = const RuntimeRecord();
   bool _pairingRevoked = false;
   String? _peerOfflineReason;
@@ -49,7 +51,9 @@ class ChatViewModel extends ViewModel<ChatState> {
   ChatViewModel(this._read, this._sync, this._conn, this._prefs, this._storage)
     : super(const ChatConnecting()) {
     _streaming = _sync.streaming;
+    _working = _sync.isWorking;
     _streamingSub = _sync.streamingStream.listen(_onStreaming);
+    _workingSub = _sync.workingStream.listen(_onWorking);
     _eventSub = _sync.events.listen(_onEvent);
     _roomsSub = _conn.roomsStream.listen((_) => _recompute());
     _statusSub = _conn.statusStream.listen(_onStatus);
@@ -76,7 +80,15 @@ class ChatViewModel extends ViewModel<ChatState> {
     return _conn.isRoomLive(epk, _activeRoomId);
   }
 
-  bool get isWorking => _streaming != null;
+  /// Whole-turn working signal (send/echo → agent_done), from the SyncService.
+  /// Falls back to the streaming presence so the pill is blue even if a
+  /// reconnect dropped the flag mid-turn.
+  bool get isWorking => _working || _streaming != null;
+
+  /// The id to `cancel` to stop the in-flight reply (the user message the
+  /// agent is answering). Null when idle. Prefers the live streaming target,
+  /// falls back to the SyncService's tracked turn id.
+  String? get cancelTargetId => _streaming?.inReplyTo ?? _sync.workingReplyTo;
 
   // ---------------------------------------------------------------------------
 
@@ -123,6 +135,11 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onStreaming(StreamingMessage? s) {
     _streaming = s;
+    _recompute();
+  }
+
+  void _onWorking(bool working) {
+    _working = working;
     _recompute();
   }
 
@@ -213,6 +230,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _msgsSub?.cancel();
     _runtimeSub?.cancel();
     _streamingSub?.cancel();
+    _workingSub?.cancel();
     _eventSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();

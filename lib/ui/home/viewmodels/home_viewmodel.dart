@@ -104,6 +104,7 @@ class HomeViewModel extends ViewModel<HomeState> {
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
+        workingKeys: _workingKeys,
       ),
     );
   }
@@ -126,13 +127,9 @@ class HomeViewModel extends ViewModel<HomeState> {
     _workingKeys = next;
     final s = state;
     if (s is HomeList) {
-      emit(
-        HomeList(
-          peers: s.peers,
-          statusByEpk: s.statusByEpk,
-          roomsByPeer: s.roomsByPeer,
-        ),
-      );
+      // workingKeys is part of HomeList's identity now, so this emit actually
+      // notifies (the dot re-renders).
+      emit(s.copyWith(workingKeys: next));
     }
   }
 
