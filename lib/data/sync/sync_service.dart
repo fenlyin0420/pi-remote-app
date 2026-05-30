@@ -1,0 +1,664 @@
+// Plan/31 — SyncService: the SINGLE writer of the local SSOT.
+//
+// Consumes the channel (ConnectionManager status + PeerChannel
+// serverMessages) and writes row-granular records to Hive (v2 boxes). The UI
+// never touches this stream — it reads the DB via the read repositories.
+//
+// Streaming is the ONE exception to SSOT (#7): AgentChunk deltas are coalesced
+// into an in-memory Stream<StreamingMessage?> and NEVER written to the DB; only
+// the finalized message lands in the box on `agent_done`.
+
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:app/data/local/boxes.dart';
+import 'package:app/data/local/records/message_record.dart';
+import 'package:app/data/local/records/runtime_record.dart';
+import 'package:app/data/local/records/session_index_record.dart';
+import 'package:app/data/sync/sync_events.dart';
+import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/domain/contracts/service.dart';
+import 'package:app/domain/session_state.dart';
+import 'package:app/protocol/protocol.dart';
+import 'package:app/protocol/uuid7.dart';
+import 'package:flutter/foundation.dart';
+
+class SyncService extends Service {
+  final ConnectionManager _conn;
+  final LocalBoxes _boxes;
+
+  StreamSubscription<ConnectionStatus>? _connSub;
+  StreamSubscription<ServerMessage>? _msgSub;
+  StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
+  StreamSubscription<Map<String, PresenceState>>? _presenceSub;
+
+  // Active session being written (follows ConnectionManager).
+  String? _activeEpk;
+  String _activeRoomId = 'main';
+
+  // In-memory dedupe + ordering for the active session's msgs box. Rebuilt on
+  // [activate]. Key = `<role>:<id>` so a user msg and the assistant reply that
+  // shares its id don't collide.
+  final Map<String, int> _idToSeq = {};
+  int _nextSeq = 0;
+  bool _indexLoaded = false;
+
+  // Serialise box mutations so concurrent async writes stay ordered.
+  Future<void> _writeChain = Future<void>.value();
+
+  // Streaming — in-memory only (#7).
+  final StringBuffer _chunkBuffer = StringBuffer();
+  String _chunkReplyTo = '';
+  Timer? _flushTimer;
+  StreamingMessage? _streaming;
+  final StreamController<StreamingMessage?> _streamingController =
+      StreamController<StreamingMessage?>.broadcast();
+
+  final StreamController<SessionEvent> _eventController =
+      StreamController<SessionEvent>.broadcast();
+
+  bool _pendingSyncRequest = false;
+  Timer? _syncDebounce;
+
+  SyncService(this._conn, this._boxes) {
+    _connSub = _conn.statusStream.listen(_onStatus);
+    _roomsSub = _conn.roomsStream.listen((_) => _writeRuntime());
+    _presenceSub = _conn.presenceStream.listen((_) => _writeRuntime());
+    _onStatus(_conn.status); // replay current
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public surface (commands + in-memory streams)
+  // ---------------------------------------------------------------------------
+
+  StreamingMessage? get streaming => _streaming;
+  Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
+  Stream<SessionEvent> get events => _eventController.stream;
+
+  /// True while the active session's agent is producing a reply.
+  bool get isWorking => _streaming != null && _activeEpk != null;
+
+  String? get activeEpk => _activeEpk;
+  String get activeRoomId => _activeRoomId;
+
+  /// Bind the writer to a (peer, room). Opens the box and rebuilds the
+  /// dedupe/seq index from it. Called by the chat when it mounts / switches
+  /// rooms; also adopted automatically on the first StatusOnline.
+  Future<void> activate(String epk, String roomId) async {
+    final room = roomId.isEmpty ? 'main' : roomId;
+    if (_activeEpk == epk && _activeRoomId == room && _indexLoaded) return;
+    _activeEpk = epk;
+    _activeRoomId = room;
+    await _loadIndex();
+    _writeRuntime();
+  }
+
+  Future<void> sendMessage(String text, {MessageImage? image}) async {
+    final epk = _activeEpk;
+    final id = _newId();
+    final now = DateTime.now();
+    // Optimistic pending row (#defaults: optimistic + dedupe by id).
+    if (epk != null) {
+      await _upsert(
+        MsgRole.user,
+        id,
+        (seq, _) => MessageRecord(
+          id: id,
+          seq: seq,
+          role: MsgRole.user,
+          text: text,
+          image: image,
+          ts: now,
+          pending: true,
+        ),
+      );
+      _setActivity(SessionActivity.working, preview: _preview(text, image));
+    }
+    final ch = _conn.channel;
+    if (ch == null) {
+      debugPrint('[msg-send] id=$id (offline → held pending)');
+      return;
+    }
+    debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
+    await ch.send(
+      UserMessage(
+        id: id,
+        text: text,
+        images: image == null
+            ? null
+            : [WireImage(data: image.data, mime: image.mime)],
+      ),
+    );
+  }
+
+  Future<void> cancel(String targetId) async {
+    final ch = _conn.channel;
+    if (ch == null) return;
+    await ch.send(Cancel(id: _newId(), targetId: targetId));
+  }
+
+  Future<void> approveTool(String toolCallId, ApproveDecision decision) async {
+    final ch = _conn.channel;
+    if (ch == null) return;
+    await ch.send(
+      ApproveTool(id: _newId(), toolCallId: toolCallId, decision: decision),
+    );
+    await _upsert(MsgRole.tool, toolCallId, (seq, existing) {
+      final base =
+          existing?.tool ??
+          ToolEventData(toolCallId: toolCallId, tool: 'unknown');
+      return (existing ??
+              MessageRecord(
+                id: toolCallId,
+                seq: seq,
+                role: MsgRole.tool,
+                ts: DateTime.now(),
+              ))
+          .copyWith(
+            tool: base.copyWith(
+              status: decision == ApproveDecision.allow
+                  ? ToolEventStatus.allowed
+                  : ToolEventStatus.denied,
+            ),
+          );
+    });
+  }
+
+  void requestSync() {
+    final ch = _conn.channel;
+    if (ch == null || _activeEpk == null) {
+      _pendingSyncRequest = true;
+      return;
+    }
+    _pendingSyncRequest = false;
+    ch.send(SessionSync(id: _newId()));
+  }
+
+  /// Plan/28 — `session_new` acked: wipe the active session's rows + index.
+  Future<void> clearActiveSession() async {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    await _enqueue(() async {
+      final box = await _boxes.msgsBox(epk, _activeRoomId);
+      await box.clear();
+      _idToSeq.clear();
+      _nextSeq = 0;
+      _indexLoaded = true;
+      final idx = _boxes.sessionsIndexBox();
+      await idx.delete(LocalBoxes.sessionKey(epk, _activeRoomId));
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Channel → DB
+  // ---------------------------------------------------------------------------
+
+  void _onStatus(ConnectionStatus s) {
+    _msgSub?.cancel();
+    _msgSub = null;
+    if (s is StatusOnline) {
+      _msgSub = s.channel.serverMessages.listen(
+        _onServerMessage,
+        onError: (Object _, StackTrace _) {},
+      );
+      // ignore: discarded_futures
+      _onlineActivated();
+    }
+    _writeRuntime();
+  }
+
+  Future<void> _onlineActivated() async {
+    final peer = _conn.activePeer;
+    if (peer != null && _activeEpk == null) {
+      await activate(peer.remoteEpk, _conn.activeRoomId);
+    }
+    _syncDebounce?.cancel();
+    _syncDebounce = Timer(const Duration(milliseconds: 200), requestSync);
+    if (_pendingSyncRequest) requestSync();
+  }
+
+  void _onServerMessage(ServerMessage msg) {
+    switch (msg) {
+      case AgentChunk(:final inReplyTo, :final delta):
+        _chunkBuffer.write(delta);
+        _chunkReplyTo = inReplyTo;
+        _flushTimer?.cancel();
+        _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
+        _setActivity(SessionActivity.working);
+
+      case AgentDone(:final inReplyTo):
+        _flushTimer?.cancel();
+        _flushTimer = null;
+        final pendingDelta = _chunkBuffer.toString();
+        _chunkBuffer.clear();
+        _chunkReplyTo = '';
+        final fullText = (_streaming?.buffer ?? '') + pendingDelta;
+        _emitStreaming(null);
+        if (fullText.isNotEmpty) {
+          // ignore: discarded_futures
+          _upsert(
+            MsgRole.assistant,
+            inReplyTo,
+            (seq, existing) =>
+                (existing ??
+                        MessageRecord(
+                          id: inReplyTo,
+                          seq: seq,
+                          role: MsgRole.assistant,
+                          ts: DateTime.now(),
+                        ))
+                    .copyWith(text: fullText),
+          );
+        }
+        _setActivity(SessionActivity.idle, preview: fullText);
+
+      case AgentMessage(:final inReplyTo, :final text):
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.assistant,
+          inReplyTo,
+          (seq, existing) =>
+              existing ??
+              MessageRecord(
+                id: inReplyTo,
+                seq: seq,
+                role: MsgRole.assistant,
+                text: text,
+                ts: DateTime.now(),
+              ),
+        );
+
+      case UserInput(:final id, :final text, :final image):
+        // Echo dedupes against the optimistic row (same id): confirm it
+        // (pending=false) or insert as confirmed (foreign device).
+        debugPrint('[msg-echo] id=$id');
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.user,
+          id,
+          (seq, existing) => existing != null
+              ? existing.copyWith(pending: false)
+              : MessageRecord(
+                  id: id,
+                  seq: seq,
+                  role: MsgRole.user,
+                  text: text,
+                  image: image == null
+                      ? null
+                      : MessageImage(data: image.data, mime: image.mime),
+                  ts: DateTime.now(),
+                ),
+        );
+        _setActivity(SessionActivity.working, preview: text);
+
+      case ToolRequest(:final toolCallId, :final tool, :final args):
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.tool,
+          toolCallId,
+          (seq, existing) =>
+              existing ??
+              MessageRecord(
+                id: toolCallId,
+                seq: seq,
+                role: MsgRole.tool,
+                ts: DateTime.now(),
+                tool: ToolEventData(
+                  toolCallId: toolCallId,
+                  tool: tool,
+                  args: args,
+                ),
+              ),
+        );
+
+      case ToolResult(:final toolCallId, :final result, :final error):
+        // ignore: discarded_futures
+        _upsert(MsgRole.tool, toolCallId, (seq, existing) {
+          final base =
+              existing?.tool ??
+              ToolEventData(toolCallId: toolCallId, tool: 'unknown');
+          return (existing ??
+                  MessageRecord(
+                    id: toolCallId,
+                    seq: seq,
+                    role: MsgRole.tool,
+                    ts: DateTime.now(),
+                  ))
+              .copyWith(
+                tool: base.copyWith(
+                  status: error != null
+                      ? ToolEventStatus.denied
+                      : ToolEventStatus.completed,
+                  result: result,
+                  error: error,
+                ),
+              );
+        });
+
+      case Cancelled(:final targetId):
+        _emitStreaming(null);
+        // ignore: discarded_futures
+        _removeById(targetId);
+        _setActivity(SessionActivity.idle);
+
+      case Bye(:final rawReason):
+        if (!_eventController.isClosed) {
+          _eventController.add(PeerWentOffline(rawReason));
+        }
+        _setActivity(SessionActivity.idle);
+        final peer = _conn.activePeer;
+        if (peer != null) {
+          // ignore: discarded_futures
+          _conn.switchTo(peer);
+        }
+
+      case SessionHistory():
+        // ignore: discarded_futures
+        _applyHistory(msg);
+
+      case ErrorMessage(:final code, :final message):
+        if (code.contains('unknown_peer')) {
+          if (!_eventController.isClosed) {
+            _eventController.add(const PairingRevoked());
+          }
+          break;
+        }
+        _setActivity(SessionActivity.idle);
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.assistant,
+          _newId(),
+          (seq, _) => MessageRecord(
+            id: 'err_$seq',
+            seq: seq,
+            role: MsgRole.assistant,
+            text: '⚠ $code: $message',
+            ts: DateTime.now(),
+          ),
+        );
+
+      case Pong():
+      case PairOk():
+      case PairError():
+      case ActionOk():
+      case ActionError():
+      case ModelsList():
+        break;
+    }
+  }
+
+  Future<void> _applyHistory(SessionHistory h) async {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final rows = _convertHistory(h.events);
+    final historyIds = {for (final r in rows) _key(r.role, r.id)};
+    await _enqueue(() async {
+      final box = await _boxes.msgsBox(epk, _activeRoomId);
+      // Preserve local pending user rows the Pi hasn't echoed yet.
+      final preserved = <MessageRecord>[];
+      for (final v in box.values) {
+        final r = MessageRecord.fromJson(_coerce(v));
+        if (r.role == MsgRole.user &&
+            r.pending &&
+            !historyIds.contains(_key(r.role, r.id))) {
+          preserved.add(r);
+        }
+      }
+      await box.clear();
+      _idToSeq.clear();
+      _nextSeq = 0;
+      _indexLoaded = true;
+      for (final r in [...rows, ...preserved]) {
+        final seq = _nextSeq++;
+        await box.put(seq, r.copyWith(seq: seq).toJson());
+        _idToSeq[_key(r.role, r.id)] = seq;
+      }
+    });
+    final started = h.sessionStartedAt;
+    _updateIndex(
+      (cur) => cur.copyWith(
+        sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(started),
+      ),
+    );
+  }
+
+  List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
+    final out = <MessageRecord>[];
+    var seq = 0;
+    for (final e in events) {
+      switch (e) {
+        case UserInputEvt(:final id, :final text, :final image):
+          out.add(
+            MessageRecord(
+              id: id,
+              seq: seq++,
+              role: MsgRole.user,
+              text: text,
+              image: image == null
+                  ? null
+                  : MessageImage(data: image.data, mime: image.mime),
+              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+            ),
+          );
+        case AgentMessageEvt(:final inReplyTo, :final text):
+          out.add(
+            MessageRecord(
+              id: inReplyTo,
+              seq: seq++,
+              role: MsgRole.assistant,
+              text: text,
+              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+            ),
+          );
+        case ToolRequestEvt(:final toolCallId, :final tool, :final args):
+          out.add(
+            MessageRecord(
+              id: toolCallId,
+              seq: seq++,
+              role: MsgRole.tool,
+              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              tool: ToolEventData(
+                toolCallId: toolCallId,
+                tool: tool,
+                args: args,
+              ),
+            ),
+          );
+        case ToolResultEvt(:final toolCallId, :final result, :final error):
+          final idx = out.lastIndexWhere(
+            (m) => m.role == MsgRole.tool && m.tool?.toolCallId == toolCallId,
+          );
+          final status = error != null
+              ? ToolEventStatus.denied
+              : ToolEventStatus.completed;
+          if (idx >= 0) {
+            out[idx] = out[idx].copyWith(
+              tool: out[idx].tool!.copyWith(
+                status: status,
+                result: result,
+                error: error,
+              ),
+            );
+          } else {
+            out.add(
+              MessageRecord(
+                id: toolCallId,
+                seq: seq++,
+                role: MsgRole.tool,
+                ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+                tool: ToolEventData(
+                  toolCallId: toolCallId,
+                  tool: 'unknown',
+                  status: status,
+                  result: result,
+                  error: error,
+                ),
+              ),
+            );
+          }
+      }
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Box write helpers (all serialised through _enqueue)
+  // ---------------------------------------------------------------------------
+
+  String _key(MsgRole role, String id) => '${role.name}:$id';
+
+  Future<void> _loadIndex() {
+    return _enqueue(() async {
+      final epk = _activeEpk;
+      if (epk == null) return;
+      final box = await _boxes.msgsBox(epk, _activeRoomId);
+      _idToSeq.clear();
+      _nextSeq = 0;
+      for (final k in box.keys) {
+        final seq = (k as num).toInt();
+        final r = MessageRecord.fromJson(_coerce(box.get(k)));
+        _idToSeq[_key(r.role, r.id)] = seq;
+        _nextSeq = math.max(_nextSeq, seq + 1);
+      }
+      _indexLoaded = true;
+    });
+  }
+
+  Future<void> _upsert(
+    MsgRole role,
+    String id,
+    MessageRecord Function(int seq, MessageRecord? existing) build,
+  ) {
+    return _enqueue(() async {
+      final epk = _activeEpk;
+      if (epk == null) return;
+      final box = await _boxes.msgsBox(epk, _activeRoomId);
+      final mapKey = _key(role, id);
+      final existingSeq = _idToSeq[mapKey];
+      if (existingSeq != null) {
+        final existing = MessageRecord.fromJson(_coerce(box.get(existingSeq)));
+        await box.put(existingSeq, build(existingSeq, existing).toJson());
+      } else {
+        final seq = _nextSeq++;
+        await box.put(seq, build(seq, null).toJson());
+        _idToSeq[mapKey] = seq;
+      }
+    });
+  }
+
+  Future<void> _removeById(String id) {
+    return _enqueue(() async {
+      final epk = _activeEpk;
+      if (epk == null) return;
+      final box = await _boxes.msgsBox(epk, _activeRoomId);
+      for (final role in MsgRole.values) {
+        final seq = _idToSeq.remove(_key(role, id));
+        if (seq != null) await box.delete(seq);
+      }
+    });
+  }
+
+  void _setActivity(SessionActivity status, {String? preview}) {
+    _updateIndex(
+      (cur) => cur.copyWith(
+        status: status,
+        lastMessageAt: preview != null ? DateTime.now() : null,
+        lastMessagePreview: preview,
+      ),
+    );
+  }
+
+  void _updateIndex(SessionIndexRecord Function(SessionIndexRecord cur) build) {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final room = _activeRoomId;
+    // ignore: discarded_futures
+    _enqueue(() async {
+      final idx = _boxes.sessionsIndexBox();
+      final key = LocalBoxes.sessionKey(epk, room);
+      final raw = idx.get(key);
+      final cur = raw is Map
+          ? SessionIndexRecord.fromJson(raw.cast<String, dynamic>())
+          : SessionIndexRecord(epk: epk, roomId: room);
+      await idx.put(key, build(cur).toJson());
+    });
+  }
+
+  void _writeRuntime() {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final room = _activeRoomId;
+    final s = _conn.status;
+    final conn = switch (s) {
+      StatusOnline() => RuntimeConnection.online,
+      StatusConnecting() => RuntimeConnection.connecting,
+      StatusRetrying() => RuntimeConnection.retrying,
+      StatusOffline() => RuntimeConnection.offline,
+      StatusNoPeer() => RuntimeConnection.connecting,
+    };
+    final presence = (s is StatusOnline && _conn.isRoomLive(epk, room))
+        ? RuntimePresence.alive
+        : (s is StatusOnline ? RuntimePresence.stale : RuntimePresence.unknown);
+    // ignore: discarded_futures
+    _enqueue(() async {
+      _boxes.runtimeBox().put(
+        LocalBoxes.sessionKey(epk, room),
+        RuntimeRecord(connection: conn, presence: presence).toJson(),
+      );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Streaming (in-memory only)
+  // ---------------------------------------------------------------------------
+
+  void _flushChunks() {
+    if (_chunkBuffer.isEmpty) return;
+    final delta = _chunkBuffer.toString();
+    _chunkBuffer.clear();
+    final cur = _streaming;
+    if (cur != null && cur.inReplyTo == _chunkReplyTo) {
+      _emitStreaming(cur.appendDelta(delta));
+    } else {
+      _emitStreaming(StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta));
+    }
+  }
+
+  void _emitStreaming(StreamingMessage? s) {
+    _streaming = s;
+    if (!_streamingController.isClosed) _streamingController.add(s);
+  }
+
+  // ---------------------------------------------------------------------------
+
+  Future<void> _enqueue(Future<void> Function() op) {
+    final next = _writeChain.then((_) => op());
+    _writeChain = next.catchError((Object _, StackTrace _) {});
+    return next;
+  }
+
+  static Map<String, dynamic> _coerce(dynamic raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return raw.cast<String, dynamic>();
+    return <String, dynamic>{};
+  }
+
+  static String _preview(String text, MessageImage? image) {
+    if (text.isEmpty && image != null) return '📷 Image';
+    return text.length <= 80 ? text : '${text.substring(0, 80)}…';
+  }
+
+  static String _newId() => 'cli_${uuid7()}';
+
+  @override
+  void dispose() {
+    _flushTimer?.cancel();
+    _syncDebounce?.cancel();
+    _connSub?.cancel();
+    _msgSub?.cancel();
+    _roomsSub?.cancel();
+    _presenceSub?.cancel();
+    _streamingController.close();
+    _eventController.close();
+  }
+}

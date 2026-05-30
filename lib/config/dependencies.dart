@@ -4,10 +4,11 @@ import 'package:app/config/utils/injector.dart';
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
+import 'package:app/data/local/boxes.dart';
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/repositories/i_session_repository.dart';
-import 'package:app/data/repositories/session_history_store.dart';
-import 'package:app/data/repositories/session_repository.dart';
+import 'package:app/data/repositories/home_read_repository.dart';
+import 'package:app/data/repositories/session_read_repository.dart';
+import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
@@ -46,7 +47,9 @@ Future<void> setupDependencies() async {
   await prefs.load();
   _injector.addInstance<Preferences>(prefs);
 
-  _injector.addInstance<SessionHistoryStore>(SessionHistoryStore());
+  // Plan 31 — local SSOT box facade (boxes already opened + runtime wiped in
+  // bootstrap before this runs).
+  _injector.addInstance<LocalBoxes>(LocalBoxes());
 
   // Plan 23 — Owner-key sync. The store talks to the native plugin
   // (iCloud Keychain on iOS, Block Store on Android); the bridge sits
@@ -96,15 +99,44 @@ Future<void> setupDependencies() async {
   // dispose hook needed.
   _injector.addOther<IImagePickerService>(() => ImagePickerService());
 
+  // Plan 31 — SSOT writer + read-only repos. SyncService is the SINGLE
+  // mutator of the message/index/runtime boxes; the read repos only watch.
+  _injector.addService<SyncService>(
+    () => SyncService(
+      _injector.get<ConnectionManager>(),
+      _injector.get<LocalBoxes>(),
+    ),
+  );
+  _injector.addRepository<SessionReadRepository>(
+    () => SessionReadRepository(_injector.get<LocalBoxes>()),
+  );
+  _injector.addRepository<HomeReadRepository>(
+    () => HomeReadRepository(_injector.get<LocalBoxes>()),
+  );
+
   // Repositories
-  _injector.addRepository<ISessionRepository>(SessionRepository.new);
   _injector.addRepository<IActionsRepository>(
     () => ActionsRepository(_injector.get<ConnectionManager>()),
   );
 
   // ViewModels
-  _injector.addViewModel<ChatViewModel>(ChatViewModel.new);
-  _injector.addViewModel<HomeViewModel>(HomeViewModel.new);
+  _injector.addViewModel<ChatViewModel>(
+    () => ChatViewModel(
+      _injector.get<SessionReadRepository>(),
+      _injector.get<SyncService>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<Preferences>(),
+      _injector.get<PairingStorage>(),
+    ),
+  );
+  _injector.addViewModel<HomeViewModel>(
+    () => HomeViewModel(
+      _injector.get<PairingStorage>(),
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<HomeReadRepository>(),
+    ),
+  );
   _injector.addViewModel<SettingsViewModel>(
     () => SettingsViewModel(
       _injector.get<PairingStorage>(),
@@ -117,7 +149,7 @@ Future<void> setupDependencies() async {
     () => PairingViewModel(
       _injector.get<PairingStorage>(),
       _productionPairingTransportFactory,
-      _injector.get<ISessionRepository>(),
+      _injector.get<ConnectionManager>(),
       _injector.get<Preferences>(),
       _injector.get<OwnerIdentityBridge>(),
     ),

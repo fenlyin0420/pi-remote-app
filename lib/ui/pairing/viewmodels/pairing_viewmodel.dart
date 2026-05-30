@@ -1,7 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/repositories/i_session_repository.dart';
+import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
@@ -14,15 +14,18 @@ import 'package:cryptography/cryptography.dart';
 
 // Factory that produces a connected PeerTransport for the given QR payload.
 // Production: WsTransport.connect(...). Tests: in-memory pipe.
-typedef PairingTransportFactory = Future<pair_flow.PeerTransport> Function(
-  QrPairPayload qr,
-  SimpleKeyPair deviceEd25519,
-);
+typedef PairingTransportFactory =
+    Future<pair_flow.PeerTransport> Function(
+      QrPairPayload qr,
+      SimpleKeyPair deviceEd25519,
+    );
 
 class PairingViewModel extends ViewModel<PairingState> {
   final PairingStorage _storage;
   final PairingTransportFactory _transportFactory;
-  final ISessionRepository _sessionRepo;
+  // Plan/31 — connection lifecycle (disconnect/adopt) now goes straight to
+  // the ConnectionManager (the removed SessionRepository was a pass-through).
+  final ConnectionManager _conn;
   final Preferences _prefs;
   final OwnerIdentityBridge _ownerBridge;
   pair_flow.PeerTransport? _transport;
@@ -31,7 +34,7 @@ class PairingViewModel extends ViewModel<PairingState> {
   PairingViewModel(
     this._storage,
     this._transportFactory,
-    this._sessionRepo,
+    this._conn,
     this._prefs,
     this._ownerBridge,
   ) : super(const PairingScanning());
@@ -53,7 +56,7 @@ class PairingViewModel extends ViewModel<PairingState> {
       // Close any active session before opening a new WS to the relay.
       // Same device Ed25519 key on a second WS would collide in the relay's
       // peer registry, causing the old handler to unregister our new entry.
-      await _sessionRepo.disconnect();
+      await _conn.disconnect();
 
       // Plan 23 — challenge-response now uses the Owner-key (synced
       // via iCloud Keychain / Block Store). The bridge is hydrated by
@@ -64,31 +67,31 @@ class PairingViewModel extends ViewModel<PairingState> {
       final transport = await _transportFactory(qr, ownerKey);
       _transport = transport;
 
-      final result = await pair_flow.performPairing(
-        qr: qr,
-        transport: transport,
-        storage: _storage,
-        deviceName: _deviceName(),
-        currentRelayUrl: resolveRelayUrl(_prefs),
-      ).timeout(
-        const Duration(seconds: 30),
-        onTimeout: () => throw const pair_flow.PairingError(
-          code: 'pair_timeout',
-          message: 'Timed out — make sure /remote-pi is running on your Mac',
-        ),
-      );
+      final result = await pair_flow
+          .performPairing(
+            qr: qr,
+            transport: transport,
+            storage: _storage,
+            deviceName: _deviceName(),
+            currentRelayUrl: resolveRelayUrl(_prefs),
+          )
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () => throw const pair_flow.PairingError(
+              code: 'pair_timeout',
+              message:
+                  'Timed out — make sure /remote-pi is running on your Mac',
+            ),
+          );
 
       final channel = PlainPeerChannel(transport: transport);
       _liveChannel = channel;
       _transport = null; // channel now owns the transport
 
-      _sessionRepo.adoptChannel(channel, result.peer);
+      _conn.adopt(channel, result.peer);
       _liveChannel = null;
 
-      emit(PairingPaired(
-        peer: result.peer,
-        hostnameHint: result.hostnameHint,
-      ));
+      emit(PairingPaired(peer: result.peer, hostnameHint: result.hostnameHint));
     } on pair_flow.PairingError catch (e) {
       await _closeTransient();
       emit(PairingError(message: _friendlyError(e), canRetry: true));

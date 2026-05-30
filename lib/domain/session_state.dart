@@ -1,7 +1,5 @@
-// Session domain model — immutable state for the active chat session.
+// Session domain model — chat message variants + streaming buffer.
 // Lives in domain/ → no Flutter, no network, no storage.
-
-import 'package:app/data/transport/connection_manager.dart';
 
 // ---------------------------------------------------------------------------
 // ChatMessage — sealed union of message variants in the conversation history
@@ -153,41 +151,4 @@ class StreamingMessage {
 
   @override
   int get hashCode => Object.hash(inReplyTo, buffer);
-}
-
-// ---------------------------------------------------------------------------
-// SessionState — the full observable state of the chat session
-// ---------------------------------------------------------------------------
-
-class SessionState {
-  final ConnectionStatus connection;
-  final List<ChatMessage> messages;
-  final StreamingMessage? streaming;
-
-  const SessionState({
-    this.connection = const StatusNoPeer(),
-    this.messages = const [],
-    this.streaming,
-  });
-
-  SessionState copyWith({
-    ConnectionStatus? connection,
-    List<ChatMessage>? messages,
-    StreamingMessage? streaming,
-    bool clearStreaming = false,
-  }) => SessionState(
-    connection: connection ?? this.connection,
-    messages: messages ?? this.messages,
-    streaming: clearStreaming ? null : (streaming ?? this.streaming),
-  );
-
-  @override
-  bool operator ==(Object other) =>
-      other is SessionState &&
-      other.connection == connection &&
-      other.messages == messages &&
-      other.streaming == streaming;
-
-  @override
-  int get hashCode => Object.hash(connection, messages, streaming);
 }

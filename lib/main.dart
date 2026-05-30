@@ -1,7 +1,8 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/repositories/session_history_store.dart';
+import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
@@ -13,8 +14,13 @@ import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SessionHistoryStore.init();
+  // Plan 31 — open the v2 SSOT boxes + WIPE the volatile runtime box BEFORE
+  // anything subscribes (#3 / Risk 2).
+  await LocalBoxes.init();
   await setupDependencies();
+  // Eagerly construct the SSOT writer so it's consuming the channel from boot
+  // (messages can arrive before the chat screen mounts).
+  injector.get<SyncService>();
   runApp(const RemotePiApp());
 }
 

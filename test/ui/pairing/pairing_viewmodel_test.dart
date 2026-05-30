@@ -6,15 +6,12 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/repositories/i_session_repository.dart'
-    show ISessionRepository, SessionEvent;
 import 'package:app/data/transport/channel.dart';
+import 'package:app/data/transport/connection_manager.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/pair_request_flow.dart' show PeerTransport;
 import 'package:app/pairing/storage.dart';
-import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:flutter/material.dart';
@@ -169,78 +166,30 @@ PairingTransportFactory _factoryReplyingWith(Map<String, dynamic> reply) {
 }
 
 // ---------------------------------------------------------------------------
-// Fake ISessionRepository
+// Spy ConnectionManager — records adopt/disconnect (plan/31: PairingViewModel
+// now drives the ConnectionManager directly). Overrides skip super so no
+// ping/connect timers are started.
 // ---------------------------------------------------------------------------
 
-class _FakeSessionRepo implements ISessionRepository {
+class _SpyConn extends ConnectionManager {
+  _SpyConn()
+    : super(
+        factory: (_, _) async => throw UnimplementedError(),
+        storage: _FakeStorage(),
+      );
+
   IChannel? adoptedChannel;
   PeerRecord? adoptedPeer;
   int disconnectCalls = 0;
 
   @override
-  SessionState get current => const SessionState();
-  @override
-  Stream<SessionState> get sessionStream => const Stream.empty();
-  @override
-  Stream<SessionEvent> get eventStream => const Stream.empty();
-  @override
-  Future<void> boot() async {}
-  @override
-  Future<void> connectTo(PeerRecord p) async {}
-  @override
-  Future<void> sendMessage(String t, {MessageImage? image}) async {}
-  @override
-  Future<void> cancel(String id) async {}
-  @override
-  Future<void> approveTool(String id, ApproveDecision d) async {}
-  @override
-  Future<void> clearActiveSession() async {}
-  @override
-  void dispose() {}
-  @override
-  Future<void> disconnect() async => disconnectCalls++;
-
-  @override
-  void adoptChannel(IChannel channel, PeerRecord peer) {
+  void adopt(IChannel channel, PeerRecord peer) {
     adoptedChannel = channel;
     adoptedPeer = peer;
   }
 
   @override
-  Future<void> setActivePeer(PeerRecord peer, {String? roomId}) async {}
-
-  @override
-  void requestSync() {}
-
-  @override
-  void switchRoom(String roomId) {}
-
-  @override
-  Stream<Map<String, List<RoomInfo>>> get roomsStream => const Stream.empty();
-  @override
-  List<RoomInfo> roomsFor(String epk) => const [];
-  @override
-  bool isRoomLive(String epk, String roomId) => false;
-
-  @override
-  String? get workingEpk => null;
-  @override
-  String? get workingRoomId => null;
-  @override
-  Stream<({String? epk, String? roomId})> get workingStream =>
-      const Stream.empty();
-
-  @override
-  Future<void> openSession(PeerRecord peer) async {}
-
-  @override
-  Stream<Map<String, PresenceState>> get presenceStream => const Stream.empty();
-
-  @override
-  PresenceState presenceFor(String epk) => const PresenceUnknown();
-
-  @override
-  PeerRecord? get activePeer => null;
+  Future<void> disconnect() async => disconnectCalls++;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +204,7 @@ void main() {
       final vm = PairingViewModel(
         storage,
         (qr, key) async => throw Exception('should not be called'),
-        _FakeSessionRepo(),
+        _SpyConn(),
         _PrefsForTest(),
         bridge,
       );
@@ -269,7 +218,7 @@ void main() {
       final vm = PairingViewModel(
         storage,
         (qr, key) async => throw Exception('should not be called'),
-        _FakeSessionRepo(),
+        _SpyConn(),
         _PrefsForTest(),
         bridge,
       );
@@ -280,7 +229,7 @@ void main() {
 
     test('scan → connecting → paired (channel adopted)', () async {
       final storage = _FakeStorage();
-      final fakeRepo = _FakeSessionRepo();
+      final fakeRepo = _SpyConn();
       final bridge = await _bootedBridge(storage);
       final factory = _factoryReplyingWith({
         'type': 'pair_ok',
@@ -321,7 +270,7 @@ void main() {
       final vm = PairingViewModel(
         storage,
         factory,
-        _FakeSessionRepo(),
+        _SpyConn(),
         _PrefsForTest(),
         bridge,
       );
@@ -346,7 +295,7 @@ void main() {
         final vm = PairingViewModel(
           storage,
           (qr, key) async => throw Exception('socket exception'),
-          _FakeSessionRepo(),
+          _SpyConn(),
           _PrefsForTest(),
           bridge,
         );
@@ -375,10 +324,11 @@ void main() {
         'type': 'pair_ok',
         'session_name': 'test session',
       });
+      final conn = _SpyConn();
       final vm = PairingViewModel(
         storage,
         factory,
-        _FakeSessionRepo(),
+        conn,
         _PrefsForTest(),
         bridge,
       );
@@ -402,6 +352,7 @@ void main() {
       expect(find.text('Done'), findsOneWidget);
 
       vm.dispose();
+      conn.dispose(); // cancel the watchdog before the timer-pending check
     });
 
     testWidgets('shows error view on pair_error', (tester) async {
@@ -412,10 +363,11 @@ void main() {
       });
       final storage = _FakeStorage();
       final bridge = await _bootedBridge(storage);
+      final conn = _SpyConn();
       final vm = PairingViewModel(
         storage,
         factory,
-        _FakeSessionRepo(),
+        conn,
         _PrefsForTest(),
         bridge,
       );
@@ -443,6 +395,7 @@ void main() {
       expect(vm.state, isA<PairingScanning>());
 
       vm.dispose();
+      conn.dispose(); // cancel the watchdog before the timer-pending check
     });
   });
 }
