@@ -1,4 +1,12 @@
+import 'dart:async';
+
+import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/chat/attachment/states/attachment_state.dart';
+import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
+import 'package:app/ui/chat/voice/states/voice_input_state.dart';
+import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
+import 'package:app/ui/chat/voice/widgets/recording_strip.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -8,6 +16,21 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // - Plan/28 — quick actions (⚙) icon sits to the left of the attach
 //   button and is visible only while the field is empty (so it never
 //   competes with the send affordance).
+// - Plan/29 — when [voice] is provided, the mic becomes hold-to-talk:
+//   long-press starts recording (a WhatsApp-style RecordingStrip replaces
+//   the row), slide left past the threshold cancels, release transcribes
+//   and drops the text into the (empty) field for manual review/send. The
+//   recognizer never auto-sends.
+
+/// One-shot UI hint the composer asks the host page to surface (snackbar /
+/// settings deep-link). Keeps InputBar free of `BuildContext`-bound effects.
+enum VoiceHint {
+  /// User tapped the mic instead of holding it.
+  holdToTalk,
+
+  /// Mic / speech permission was denied — guide to system Settings (#10).
+  permissionDenied,
+}
 
 class InputBar extends StatefulWidget {
   final bool disabled; // offline or no peer
@@ -17,12 +40,32 @@ class InputBar extends StatefulWidget {
   final VoidCallback? onOpenQuickActions;
   final VoidCallback? onStartAudio;
 
+  /// Plan/29 — voice-input ViewModel. When null the mic falls back to the
+  /// legacy [onStartAudio] tap (and existing tests pump InputBar without it).
+  final VoiceInputViewModel? voice;
+
+  /// Plan/29 — surfaces a [VoiceHint] to the host page for a snackbar /
+  /// settings deep-link.
+  final void Function(VoiceHint hint)? onVoiceHint;
+
+  /// Plan/30 — image-attachment ViewModel (preview state + model vision).
+  /// Null in tests / when attachments aren't wired.
+  final AttachmentViewModel? attachment;
+
+  /// Plan/30 — open the Camera/Gallery sheet. Null disables the attach
+  /// button (offline/streaming); vision/has-image gating is internal.
+  final VoidCallback? onOpenAttach;
+
   const InputBar({
     super.key,
     required this.onSend,
     this.onCancel,
     this.onOpenQuickActions,
     this.onStartAudio,
+    this.voice,
+    this.onVoiceHint,
+    this.attachment,
+    this.onOpenAttach,
     this.disabled = false,
     this.streaming = false,
   });
@@ -32,13 +75,40 @@ class InputBar extends StatefulWidget {
 }
 
 class _InputBarState extends State<InputBar> {
+  /// How far left the press must slide to arm slide-to-cancel (logical px).
+  static const double _cancelThreshold = 90;
+
   final _controller = TextEditingController();
   bool _empty = true;
+  bool _cancelArmed = false;
+  StreamSubscription<String>? _transcriptSub;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(_onTextChange);
+    _subscribeTranscripts();
+  }
+
+  @override
+  void didUpdateWidget(InputBar old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.voice, widget.voice)) {
+      _transcriptSub?.cancel();
+      _subscribeTranscripts();
+    }
+  }
+
+  void _subscribeTranscripts() {
+    _transcriptSub = widget.voice?.transcripts.listen(_onTranscript);
+  }
+
+  void _onTranscript(String text) {
+    if (!mounted || text.isEmpty) return; // empty → no-op (#12)
+    // The field is empty by construction (mic only shows when empty), so we
+    // replace rather than concatenate (#non-objetivo: no merge).
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
   }
 
   void _onTextChange() {
@@ -51,6 +121,7 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    _transcriptSub?.cancel();
     _controller.removeListener(_onTextChange);
     _controller.dispose();
     super.dispose();
@@ -58,16 +129,95 @@ class _InputBarState extends State<InputBar> {
 
   void _submit() {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    // Plan/30 — an attached image makes an empty-caption send valid.
+    final hasImage = widget.attachment?.hasImage ?? false;
+    if (text.isEmpty && !hasImage) return;
     _controller.clear();
     widget.onSend(text);
   }
 
+  // --- voice gesture ---------------------------------------------------------
+
+  void _onVoiceStart() {
+    if (_cancelArmed) setState(() => _cancelArmed = false);
+    unawaited(_beginVoice());
+  }
+
+  Future<void> _beginVoice() async {
+    final voice = widget.voice;
+    if (voice == null) return;
+    await voice.startRecording();
+    if (!mounted) return;
+    final s = voice.state;
+    if (s is VoiceUnavailable &&
+        s.reason == VoiceUnavailableReason.permissionDenied) {
+      widget.onVoiceHint?.call(VoiceHint.permissionDenied);
+    }
+  }
+
+  void _onVoiceMove(LongPressMoveUpdateDetails details) {
+    if (widget.voice?.state is! VoiceRecording) return;
+    final armed = details.offsetFromOrigin.dx < -_cancelThreshold;
+    if (armed != _cancelArmed) setState(() => _cancelArmed = armed);
+  }
+
+  void _onVoiceEnd() {
+    final voice = widget.voice;
+    final armed = _cancelArmed;
+    if (_cancelArmed) setState(() => _cancelArmed = false);
+    if (voice == null || voice.state is! VoiceRecording) return;
+    if (armed) {
+      unawaited(voice.cancel());
+    } else {
+      // Transcript arrives via voice.transcripts → _onTranscript, the same
+      // path the 60s cap uses — release never populates the field directly.
+      unawaited(voice.stopAndTranscribe());
+    }
+  }
+
+  void _onVoiceTap() => widget.onVoiceHint?.call(VoiceHint.holdToTalk);
+
   @override
   Widget build(BuildContext context) {
+    final listenables = <Listenable>[
+      if (widget.voice != null) widget.voice!,
+      if (widget.attachment != null) widget.attachment!,
+    ];
+    if (listenables.isEmpty) return _composer(context);
+    // Rebuild on every voice/attachment emit (tick / level / availability /
+    // pick) so the strip + preview animate even when no ancestor watches them.
+    return ListenableBuilder(
+      listenable: Listenable.merge(listenables),
+      builder: (context, _) => _composer(context),
+    );
+  }
+
+  Widget _composer(BuildContext context) {
+    final voiceState = widget.voice?.state;
+    final attachState = widget.attachment?.state;
     final canInteract = !widget.disabled;
     final hasQuickActions = widget.onOpenQuickActions != null;
-    final showQuickActions = _empty && canInteract && !widget.streaming;
+    final recording = voiceState is VoiceRecording;
+    final transcribing = voiceState is VoiceTranscribing;
+    final showStrip = recording || transcribing;
+    final voiceUnsupported =
+        voiceState is VoiceUnavailable &&
+        voiceState.reason == VoiceUnavailableReason.unsupported;
+
+    // Plan/30 — attachment.
+    final hasImage = attachState is AttachmentAttached;
+    final visionBlocked = attachState?.attachBlockedByVision ?? false;
+    final hasContent = !_empty || hasImage;
+    final attachEnabled =
+        widget.onOpenAttach != null &&
+        canInteract &&
+        !widget.streaming &&
+        !showStrip &&
+        !visionBlocked &&
+        !hasImage;
+
+    final showQuickActions =
+        _empty && !hasImage && canInteract && !widget.streaming && !showStrip;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
@@ -75,77 +225,237 @@ class _InputBarState extends State<InputBar> {
         color: kBg,
         border: Border(top: BorderSide(color: kBorder)),
       ),
-      child: Row(
+      child: Stack(
         children: [
-          if (hasQuickActions)
-            _QuickActionsButton(
-              show: showQuickActions,
-              onPressed: widget.onOpenQuickActions,
-            ),
-          // Attachment placeholder
-          const SizedBox(
-            width: 32,
-            height: 32,
-            child: Icon(LucideIcons.paperclip, color: kMuted, size: 18),
-          ),
-          const SizedBox(width: 10),
-          // Text field
-          Expanded(
-            child: TextField(
-              controller: _controller,
-              enabled: canInteract && !widget.streaming,
-              onSubmitted: canInteract && !widget.streaming
-                  ? (_) => _submit()
-                  : null,
-              style: const TextStyle(
-                fontFamily: kMono,
-                fontSize: 13,
-                color: kText,
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (hasImage)
+                _AttachmentPreview(
+                  image: attachState.image,
+                  onRemove: widget.attachment!.removeImage,
+                ),
+              Row(
+                children: [
+                  if (hasQuickActions)
+                    _QuickActionsButton(
+                      show: showQuickActions,
+                      onPressed: widget.onOpenQuickActions,
+                    ),
+                  _AttachButton(
+                    enabled: attachEnabled,
+                    onTap: widget.onOpenAttach,
+                  ),
+                  const SizedBox(width: 10),
+                  // Text field (doubles as the image caption when one is set).
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      enabled: canInteract && !widget.streaming,
+                      onSubmitted: canInteract && !widget.streaming
+                          ? (_) => _submit()
+                          : null,
+                      style: const TextStyle(
+                        fontFamily: kMono,
+                        fontSize: 13,
+                        color: kText,
+                      ),
+                      cursorColor: kAccent,
+                      decoration: InputDecoration(
+                        hintText: widget.disabled
+                            ? 'Offline…'
+                            : widget.streaming
+                            ? 'Waiting for response…'
+                            : hasImage
+                            ? 'Add a caption…'
+                            : 'Send a message…',
+                        hintStyle: const TextStyle(
+                          color: kMuted,
+                          fontFamily: kMono,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFF0E0E0E),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: const BorderSide(color: kBorder),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: const BorderSide(color: kBorder),
+                        ),
+                        disabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: BorderSide(
+                            color: kBorder.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(19),
+                          borderSide: const BorderSide(
+                            color: kAccent,
+                            width: 1.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  _ComposerActionButton(
+                    streaming: widget.streaming,
+                    hasContent: hasContent,
+                    disabled: widget.disabled,
+                    onSendText: _submit,
+                    onCancel: widget.onCancel,
+                    onStartAudio: widget.onStartAudio,
+                    voiceEnabled: widget.voice != null,
+                    voiceUnsupported: voiceUnsupported,
+                    onVoiceLongPressStart: _onVoiceStart,
+                    onVoiceLongPressMoveUpdate: _onVoiceMove,
+                    onVoiceLongPressEnd: _onVoiceEnd,
+                    onVoiceTap: _onVoiceTap,
+                  ),
+                ],
               ),
-              cursorColor: kAccent,
-              decoration: InputDecoration(
-                hintText: widget.disabled
-                    ? 'Offline…'
-                    : widget.streaming
-                    ? 'Waiting for response…'
-                    : 'Send a message…',
-                hintStyle: const TextStyle(color: kMuted, fontFamily: kMono),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                filled: true,
-                fillColor: const Color(0xFF0E0E0E),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(19),
-                  borderSide: const BorderSide(color: kBorder),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(19),
-                  borderSide: const BorderSide(color: kBorder),
-                ),
-                disabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(19),
-                  borderSide: BorderSide(color: kBorder.withValues(alpha: 0.5)),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(19),
-                  borderSide: const BorderSide(color: kAccent, width: 1.2),
+            ],
+          ),
+          // Recording strip — overlays the row (decision #11) while the mic's
+          // GestureDetector stays mounted underneath so the same long-press
+          // keeps feeding move/end events across the swap. IgnorePointer so
+          // the overlay never steals the in-flight gesture.
+          if (showStrip)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: kBg,
+                  child: Center(
+                    child: recording
+                        ? RecordingStrip(
+                            level: voiceState.level,
+                            elapsed: voiceState.elapsed,
+                            maxDuration:
+                                widget.voice?.maxDuration ??
+                                const Duration(seconds: 60),
+                            cancelArmed: _cancelArmed,
+                          )
+                        : const _TranscribingStrip(),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 10),
-          _ComposerActionButton(
-            streaming: widget.streaming,
-            hasText: !_empty,
-            disabled: widget.disabled,
-            onSendText: _submit,
-            onCancel: widget.onCancel,
-            onStartAudio: widget.onStartAudio,
-          ),
         ],
       ),
+    );
+  }
+}
+
+/// Plan/30 — the attach (paperclip) button. Always visible; greyed + inert
+/// when [enabled] is false (offline/streaming, a text-only model #9, or an
+/// image is already attached).
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({required this.enabled, required this.onTap});
+
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 32,
+      height: 32,
+      child: IconButton(
+        key: const Key('input-bar-attach'),
+        padding: EdgeInsets.zero,
+        iconSize: 18,
+        splashRadius: 18,
+        tooltip: 'Attach image',
+        icon: Icon(
+          LucideIcons.paperclip,
+          color: enabled ? kMuted2 : kMuted.withValues(alpha: 0.35),
+        ),
+        onPressed: enabled ? onTap : null,
+      ),
+    );
+  }
+}
+
+/// Plan/30 — the composer image preview: a rounded thumbnail with an "X" to
+/// discard before sending (decision #4).
+class _AttachmentPreview extends StatelessWidget {
+  const _AttachmentPreview({required this.image, required this.onRemove});
+
+  final PickedImage image;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: const Key('attach-preview'),
+      padding: const EdgeInsets.only(left: 4, bottom: 10),
+      child: SizedBox(
+        width: 84,
+        height: 84,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(
+                image.bytes,
+                width: 72,
+                height: 72,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+              ),
+            ),
+            Positioned(
+              top: -4,
+              right: 8,
+              child: GestureDetector(
+                key: const Key('attach-remove'),
+                onTap: onRemove,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: kBorder),
+                  ),
+                  padding: const EdgeInsets.all(3),
+                  child: const Icon(LucideIcons.x, size: 13, color: kText),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TranscribingStrip extends StatelessWidget {
+  const _TranscribingStrip();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Row(
+      key: Key('transcribing-strip'),
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 13,
+          height: 13,
+          child: CircularProgressIndicator(strokeWidth: 2, color: kAccent),
+        ),
+        SizedBox(width: 10),
+        Text(
+          'transcribing…',
+          style: TextStyle(fontFamily: kMono, fontSize: 12, color: kMuted2),
+        ),
+      ],
     );
   }
 }
@@ -240,23 +550,39 @@ enum _ComposerMode { sendAudio, sendText, cancel }
 class _ComposerActionButton extends StatelessWidget {
   const _ComposerActionButton({
     required this.streaming,
-    required this.hasText,
+    required this.hasContent,
     required this.disabled,
     required this.onSendText,
     required this.onCancel,
     required this.onStartAudio,
+    required this.voiceEnabled,
+    required this.voiceUnsupported,
+    required this.onVoiceLongPressStart,
+    required this.onVoiceLongPressMoveUpdate,
+    required this.onVoiceLongPressEnd,
+    required this.onVoiceTap,
   });
 
   final bool streaming;
-  final bool hasText;
+
+  /// Text typed OR an image attached → the button is "send" (decision #6).
+  final bool hasContent;
   final bool disabled;
   final VoidCallback onSendText;
   final VoidCallback? onCancel;
   final VoidCallback? onStartAudio;
 
+  // Plan/29 voice wiring.
+  final bool voiceEnabled;
+  final bool voiceUnsupported;
+  final VoidCallback onVoiceLongPressStart;
+  final void Function(LongPressMoveUpdateDetails) onVoiceLongPressMoveUpdate;
+  final VoidCallback onVoiceLongPressEnd;
+  final VoidCallback onVoiceTap;
+
   _ComposerMode get _mode {
     if (streaming) return _ComposerMode.cancel;
-    if (hasText) return _ComposerMode.sendText;
+    if (hasContent) return _ComposerMode.sendText;
     return _ComposerMode.sendAudio;
   }
 
@@ -284,37 +610,56 @@ class _ComposerActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Decision #9 edge — no on-device recognition anywhere: hide the mic so
+    // the empty field shows just the attach placeholder (dictate via keyboard).
+    if (_mode == _ComposerMode.sendAudio && voiceUnsupported) {
+      return const SizedBox.shrink();
+    }
+
+    // Hold-to-talk mic (decision #4): long-press records, slide cancels,
+    // release transcribes. A plain tap surfaces the "hold to talk" hint.
+    if (_mode == _ComposerMode.sendAudio && voiceEnabled) {
+      return GestureDetector(
+        onTap: disabled ? null : onVoiceTap,
+        onLongPressStart: disabled ? null : (_) => onVoiceLongPressStart(),
+        onLongPressMoveUpdate: disabled ? null : onVoiceLongPressMoveUpdate,
+        onLongPressEnd: disabled ? null : (_) => onVoiceLongPressEnd(),
+        child: _button(),
+      );
+    }
+
+    return GestureDetector(onTap: _resolveTap(), child: _button());
+  }
+
+  Widget _button() {
     final visualEnabled = !disabled;
-    return GestureDetector(
-      onTap: _resolveTap(),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: visualEnabled ? kAccent : kMuted.withValues(alpha: 0.3),
-          borderRadius: BorderRadius.circular(19),
-          boxShadow: visualEnabled
-              ? [
-                  BoxShadow(
-                    color: kAccent.withValues(alpha: 0.33),
-                    blurRadius: 16,
-                  ),
-                ]
-              : null,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        color: visualEnabled ? kAccent : kMuted.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(19),
+        boxShadow: visualEnabled
+            ? [
+                BoxShadow(
+                  color: kAccent.withValues(alpha: 0.33),
+                  blurRadius: 16,
+                ),
+              ]
+            : null,
+      ),
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 180),
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: ScaleTransition(scale: anim, child: child),
         ),
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 180),
-          transitionBuilder: (child, anim) => FadeTransition(
-            opacity: anim,
-            child: ScaleTransition(scale: anim, child: child),
-          ),
-          child: Icon(
-            _icon,
-            key: ValueKey(_mode),
-            color: visualEnabled ? Colors.black : kMuted,
-            size: 20,
-          ),
+        child: Icon(
+          _icon,
+          key: ValueKey(_mode),
+          color: visualEnabled ? Colors.black : kMuted,
+          size: 20,
         ),
       ),
     );

@@ -10,8 +10,11 @@ void main() {
     final fixtureDir = Directory('../.orchestration/contracts/fixtures');
 
     test('fixture directory exists', () {
-      expect(fixtureDir.existsSync(), isTrue,
-          reason: 'fixtures dir not found at ${fixtureDir.path}');
+      expect(
+        fixtureDir.existsSync(),
+        isTrue,
+        reason: 'fixtures dir not found at ${fixtureDir.path}',
+      );
     });
 
     test('all fixture lines parse or throw UnsupportedTypeException', () {
@@ -123,7 +126,9 @@ void main() {
   group('Pair messages', () {
     test('PairOk fixture parses', () {
       final file = File('../.orchestration/contracts/fixtures/pair_ok.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
       final msg = decodeServer(line) as PairOk;
       expect(msg.inReplyTo, isNotEmpty);
       expect(msg.sessionName, contains('remote_pi'));
@@ -156,41 +161,62 @@ void main() {
       expect(msg.hostname, isNull);
     });
 
-    test('PiHarness.fromJson tolerates partial blob with default fallbacks', () {
-      final h = PiHarness.fromJson(<String, dynamic>{});
-      expect(h.name, PiHarness.piCodingAgentUnknown.name);
-      expect(h.version, PiHarness.piCodingAgentUnknown.version);
-    });
+    test(
+      'PiHarness.fromJson tolerates partial blob with default fallbacks',
+      () {
+        final h = PiHarness.fromJson(<String, dynamic>{});
+        expect(h.name, PiHarness.piCodingAgentUnknown.name);
+        expect(h.version, PiHarness.piCodingAgentUnknown.version);
+      },
+    );
 
     test('PairError fixture parses', () {
-      final file = File('../.orchestration/contracts/fixtures/pair_error.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final file = File(
+        '../.orchestration/contracts/fixtures/pair_error.jsonl',
+      );
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
       final msg = decodeServer(line) as PairError;
       expect(msg.code, isNotEmpty);
       expect(msg.message, isNotEmpty);
     });
 
     test('peer_online fixture parses (ControlInbound.tryFromJson)', () {
-      final file = File('../.orchestration/contracts/fixtures/peer_online.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
-      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>);
+      final file = File(
+        '../.orchestration/contracts/fixtures/peer_online.jsonl',
+      );
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
+      final m = ControlInbound.tryFromJson(
+        jsonDecode(line) as Map<String, dynamic>,
+      );
       expect(m, isA<PeerOnline>());
       expect((m! as PeerOnline).peer, isNotEmpty);
     });
 
     test('peer_offline fixture parses with sinceTs', () {
-      final file = File('../.orchestration/contracts/fixtures/peer_offline.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
-      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
-          as PeerOffline;
+      final file = File(
+        '../.orchestration/contracts/fixtures/peer_offline.jsonl',
+      );
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
+      final m =
+          ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
+              as PeerOffline;
       expect(m.sinceTs, 1716234500000);
     });
 
     test('presence snapshot fixture parses with mixed online/offline', () {
       final file = File('../.orchestration/contracts/fixtures/presence.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
-      final m = ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
-          as PresenceSnapshot;
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
+      final m =
+          ControlInbound.tryFromJson(jsonDecode(line) as Map<String, dynamic>)
+              as PresenceSnapshot;
       expect(m.states, hasLength(2));
       expect(m.states.first.online, isTrue);
       expect(m.states.last.online, isFalse);
@@ -205,24 +231,28 @@ void main() {
 
     test('Bye fixture parses with peer_stop reason', () {
       final file = File('../.orchestration/contracts/fixtures/bye.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
       final msg = decodeServer(line) as Bye;
       expect(msg.reason, ByeReason.peerStop);
       expect(msg.rawReason, 'peer_stop');
     });
 
     test('Bye unknown reason → ByeReason.unknown but rawReason preserved', () {
-      final msg = ServerMessage.fromJson({
-        'type': 'bye',
-        'reason': 'mystery',
-      }) as Bye;
+      final msg =
+          ServerMessage.fromJson({'type': 'bye', 'reason': 'mystery'}) as Bye;
       expect(msg.reason, ByeReason.unknown);
       expect(msg.rawReason, 'mystery');
     });
 
     test('UserInput fixture parses', () {
-      final file = File('../.orchestration/contracts/fixtures/user_input.jsonl');
-      final line = file.readAsLinesSync().firstWhere((l) => l.trim().isNotEmpty);
+      final file = File(
+        '../.orchestration/contracts/fixtures/user_input.jsonl',
+      );
+      final line = file.readAsLinesSync().firstWhere(
+        (l) => l.trim().isNotEmpty,
+      );
       final msg = decodeServer(line) as UserInput;
       expect(msg.id, isNotEmpty);
       expect(msg.text, 'listar arquivos modificados');
@@ -293,6 +323,104 @@ void main() {
           jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
       expect(decoded['type'], 'cancel');
       expect(decoded['target_id'], 'target-x');
+    });
+  });
+
+  // Plan/30 — image attachments on user_message + WireModel.vision.
+  group('image attachments (plan 30)', () {
+    test('UserMessage without images omits the field (retro-compat)', () {
+      final msg = UserMessage(id: 'u1', text: 'hi');
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      expect(decoded.containsKey('images'), isFalse);
+    });
+
+    test('UserMessage with one image encodes an images array', () {
+      final msg = UserMessage(
+        id: 'u2',
+        text: 'look',
+        images: const [WireImage(data: 'QUJD', mime: 'image/jpeg')],
+      );
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      final images = decoded['images'] as List<dynamic>;
+      expect(images, hasLength(1));
+      expect((images.first as Map)['data'], 'QUJD');
+      expect((images.first as Map)['mime'], 'image/jpeg');
+    });
+
+    test('user_message echo decodes images → UserInput.image', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'user_message',
+                'id': 'u3',
+                'text': 'caption',
+                'images': [
+                  {'data': 'QUJD', 'mime': 'image/jpeg'},
+                ],
+              })
+              as UserInput;
+      expect(msg.image, isNotNull);
+      expect(msg.image!.data, 'QUJD');
+      expect(msg.image!.mime, 'image/jpeg');
+    });
+
+    test('user_message without images → UserInput.image is null', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'user_message',
+                'id': 'u4',
+                'text': 'plain',
+              })
+              as UserInput;
+      expect(msg.image, isNull);
+    });
+
+    test('session_history user_input event carries the image', () {
+      final hist =
+          ServerMessage.fromJson({
+                'type': 'session_history',
+                'in_reply_to': 'sync1',
+                'session_started_at': 0,
+                'eos': true,
+                'events': [
+                  {
+                    'type': 'user_input',
+                    'ts': 1,
+                    'id': 'u5',
+                    'text': 'replayed',
+                    'images': [
+                      {'data': 'QUJD', 'mime': 'image/jpeg'},
+                    ],
+                  },
+                ],
+              })
+              as SessionHistory;
+      final evt = hist.events.single as UserInputEvt;
+      expect(evt.image?.data, 'QUJD');
+    });
+
+    test('WireModel.vision roundtrips and defaults to false', () {
+      const m = WireModel(
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        provider: 'anthropic',
+        reasoning: true,
+        contextWindow: 200000,
+        vision: true,
+      );
+      final back = WireModel.fromJson(m.toJson());
+      expect(back.vision, isTrue);
+      expect(back, m);
+
+      final noVision = WireModel.fromJson({
+        'id': 'x',
+        'name': 'X',
+        'provider': 'p',
+        'reasoning': false,
+        'context_window': 1,
+      });
+      expect(noVision.vision, isFalse);
     });
   });
 }

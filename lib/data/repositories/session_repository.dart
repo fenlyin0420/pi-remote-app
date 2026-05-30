@@ -97,8 +97,7 @@ class SessionRepository extends Repository implements ISessionRepository {
   Future<void> openSession(PeerRecord peer) => _conn.switchTo(peer);
 
   @override
-  Stream<Map<String, PresenceState>> get presenceStream =>
-      _conn.presenceStream;
+  Stream<Map<String, PresenceState>> get presenceStream => _conn.presenceStream;
 
   @override
   PresenceState presenceFor(String epk) => _conn.presenceFor(epk);
@@ -113,8 +112,7 @@ class SessionRepository extends Repository implements ISessionRepository {
   List<RoomInfo> roomsFor(String epk) => _conn.roomsFor(epk);
 
   @override
-  bool isRoomLive(String epk, String roomId) =>
-      _conn.isRoomLive(epk, roomId);
+  bool isRoomLive(String epk, String roomId) => _conn.isRoomLive(epk, roomId);
 
   // --- Plan-18 follow-up: per-active-room "working" signal ---
 
@@ -123,11 +121,9 @@ class SessionRepository extends Repository implements ISessionRepository {
   bool _lastWorkingFlag = false;
 
   @override
-  String? get workingEpk =>
-      _state.streaming != null ? _activeEpk : null;
+  String? get workingEpk => _state.streaming != null ? _activeEpk : null;
   @override
-  String? get workingRoomId =>
-      _state.streaming != null ? _activeRoomId : null;
+  String? get workingRoomId => _state.streaming != null ? _activeRoomId : null;
   @override
   Stream<({String? epk, String? roomId})> get workingStream =>
       _workingController.stream;
@@ -164,10 +160,7 @@ class SessionRepository extends Repository implements ISessionRepository {
     _activeRoomId = roomId;
     _lastSyncedTs = cached.lastTs;
     _lastSessionStartedAt = cached.sessionStartedAt;
-    _emit(_state.copyWith(
-      messages: cached.messages,
-      clearStreaming: true,
-    ));
+    _emit(_state.copyWith(messages: cached.messages, clearStreaming: true));
   }
 
   @override
@@ -186,18 +179,12 @@ class SessionRepository extends Repository implements ISessionRepository {
     final effectiveRoom = (roomId == null || roomId.isEmpty)
         ? kDefaultRoomId
         : roomId;
-    final cached = await _store.loadFor(
-      peer.remoteEpk,
-      roomId: effectiveRoom,
-    );
+    final cached = await _store.loadFor(peer.remoteEpk, roomId: effectiveRoom);
     _activeEpk = peer.remoteEpk;
     _activeRoomId = effectiveRoom;
     _lastSyncedTs = cached.lastTs;
     _lastSessionStartedAt = cached.sessionStartedAt;
-    _emit(_state.copyWith(
-      messages: cached.messages,
-      clearStreaming: true,
-    ));
+    _emit(_state.copyWith(messages: cached.messages, clearStreaming: true));
   }
 
   @override
@@ -228,8 +215,15 @@ class SessionRepository extends Repository implements ISessionRepository {
   // ---------------------------------------------------------------------------
 
   @override
-  Future<void> sendMessage(String text) async {
-    final msg = UserMessage(id: _newId(), text: text);
+  Future<void> sendMessage(String text, {MessageImage? image}) async {
+    final msg = UserMessage(
+      id: _newId(),
+      text: text,
+      // Plan/30 — one image max; mirror domain → wire shape.
+      images: image == null
+          ? null
+          : [WireImage(data: image.data, mime: image.mime)],
+    );
     final ch = _conn.channel;
 
     // Plan/24-fix-app-source-of-truth (Option A): Pi is the
@@ -248,6 +242,7 @@ class SessionRepository extends Repository implements ISessionRepository {
       id: msg.id,
       text: text,
       status: UserMsgStatus.pending,
+      image: image,
     );
     final next = _state.copyWith(
       messages: [..._state.messages, initial],
@@ -273,6 +268,10 @@ class SessionRepository extends Repository implements ISessionRepository {
 
   static String _preview(String s) =>
       s.length <= 60 ? s : '${s.substring(0, 60)}…';
+
+  /// Plan/30 — wire `WireImage` → domain `MessageImage` (echo + history).
+  static MessageImage? _wireToImage(WireImage? w) =>
+      w == null ? null : MessageImage(data: w.data, mime: w.mime);
 
   /// Schedule the `pending → failed` transition for [id] if Pi's
   /// rebroadcast doesn't arrive within [_echoTimeout].
@@ -366,10 +365,7 @@ class SessionRepository extends Repository implements ISessionRepository {
   }
 
   @override
-  Future<void> approveTool(
-    String toolCallId,
-    ApproveDecision decision,
-  ) async {
+  Future<void> approveTool(String toolCallId, ApproveDecision decision) async {
     final ch = _conn.channel;
     if (ch == null) return;
     await ch.send(
@@ -394,10 +390,8 @@ class SessionRepository extends Repository implements ISessionRepository {
     if (s is StatusOnline) {
       _msgSub = s.channel.serverMessages.listen(
         _onServerMessage,
-        onDone: () {
-        },
-        onError: (Object e, StackTrace st) {
-        },
+        onDone: () {},
+        onError: (Object e, StackTrace st) {},
       );
       // ignore: unawaited_futures
       _onlineActivated();
@@ -477,12 +471,17 @@ class SessionRepository extends Repository implements ISessionRepository {
         // Consolidated reply (typically only inside session_history; rare
         // standalone). If the matching streaming bucket exists, finalize
         // it; otherwise append as a fresh AssistantMsg.
-        if (_state.messages.any((m) => m is AssistantMsg && m.id == inReplyTo)) {
+        if (_state.messages.any(
+          (m) => m is AssistantMsg && m.id == inReplyTo,
+        )) {
           break; // already present (dedupe)
         }
         _emit(
           _state.copyWith(
-            messages: [..._state.messages, AssistantMsg(id: inReplyTo, text: text)],
+            messages: [
+              ..._state.messages,
+              AssistantMsg(id: inReplyTo, text: text),
+            ],
             clearStreaming: _state.streaming?.inReplyTo == inReplyTo
                 ? true
                 : false,
@@ -490,7 +489,7 @@ class SessionRepository extends Repository implements ISessionRepository {
         );
         unawaited(_persistSnapshot());
 
-      case UserInput(:final id, :final text):
+      case UserInput(:final id, :final text, :final image):
         // Plan/24-fix-app-source-of-truth: Pi rebroadcasts every
         // user_message it accepts (including ones the local device
         // sent). Three cases:
@@ -507,8 +506,9 @@ class SessionRepository extends Repository implements ISessionRepository {
         //    the streaming indicator (we expect the agent to reply).
         final pendingTimer = _pendingEchoTimers.remove(id);
         pendingTimer?.cancel();
-        final existingIdx =
-            _state.messages.indexWhere((m) => m is UserMsg && m.id == id);
+        final existingIdx = _state.messages.indexWhere(
+          (m) => m is UserMsg && m.id == id,
+        );
         if (existingIdx >= 0) {
           final existing = _state.messages[existingIdx] as UserMsg;
           if (existing.status == UserMsgStatus.confirmed) {
@@ -534,7 +534,12 @@ class SessionRepository extends Repository implements ISessionRepository {
           _state.copyWith(
             messages: [
               ..._state.messages,
-              UserMsg(id: id, text: text, status: UserMsgStatus.confirmed),
+              UserMsg(
+                id: id,
+                text: text,
+                status: UserMsgStatus.confirmed,
+                image: _wireToImage(image),
+              ),
             ],
             streaming: StreamingMessage(inReplyTo: id),
           ),
@@ -544,8 +549,9 @@ class SessionRepository extends Repository implements ISessionRepository {
       case ToolRequest(:final toolCallId, :final tool, :final args):
         // Dedup against history: a previous `session_history` batch
         // may already contain this ToolEvent (same toolCallId).
-        if (_state.messages
-            .any((m) => m is ToolEvent && m.toolCallId == toolCallId)) {
+        if (_state.messages.any(
+          (m) => m is ToolEvent && m.toolCallId == toolCallId,
+        )) {
           break;
         }
         final event = ToolEvent(
@@ -569,9 +575,7 @@ class SessionRepository extends Repository implements ISessionRepository {
       case Cancelled(:final targetId):
         _emit(
           _state.copyWith(
-            messages: [
-              ..._state.messages.where((m) => m.id != targetId),
-            ],
+            messages: [..._state.messages.where((m) => m.id != targetId)],
             clearStreaming: true,
           ),
         );
@@ -684,8 +688,7 @@ class SessionRepository extends Repository implements ISessionRepository {
 
     // Plan 16 mirror-cache: state.messages = Pi's view exactly.
     // `truncated` is captured for logs only (D1=B).
-    if (resolvedFromHistory > 0 || preservedPending.isNotEmpty) {
-    }
+    if (resolvedFromHistory > 0 || preservedPending.isNotEmpty) {}
     _emit(_state.copyWith(messages: merged, clearStreaming: false));
 
     final epk = _activeEpk;
@@ -703,8 +706,7 @@ class SessionRepository extends Repository implements ISessionRepository {
       );
     }
 
-    if (h.eos) {
-    }
+    if (h.eos) {}
   }
 
   /// Replay history events sequentially so a `tool_request` followed by a
@@ -714,17 +716,19 @@ class SessionRepository extends Repository implements ISessionRepository {
     final out = <ChatMessage>[];
     for (final e in events) {
       switch (e) {
-        case UserInputEvt(:final id, :final text):
-          out.add(UserMsg(id: id, text: text));
+        case UserInputEvt(:final id, :final text, :final image):
+          out.add(UserMsg(id: id, text: text, image: _wireToImage(image)));
         case AgentMessageEvt(:final inReplyTo, :final text):
           out.add(AssistantMsg(id: inReplyTo, text: text));
         case ToolRequestEvt(:final toolCallId, :final tool, :final args):
-          out.add(ToolEvent(
-            id: toolCallId,
-            toolCallId: toolCallId,
-            tool: tool,
-            args: args,
-          ));
+          out.add(
+            ToolEvent(
+              id: toolCallId,
+              toolCallId: toolCallId,
+              tool: tool,
+              args: args,
+            ),
+          );
         case ToolResultEvt(:final toolCallId, :final result, :final error):
           final idx = out.lastIndexWhere(
             (m) => m is ToolEvent && m.toolCallId == toolCallId,
@@ -740,15 +744,17 @@ class SessionRepository extends Repository implements ISessionRepository {
               error: error,
             );
           } else {
-            out.add(ToolEvent(
-              id: toolCallId,
-              toolCallId: toolCallId,
-              tool: 'unknown',
-              args: const <String, dynamic>{},
-              status: newStatus,
-              result: result,
-              error: error,
-            ));
+            out.add(
+              ToolEvent(
+                id: toolCallId,
+                toolCallId: toolCallId,
+                tool: 'unknown',
+                args: const <String, dynamic>{},
+                status: newStatus,
+                result: result,
+                error: error,
+              ),
+            );
           }
       }
     }
@@ -807,15 +813,17 @@ class SessionRepository extends Repository implements ISessionRepository {
     }).toList();
 
     if (!found) {
-      updated.add(ToolEvent(
-        id: toolCallId,
-        toolCallId: toolCallId,
-        tool: 'unknown',
-        args: const <String, dynamic>{},
-        status: status,
-        result: result,
-        error: error,
-      ));
+      updated.add(
+        ToolEvent(
+          id: toolCallId,
+          toolCallId: toolCallId,
+          tool: 'unknown',
+          args: const <String, dynamic>{},
+          status: status,
+          result: result,
+          error: error,
+        ),
+      );
     }
 
     _emit(_state.copyWith(messages: updated));

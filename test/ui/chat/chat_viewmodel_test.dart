@@ -32,24 +32,35 @@ class _FakeRepo implements ISessionRepository {
   int openSessionCalls = 0;
   int disconnectCalls = 0;
 
-  @override SessionState get current => _state;
-  @override Stream<SessionState> get sessionStream => _ctrl.stream;
-  @override Stream<SessionEvent> get eventStream => _events.stream;
-  @override Future<void> boot() async {}
-  @override Future<void> connectTo(PeerRecord p) async {}
+  @override
+  SessionState get current => _state;
+  @override
+  Stream<SessionState> get sessionStream => _ctrl.stream;
+  @override
+  Stream<SessionEvent> get eventStream => _events.stream;
+  @override
+  Future<void> boot() async {}
+  @override
+  Future<void> connectTo(PeerRecord p) async {}
 
   void pushEvent(SessionEvent e) => _events.add(e);
 
   @override
-  Future<void> sendMessage(String text) async {
+  Future<void> sendMessage(String text, {MessageImage? image}) async {
     final id = 'u${_ctrl.hashCode}';
-    _push(_state.copyWith(
-      messages: [..._state.messages, UserMsg(id: id, text: text)],
-      streaming: StreamingMessage(inReplyTo: id),
-    ));
+    _push(
+      _state.copyWith(
+        messages: [
+          ..._state.messages,
+          UserMsg(id: id, text: text),
+        ],
+        streaming: StreamingMessage(inReplyTo: id),
+      ),
+    );
   }
 
-  @override Future<void> cancel(String targetId) async {}
+  @override
+  Future<void> cancel(String targetId) async {}
 
   int clearActiveSessionCalls = 0;
   @override
@@ -78,8 +89,14 @@ class _FakeRepo implements ISessionRepository {
     _ctrl.close();
     _events.close();
   }
-  @override void adoptChannel(IChannel channel, PeerRecord peer) {}
-  @override Future<void> disconnect() async { disconnectCalls++; }
+
+  @override
+  void adoptChannel(IChannel channel, PeerRecord peer) {}
+  @override
+  Future<void> disconnect() async {
+    disconnectCalls++;
+  }
+
   PeerRecord? fakeActivePeer;
   @override
   PeerRecord? get activePeer => fakeActivePeer;
@@ -96,17 +113,24 @@ class _FakeRepo implements ISessionRepository {
       _push(_state.copyWith(messages: cache, clearStreaming: true));
     }
   }
+
   int requestSyncCalls = 0;
-  @override void requestSync() { requestSyncCalls++; }
+  @override
+  void requestSync() {
+    requestSyncCalls++;
+  }
+
   int switchRoomCalls = 0;
   String? lastSwitchedRoom;
-  @override void switchRoom(String roomId) {
+  @override
+  void switchRoom(String roomId) {
     switchRoomCalls++;
     lastSwitchedRoom = roomId;
   }
 
-  final _roomsCtrl =
-      StreamController<Map<String, List<RoomInfo>>>.broadcast(sync: true);
+  final _roomsCtrl = StreamController<Map<String, List<RoomInfo>>>.broadcast(
+    sync: true,
+  );
   final Map<String, List<RoomInfo>> _rooms = {};
   final Map<String, Set<String>> _liveRooms = {};
   @override
@@ -133,10 +157,13 @@ class _FakeRepo implements ISessionRepository {
   Stream<({String? epk, String? roomId})> get workingStream =>
       const Stream.empty();
   @override
-  Future<void> openSession(PeerRecord peer) async { openSessionCalls++; }
+  Future<void> openSession(PeerRecord peer) async {
+    openSessionCalls++;
+  }
 
-  final _presenceCtrl =
-      StreamController<Map<String, PresenceState>>.broadcast(sync: true);
+  final _presenceCtrl = StreamController<Map<String, PresenceState>>.broadcast(
+    sync: true,
+  );
   final Map<String, PresenceState> _presence = {};
   @override
   Stream<Map<String, PresenceState>> get presenceStream => _presenceCtrl.stream;
@@ -159,9 +186,12 @@ class _FakeRepo implements ISessionRepository {
 class _FakeChannel implements IChannel {
   final _ctrl = StreamController<ServerMessage>.broadcast(sync: true);
 
-  @override Stream<ServerMessage> get serverMessages => _ctrl.stream;
-  @override Future<void> send(ClientMessage msg) async {}
-  @override Future<void> close() async => _ctrl.close();
+  @override
+  Stream<ServerMessage> get serverMessages => _ctrl.stream;
+  @override
+  Future<void> send(ClientMessage msg) async {}
+  @override
+  Future<void> close() async => _ctrl.close();
 
   void push(ServerMessage msg) => _ctrl.add(msg);
 }
@@ -203,6 +233,7 @@ class _FakeSecureStorage implements FlutterSecureStorage {
       _store[key] = value;
     }
   }
+
   @override
   Future<void> delete({
     required String key,
@@ -224,8 +255,10 @@ const _peerA = PeerRecord(
   pairedAt: '2026-01-01T00:00:00Z',
 );
 
-Future<({_FakeRepo repo, Preferences prefs, _FakeStorage storage, ChatViewModel vm})>
-    _build({
+Future<
+  ({_FakeRepo repo, Preferences prefs, _FakeStorage storage, ChatViewModel vm})
+>
+_build({
   String? selectedEpk,
   _FakeStorage? storage,
   SessionState? seedRepoState,
@@ -258,8 +291,7 @@ void main() {
       s.repo.dispose();
     });
 
-    test('selectedPeerEpk + peer in storage → openSession called',
-        () async {
+    test('selectedPeerEpk + peer in storage → openSession called', () async {
       final s = await _build(
         selectedEpk: 'epk_A',
         storage: _FakeStorage({'epk_A': _peerA}),
@@ -269,8 +301,7 @@ void main() {
       s.repo.dispose();
     });
 
-    test('selectedPeerEpk pointing to a missing peer → ChatNoPeer',
-        () async {
+    test('selectedPeerEpk pointing to a missing peer → ChatNoPeer', () async {
       final s = await _build(selectedEpk: 'epk_unknown');
       expect(s.vm.state, isA<ChatNoPeer>());
       expect(s.repo.openSessionCalls, 0);
@@ -278,17 +309,22 @@ void main() {
       s.repo.dispose();
     });
 
-    test('dispose does NOT disconnect (connection shared since plano 12)',
-        () async {
-      final s = await _build(
-        selectedEpk: 'epk_A',
-        storage: _FakeStorage({'epk_A': _peerA}),
-      );
-      s.vm.dispose();
-      expect(s.repo.disconnectCalls, 0,
-          reason: 'WS lives from app boot; chat is a passive observer');
-      s.repo.dispose();
-    });
+    test(
+      'dispose does NOT disconnect (connection shared since plano 12)',
+      () async {
+        final s = await _build(
+          selectedEpk: 'epk_A',
+          storage: _FakeStorage({'epk_A': _peerA}),
+        );
+        s.vm.dispose();
+        expect(
+          s.repo.disconnectCalls,
+          0,
+          reason: 'WS lives from app boot; chat is a passive observer',
+        );
+        s.repo.dispose();
+      },
+    );
 
     test('StatusOnline → ChatReady with empty messages', () async {
       final s = await _build();
@@ -339,10 +375,7 @@ void main() {
       const msg1 = UserMsg(id: 'u1', text: 'hi');
       const msg2 = AssistantMsg(id: 'u1', text: 'hello back');
       s.repo.push(
-        SessionState(
-          connection: StatusOnline(ch),
-          messages: [msg1, msg2],
-        ),
+        SessionState(connection: StatusOnline(ch), messages: [msg1, msg2]),
       );
       expect((s.vm.state as ChatReady).messages, [msg1, msg2]);
       s.vm.dispose();
@@ -371,23 +404,27 @@ void main() {
       s.repo.dispose();
     });
 
-    test('clearActiveSession delegates to repo and empties the thread',
-        () async {
-      final s = await _build();
-      final ch = _FakeChannel();
-      s.repo.push(SessionState(
-        connection: StatusOnline(ch),
-        messages: const [UserMsg(id: 'u1', text: 'old turn')],
-      ));
-      expect(s.repo.current.messages, isNotEmpty);
+    test(
+      'clearActiveSession delegates to repo and empties the thread',
+      () async {
+        final s = await _build();
+        final ch = _FakeChannel();
+        s.repo.push(
+          SessionState(
+            connection: StatusOnline(ch),
+            messages: const [UserMsg(id: 'u1', text: 'old turn')],
+          ),
+        );
+        expect(s.repo.current.messages, isNotEmpty);
 
-      await s.vm.clearActiveSession();
+        await s.vm.clearActiveSession();
 
-      expect(s.repo.clearActiveSessionCalls, 1);
-      expect(s.repo.current.messages, isEmpty);
-      s.vm.dispose();
-      s.repo.dispose();
-    });
+        expect(s.repo.clearActiveSessionCalls, 1);
+        expect(s.repo.current.messages, isEmpty);
+        s.vm.dispose();
+        s.repo.dispose();
+      },
+    );
 
     test('approveTool updates ToolEvent status', () async {
       final s = await _build();
@@ -398,9 +435,7 @@ void main() {
         tool: 'Bash',
         args: {'command': 'ls'},
       );
-      s.repo.push(
-        SessionState(connection: StatusOnline(ch), messages: [tool]),
-      );
+      s.repo.push(SessionState(connection: StatusOnline(ch), messages: [tool]));
 
       await s.vm.approveTool('tc1', ApproveDecision.allow);
 
@@ -410,65 +445,70 @@ void main() {
       s.repo.dispose();
     });
 
-    test(
-      'Pi offline + cached history → ChatReady (history visible, '
-      'NOT stuck in ChatConnecting)',
-      () async {
-        // Repo starts in StatusNoPeer (no WS yet). setActivePeer
-        // populates the cache. Bootstrap order matters: cache must
-        // be loaded BEFORE openSession, so history is in state even
-        // if openSession can never complete (Pi offline / WS down).
-        final repo = _FakeRepo();
-        repo.cachedMessagesForBootstrap = const [
-          UserMsg(id: 'u1', text: 'old question'),
-          AssistantMsg(id: 'u1', text: 'old reply'),
-        ];
-        final prefs = Preferences(_FakeSecureStorage());
-        await prefs.setSelectedPeerEpk('epk_A');
-        final st = _FakeStorage({'epk_A': _peerA});
-        final vm = ChatViewModel(repo, prefs, st);
-        await Future<void>.delayed(Duration.zero);
+    test('Pi offline + cached history → ChatReady (history visible, '
+        'NOT stuck in ChatConnecting)', () async {
+      // Repo starts in StatusNoPeer (no WS yet). setActivePeer
+      // populates the cache. Bootstrap order matters: cache must
+      // be loaded BEFORE openSession, so history is in state even
+      // if openSession can never complete (Pi offline / WS down).
+      final repo = _FakeRepo();
+      repo.cachedMessagesForBootstrap = const [
+        UserMsg(id: 'u1', text: 'old question'),
+        AssistantMsg(id: 'u1', text: 'old reply'),
+      ];
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk('epk_A');
+      final st = _FakeStorage({'epk_A': _peerA});
+      final vm = ChatViewModel(repo, prefs, st);
+      await Future<void>.delayed(Duration.zero);
 
-        expect(repo.setActivePeerCalls, 1,
-            reason: 'cache must be loaded before openSession');
-        final state = vm.state;
-        expect(state, isA<ChatReady>(),
-            reason: 'history present → render surface, even offline');
-        final ready = state as ChatReady;
-        expect(ready.messages, hasLength(2));
-        expect(ready.isOffline, isTrue,
-            reason: 'WS not online → input disabled, banner-able');
+      expect(
+        repo.setActivePeerCalls,
+        1,
+        reason: 'cache must be loaded before openSession',
+      );
+      final state = vm.state;
+      expect(
+        state,
+        isA<ChatReady>(),
+        reason: 'history present → render surface, even offline',
+      );
+      final ready = state as ChatReady;
+      expect(ready.messages, hasLength(2));
+      expect(
+        ready.isOffline,
+        isTrue,
+        reason: 'WS not online → input disabled, banner-able',
+      );
 
-        vm.dispose();
-        repo.dispose();
-      },
-    );
+      vm.dispose();
+      repo.dispose();
+    });
 
-    test(
-      'plano 13 fast-path: when activePeer already matches → openSession '
-      'is NOT called',
-      () async {
-        final repo = _FakeRepo();
-        repo.fakeActivePeer = _peerA; // boot already settled on this peer
-        final ch = _FakeChannel();
-        repo._state = SessionState(connection: StatusOnline(ch));
-        final prefs = Preferences(_FakeSecureStorage());
-        await prefs.setSelectedPeerEpk('epk_A');
-        final st = _FakeStorage({'epk_A': _peerA});
+    test('plano 13 fast-path: when activePeer already matches → openSession '
+        'is NOT called', () async {
+      final repo = _FakeRepo();
+      repo.fakeActivePeer = _peerA; // boot already settled on this peer
+      final ch = _FakeChannel();
+      repo._state = SessionState(connection: StatusOnline(ch));
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk('epk_A');
+      final st = _FakeStorage({'epk_A': _peerA});
 
-        final vm = ChatViewModel(repo, prefs, st);
-        await Future<void>.delayed(Duration.zero);
+      final vm = ChatViewModel(repo, prefs, st);
+      await Future<void>.delayed(Duration.zero);
 
-        expect(repo.openSessionCalls, 0,
-            reason: 'fast-path must skip openSession when already driving');
-        expect(repo.setActivePeerCalls, 1,
-            reason: 'cache load still happens');
-        expect(vm.state, isA<ChatReady>());
+      expect(
+        repo.openSessionCalls,
+        0,
+        reason: 'fast-path must skip openSession when already driving',
+      );
+      expect(repo.setActivePeerCalls, 1, reason: 'cache load still happens');
+      expect(vm.state, isA<ChatReady>());
 
-        vm.dispose();
-        repo.dispose();
-      },
-    );
+      vm.dispose();
+      repo.dispose();
+    });
 
     test(
       'plano 13 slow-path: when activePeer mismatches → openSession called',
@@ -488,33 +528,36 @@ void main() {
         final vm = ChatViewModel(repo, prefs, st);
         await Future<void>.delayed(Duration.zero);
 
-        expect(repo.openSessionCalls, 1,
-            reason: 'must call openSession to switch the connection');
+        expect(
+          repo.openSessionCalls,
+          1,
+          reason: 'must call openSession to switch the connection',
+        );
 
         vm.dispose();
         repo.dispose();
       },
     );
 
-    test(
-      'mounts when conn was already Online before VM existed → ChatReady '
-      '(no stuck in ChatConnecting)',
-      () async {
-        // Simulate: boot opened the WS before /chat was navigated to; the
-        // repo already has connection=Online by the time ChatViewModel
-        // constructs.
-        final ch = _FakeChannel();
-        final s = await _build(
-          selectedEpk: 'epk_A',
-          storage: _FakeStorage({'epk_A': _peerA}),
-          seedRepoState: SessionState(connection: StatusOnline(ch)),
-        );
-        expect(s.vm.state, isA<ChatReady>(),
-            reason: 'must seed from _repo.current — no future event needed');
-        s.vm.dispose();
-        s.repo.dispose();
-      },
-    );
+    test('mounts when conn was already Online before VM existed → ChatReady '
+        '(no stuck in ChatConnecting)', () async {
+      // Simulate: boot opened the WS before /chat was navigated to; the
+      // repo already has connection=Online by the time ChatViewModel
+      // constructs.
+      final ch = _FakeChannel();
+      final s = await _build(
+        selectedEpk: 'epk_A',
+        storage: _FakeStorage({'epk_A': _peerA}),
+        seedRepoState: SessionState(connection: StatusOnline(ch)),
+      );
+      expect(
+        s.vm.state,
+        isA<ChatReady>(),
+        reason: 'must seed from _repo.current — no future event needed',
+      );
+      s.vm.dispose();
+      s.repo.dispose();
+    });
 
     test(
       'openSession idempotent (no events fire) → state still becomes Ready',
@@ -551,10 +594,13 @@ void main() {
         // to recover the history — coexisting is harmless (Pi is
         // idempotent on session_sync) and gives us belt-and-suspenders
         // against bootstrap races.
-        expect(s.repo.requestSyncCalls, greaterThanOrEqualTo(1),
-            reason:
-                'session_sync would never fire on its own when '
-                'switchTo no-ops — bootstrap must force it');
+        expect(
+          s.repo.requestSyncCalls,
+          greaterThanOrEqualTo(1),
+          reason:
+              'session_sync would never fire on its own when '
+              'switchTo no-ops — bootstrap must force it',
+        );
         s.vm.dispose();
         s.repo.dispose();
       },
@@ -599,10 +645,9 @@ void main() {
         expect((s.vm.state as ChatReady).peerPresence, isA<PresenceOffline>());
 
         // Pi announces the active room → live=true.
-        s.repo.setRooms(
-          'epk_A',
-          const [RoomInfo(roomId: 'main', startedAt: 1)],
-        );
+        s.repo.setRooms('epk_A', const [
+          RoomInfo(roomId: 'main', startedAt: 1),
+        ]);
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect((s.vm.state as ChatReady).peerPresence, isA<PresenceOnline>());
 
@@ -611,8 +656,7 @@ void main() {
       },
     );
 
-    test('PairingRevoked event sets ChatReady.pairingRevoked=true',
-        () async {
+    test('PairingRevoked event sets ChatReady.pairingRevoked=true', () async {
       final s = await _build();
       final ch = _FakeChannel();
       s.repo.push(SessionState(connection: StatusOnline(ch)));
@@ -636,35 +680,37 @@ void main() {
         final ch = _FakeChannel();
         s.repo.push(SessionState(connection: StatusOnline(ch)));
         // Start with the active room live.
-        s.repo.setRooms(
-          'epk_A',
-          const [RoomInfo(roomId: 'main', startedAt: 1)],
-        );
+        s.repo.setRooms('epk_A', const [
+          RoomInfo(roomId: 'main', startedAt: 1),
+        ]);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // Pi sends Bye → ChatViewModel.onEvent stores offlineReason.
         // Then the relay flips the room to offline.
         s.repo.pushEvent(const PeerWentOffline('peer_stop'));
-        s.repo.setRooms(
-          'epk_A',
-          const [RoomInfo(roomId: 'main', startedAt: 1)],
-          live: {},
-        );
+        s.repo.setRooms('epk_A', const [
+          RoomInfo(roomId: 'main', startedAt: 1),
+        ], live: {});
         await Future<void>.delayed(const Duration(milliseconds: 10));
-        expect((s.vm.state as ChatReady).peerOfflineReason, 'peer_stop',
-            reason: 'banner reason is set when Bye lands');
+        expect(
+          (s.vm.state as ChatReady).peerOfflineReason,
+          'peer_stop',
+          reason: 'banner reason is set when Bye lands',
+        );
 
         // Room comes back live (relay → room_announced).
         final syncCallsBefore = s.repo.requestSyncCalls;
-        s.repo.setRooms(
-          'epk_A',
-          const [RoomInfo(roomId: 'main', startedAt: 1)],
-        );
+        s.repo.setRooms('epk_A', const [
+          RoomInfo(roomId: 'main', startedAt: 1),
+        ]);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // Banner cleared automatically.
-        expect((s.vm.state as ChatReady).peerOfflineReason, isNull,
-            reason: 'offlineReason must auto-clear when Pi returns');
+        expect(
+          (s.vm.state as ChatReady).peerOfflineReason,
+          isNull,
+          reason: 'offlineReason must auto-clear when Pi returns',
+        );
         // And requestSync was fired so we pull any new history.
         expect(
           s.repo.requestSyncCalls - syncCallsBefore,

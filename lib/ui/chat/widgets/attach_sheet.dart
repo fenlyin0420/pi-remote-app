@@ -1,0 +1,90 @@
+import 'package:app/ui/app_theme.dart';
+import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+/// Plan/30 — which source the user picked from the attach sheet (#2).
+enum AttachSource { camera, gallery }
+
+/// Bottom sheet offering Camera / Gallery (decision #2, interpreted as an
+/// action sheet to match the quick-actions sheet idiom). Returns the chosen
+/// [AttachSource], or null if dismissed. Pure UI — the caller drives the
+/// picker ViewModel with the result.
+Future<AttachSource?> showAttachSheet(BuildContext context) {
+  return showModalBottomSheet<AttachSource>(
+    context: context,
+    backgroundColor: kBg,
+    barrierColor: Colors.black.withValues(alpha: 0.6),
+    isScrollControlled: true,
+    showDragHandle: false,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) => const _AttachSheetBody(),
+  );
+}
+
+class _AttachSheetBody extends StatelessWidget {
+  const _AttachSheetBody();
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: kBorder,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            _AttachOption(
+              key: const Key('attach-camera'),
+              icon: LucideIcons.camera,
+              label: 'Camera',
+              onTap: () => Navigator.of(context).pop(AttachSource.camera),
+            ),
+            _AttachOption(
+              key: const Key('attach-gallery'),
+              icon: LucideIcons.image,
+              label: 'Photo Library',
+              onTap: () => Navigator.of(context).pop(AttachSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AttachOption extends StatelessWidget {
+  const _AttachOption({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      onTap: onTap,
+      leading: Icon(icon, color: kAccent, size: 20),
+      title: Text(
+        label,
+        style: const TextStyle(fontFamily: kMono, fontSize: 14, color: kText),
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    );
+  }
+}

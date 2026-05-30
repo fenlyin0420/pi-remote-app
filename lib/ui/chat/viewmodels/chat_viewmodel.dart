@@ -32,6 +32,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   bool _roomLive = false;
   bool _bootstrapping = true;
   bool _disposed = false;
+
   /// Plan/24-fix-session-sync: tracks whether we've asked the Pi for
   /// session_history during the current StatusOnline window. We reset
   /// it whenever the channel drops so a fresh reconnect always
@@ -155,8 +156,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     if (!alreadyDriving) {
       await _repo.openSession(peer);
       if (_disposed) return;
-    } else {
-    }
+    } else {}
 
     // Seed from the repo's current snapshot so the view leaves
     // `ChatConnecting` immediately — even when `openSession` was a
@@ -173,8 +173,8 @@ class ChatViewModel extends ViewModel<ChatState> {
   // Actions — called from UI
   // ---------------------------------------------------------------------------
 
-  Future<void> sendMessage(String text) {
-    return _repo.sendMessage(text);
+  Future<void> sendMessage(String text, {MessageImage? image}) {
+    return _repo.sendMessage(text, image: image);
   }
 
   Future<void> cancel(String targetId) => _repo.cancel(targetId);
@@ -230,11 +230,9 @@ class ChatViewModel extends ViewModel<ChatState> {
     _lastSeenConnection = s.connection;
 
     final cur = state;
-    final wasStreaming =
-        cur is ChatReady && cur.streaming != null;
+    final wasStreaming = cur is ChatReady && cur.streaming != null;
     final isStreaming = s.streaming != null;
-    if (wasStreaming != isStreaming) {
-    }
+    if (wasStreaming != isStreaming) {}
     if (_bootstrapping && s.connection is! StatusNoPeer) {
       _bootstrapping = false;
     }
@@ -259,22 +257,26 @@ class ChatViewModel extends ViewModel<ChatState> {
   void _onEvent(SessionEvent e) {
     if (e is PairingRevoked) {
       _pairingRevoked = true;
-      emit(_toChat(
-        _repo.current,
-        true,
-        _peerOfflineReason,
-        _roomLive,
-        _bootstrapping,
-      ));
+      emit(
+        _toChat(
+          _repo.current,
+          true,
+          _peerOfflineReason,
+          _roomLive,
+          _bootstrapping,
+        ),
+      );
     } else if (e is PeerWentOffline) {
       _peerOfflineReason = e.rawReason;
-      emit(_toChat(
-        _repo.current,
-        _pairingRevoked,
-        e.rawReason,
-        _roomLive,
-        _bootstrapping,
-      ));
+      emit(
+        _toChat(
+          _repo.current,
+          _pairingRevoked,
+          e.rawReason,
+          _roomLive,
+          _bootstrapping,
+        ),
+      );
     }
   }
 
@@ -299,13 +301,15 @@ class ChatViewModel extends ViewModel<ChatState> {
       _repo.requestSync();
     }
 
-    emit(_toChat(
-      _repo.current,
-      _pairingRevoked,
-      _peerOfflineReason,
-      _roomLive,
-      _bootstrapping,
-    ));
+    emit(
+      _toChat(
+        _repo.current,
+        _pairingRevoked,
+        _peerOfflineReason,
+        _roomLive,
+        _bootstrapping,
+      ),
+    );
   }
 
   static ChatState _toChat(

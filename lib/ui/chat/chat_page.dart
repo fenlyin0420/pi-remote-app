@@ -4,12 +4,17 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/quick_actions/widgets/quick_actions_sheet.dart';
+import 'package:app/ui/chat/attachment/states/attachment_state.dart';
+import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
+import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
+import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
+import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -93,8 +98,7 @@ class ChatPage extends StatelessWidget {
         children: [
           if (showBack)
             IconButton(
-              icon:
-                  const Icon(LucideIcons.chevronLeft, size: 18, color: kText),
+              icon: const Icon(LucideIcons.chevronLeft, size: 18, color: kText),
               tooltip: 'Back',
               onPressed: () =>
                   context.canPop() ? context.pop() : context.go('/home'),
@@ -132,48 +136,50 @@ class ChatPage extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Builder(builder: (_) {
-                      // Plan-18 follow-up — 4-state pill:
-                      // working / reconnecting / online / offline.
-                      // Priority: working > reconnecting > online > offline.
-                      const kWorking = Color(0xFF3FA9F5);
-                      final color = isWorking
-                          ? kWorking
-                          : isReconnecting
-                              ? Colors.amber.shade600
-                              : isOnline
-                                  ? kSuccess
-                                  : kMuted;
-                      final label = isWorking
-                          ? 'working…'
-                          : isReconnecting
-                              ? 'reconnecting…'
-                              : isOnline
-                                  ? 'online'
-                                  : 'offline';
-                      return Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 7,
-                            height: 7,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: color,
+                    Builder(
+                      builder: (_) {
+                        // Plan-18 follow-up — 4-state pill:
+                        // working / reconnecting / online / offline.
+                        // Priority: working > reconnecting > online > offline.
+                        const kWorking = Color(0xFF3FA9F5);
+                        final color = isWorking
+                            ? kWorking
+                            : isReconnecting
+                            ? Colors.amber.shade600
+                            : isOnline
+                            ? kSuccess
+                            : kMuted;
+                        final label = isWorking
+                            ? 'working…'
+                            : isReconnecting
+                            ? 'reconnecting…'
+                            : isOnline
+                            ? 'online'
+                            : 'offline';
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 7,
+                              height: 7,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: color,
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            label,
-                            style: TextStyle(
-                              fontFamily: kMono,
-                              fontSize: 10,
-                              color: color,
+                            const SizedBox(width: 4),
+                            Text(
+                              label,
+                              style: TextStyle(
+                                fontFamily: kMono,
+                                fontSize: 10,
+                                color: color,
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    }),
+                          ],
+                        );
+                      },
+                    ),
                   ],
                 ),
               ],
@@ -183,8 +189,7 @@ class ChatPage extends StatelessWidget {
             IconButton(
               icon: const Icon(LucideIcons.info, size: 18, color: kMuted2),
               tooltip: 'Session info',
-              onPressed: () =>
-                  _showSessionInfo(context, peer, room, roomName),
+              onPressed: () => _showSessionInfo(context, peer, room, roomName),
             ),
         ],
       ),
@@ -203,8 +208,8 @@ class ChatPage extends StatelessWidget {
     final owner = (peer.nickname?.isNotEmpty ?? false)
         ? peer.nickname!
         : peer.sessionName.isNotEmpty
-            ? peer.sessionName
-            : peer.remoteEpk.substring(0, 8);
+        ? peer.sessionName
+        : peer.remoteEpk.substring(0, 8);
     final model = room?.model;
     final paired = peer.pairedAt.contains('T')
         ? peer.pairedAt.split('T').first
@@ -332,24 +337,129 @@ class ChatPage extends StatelessWidget {
     // entry point when the chat input itself is enabled. Hiding the
     // ⚙ button on offline avoids a tap that would just throw inside
     // the sheet.
-    final actionsEnabled = isReady
-        && !isOffline
-        && !isRevoked
-        && !isPeerOffline
-        && !isPresenceOffline;
+    final actionsEnabled =
+        isReady &&
+        !isOffline &&
+        !isRevoked &&
+        !isPeerOffline &&
+        !isPresenceOffline;
 
     return InputBar(
-      disabled: !isReady
-          || isOffline
-          || isRevoked
-          || isPeerOffline
-          || isPresenceOffline,
+      disabled:
+          !isReady ||
+          isOffline ||
+          isRevoked ||
+          isPeerOffline ||
+          isPresenceOffline,
       streaming: isStreaming,
-      onSend: (text) => vm.sendMessage(text),
       onCancel: streamingId != null ? () => vm.cancel(streamingId) : null,
-      onOpenQuickActions:
-          actionsEnabled ? () => showQuickActionsSheet(context) : null,
+      onOpenQuickActions: actionsEnabled
+          ? () => showQuickActionsSheet(context)
+          : null,
+      // Plan/29 — hold-to-talk voice input. The VM is route-scoped (bound in
+      // app_router alongside ChatViewModel); InputBar listens to it directly,
+      // so a read() is enough here.
+      voice: context.read<VoiceInputViewModel>(),
+      onVoiceHint: (hint) => _handleVoiceHint(context, hint),
+      // Plan/30 — image attachments. takeImageForSend() reads + clears the
+      // attached image so the inline image rides along with the (optionally
+      // empty) caption. Attach-button gating by vision / already-attached is
+      // internal to InputBar; the host only gates by channel availability.
+      attachment: context.read<AttachmentViewModel>(),
+      onOpenAttach: actionsEnabled
+          ? () => _openAttach(context, context.read<AttachmentViewModel>())
+          : null,
+      onSend: (text) {
+        final image = context.read<AttachmentViewModel>().takeImageForSend();
+        vm.sendMessage(text, image: image);
+      },
     );
+  }
+
+  /// Open the Camera/Gallery sheet and drive the picker. Captures the
+  /// messenger up front so a permission-denied hint can deep-link to Settings
+  /// after the async pick.
+  static Future<void> _openAttach(
+    BuildContext context,
+    AttachmentViewModel vm,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final source = await showAttachSheet(context);
+    if (source == null) return;
+    AttachHint? hint;
+    final sub = vm.hints.listen((h) => hint = h);
+    switch (source) {
+      case AttachSource.camera:
+        await vm.pickFromCamera();
+      case AttachSource.gallery:
+        await vm.pickFromGallery();
+    }
+    await Future<void>.delayed(Duration.zero); // flush the hint microtask
+    await sub.cancel();
+    if (hint != null) _handleAttachHint(messenger, hint!);
+  }
+
+  static void _handleAttachHint(
+    ScaffoldMessengerState messenger,
+    AttachHint hint,
+  ) {
+    messenger.hideCurrentSnackBar();
+    switch (hint) {
+      case AttachHint.cameraPermissionDenied:
+        messenger.showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Camera access is off — enable it in Settings to attach a photo.',
+            ),
+            duration: const Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: 'Settings',
+              onPressed: AppSettings.openAppSettings,
+            ),
+          ),
+        );
+      case AttachHint.pickFailed:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text("Couldn't attach that image."),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    }
+  }
+
+  /// Surfaces the InputBar's voice hints (decision #10 permission path +
+  /// the "hold to talk" nudge) as snackbars. Captures the messenger up front
+  /// so the settings deep-link is safe across the async permission round-trip.
+  static void _handleVoiceHint(BuildContext context, VoiceHint hint) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    switch (hint) {
+      case VoiceHint.holdToTalk:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Hold the mic to talk'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      case VoiceHint.permissionDenied:
+        messenger.showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Microphone access is off — enable it in Settings to dictate.',
+            ),
+            duration: const Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: 'Settings',
+              onPressed: AppSettings.openAppSettings,
+            ),
+          ),
+        );
+    }
   }
 
   static String _inferSessionName(List<ChatMessage> msgs) {

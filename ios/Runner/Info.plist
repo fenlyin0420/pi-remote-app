@@ -2,8 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Used for QR pairing (scan the code on your Mac) and, since plan 30,
+	     to capture a photo to attach to a message. The photo library uses
+	     the system PHPicker (iOS 14+), which needs no library permission. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Camera is used to scan the QR code shown on your Mac terminal.</string>
+	<string>Camera is used to scan the QR code shown on your Mac terminal, and to take a photo to attach to a message.</string>
+	<!-- Plan 29 — voice input. The mic feeds on-device speech recognition
+	     (requiresOnDeviceRecognition); audio is transcribed locally and is
+	     never written to a file nor sent to any server. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Remote Pi uses the microphone to dictate messages by voice. Audio is processed on your device and is never sent to any server.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Speech recognition turns your dictated voice into text on your device. Audio is processed on-device and is never sent to any server.</string>
 	<!-- Public relays must use TLS (https/wss). NSAllowsLocalNetworking permits
 	     cleartext (http/ws) only to local/private-network self-hosted relays,
 	     which is the supported use case. Arbitrary public cleartext is blocked,

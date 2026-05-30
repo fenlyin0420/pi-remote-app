@@ -36,6 +36,7 @@ class _Q {
       _buf.add(d);
     }
   }
+
   Future<Uint8List> next() {
     if (_buf.isNotEmpty) return Future.value(_buf.removeAt(0));
     final c = Completer<Uint8List>();
@@ -48,9 +49,12 @@ class _MemTransport implements PeerTransport {
   final _Q _s;
   final _Q _r;
   _MemTransport({required _Q send, required _Q recv}) : _s = send, _r = recv;
-  @override Future<void> send(Uint8List d) async => _s.add(d);
-  @override Future<Uint8List> receive() => _r.next();
-  @override Future<void> close() async {}
+  @override
+  Future<void> send(Uint8List d) async => _s.add(d);
+  @override
+  Future<Uint8List> receive() => _r.next();
+  @override
+  Future<void> close() async {}
 }
 
 /// In-memory fake of FlutterSecureStorage so Preferences can be
@@ -66,8 +70,7 @@ class _FakeSecureStorage implements FlutterSecureStorage {
     WebOptions? webOptions,
     MacOsOptions? mOptions,
     WindowsOptions? wOptions,
-  }) async =>
-      _store[key];
+  }) async => _store[key];
   @override
   Future<void> write({
     required String key,
@@ -85,6 +88,7 @@ class _FakeSecureStorage implements FlutterSecureStorage {
       _store[key] = value;
     }
   }
+
   @override
   Future<void> delete({
     required String key,
@@ -97,6 +101,7 @@ class _FakeSecureStorage implements FlutterSecureStorage {
   }) async {
     _store.remove(key);
   }
+
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -109,8 +114,8 @@ class _FakeSecureStorage implements FlutterSecureStorage {
 class _PrefsForTest extends Preferences {
   final String? _relay;
   _PrefsForTest({String? relay = 'ws://localhost'})
-      : _relay = relay,
-        super(_FakeSecureStorage());
+    : _relay = relay,
+      super(_FakeSecureStorage());
   @override
   String? get relayUrl => _relay;
 }
@@ -172,17 +177,28 @@ class _FakeSessionRepo implements ISessionRepository {
   PeerRecord? adoptedPeer;
   int disconnectCalls = 0;
 
-  @override SessionState get current => const SessionState();
-  @override Stream<SessionState> get sessionStream => const Stream.empty();
-  @override Stream<SessionEvent> get eventStream => const Stream.empty();
-  @override Future<void> boot() async {}
-  @override Future<void> connectTo(PeerRecord p) async {}
-  @override Future<void> sendMessage(String t) async {}
-  @override Future<void> cancel(String id) async {}
-  @override Future<void> approveTool(String id, ApproveDecision d) async {}
-  @override Future<void> clearActiveSession() async {}
-  @override void dispose() {}
-  @override Future<void> disconnect() async => disconnectCalls++;
+  @override
+  SessionState get current => const SessionState();
+  @override
+  Stream<SessionState> get sessionStream => const Stream.empty();
+  @override
+  Stream<SessionEvent> get eventStream => const Stream.empty();
+  @override
+  Future<void> boot() async {}
+  @override
+  Future<void> connectTo(PeerRecord p) async {}
+  @override
+  Future<void> sendMessage(String t, {MessageImage? image}) async {}
+  @override
+  Future<void> cancel(String id) async {}
+  @override
+  Future<void> approveTool(String id, ApproveDecision d) async {}
+  @override
+  Future<void> clearActiveSession() async {}
+  @override
+  void dispose() {}
+  @override
+  Future<void> disconnect() async => disconnectCalls++;
 
   @override
   void adoptChannel(IChannel channel, PeerRecord peer) {
@@ -200,8 +216,7 @@ class _FakeSessionRepo implements ISessionRepository {
   void switchRoom(String roomId) {}
 
   @override
-  Stream<Map<String, List<RoomInfo>>> get roomsStream =>
-      const Stream.empty();
+  Stream<Map<String, List<RoomInfo>>> get roomsStream => const Stream.empty();
   @override
   List<RoomInfo> roomsFor(String epk) => const [];
   @override
@@ -219,8 +234,7 @@ class _FakeSessionRepo implements ISessionRepository {
   Future<void> openSession(PeerRecord peer) async {}
 
   @override
-  Stream<Map<String, PresenceState>> get presenceStream =>
-      const Stream.empty();
+  Stream<Map<String, PresenceState>> get presenceStream => const Stream.empty();
 
   @override
   PresenceState presenceFor(String epk) => const PresenceUnknown();
@@ -324,26 +338,29 @@ void main() {
       vm.dispose();
     });
 
-    test('transport failure → PairingError + retry returns to scanning', () async {
-      final storage = _FakeStorage();
-      final bridge = await _bootedBridge(storage);
-      final vm = PairingViewModel(
-        storage,
-        (qr, key) async => throw Exception('socket exception'),
-        _FakeSessionRepo(),
-        _PrefsForTest(),
-        bridge,
-      );
+    test(
+      'transport failure → PairingError + retry returns to scanning',
+      () async {
+        final storage = _FakeStorage();
+        final bridge = await _bootedBridge(storage);
+        final vm = PairingViewModel(
+          storage,
+          (qr, key) async => throw Exception('socket exception'),
+          _FakeSessionRepo(),
+          _PrefsForTest(),
+          bridge,
+        );
 
-      await vm.onQrScanned(_qrUri);
-      expect(vm.state, isA<PairingError>());
-      expect((vm.state as PairingError).canRetry, isTrue);
+        await vm.onQrScanned(_qrUri);
+        expect(vm.state, isA<PairingError>());
+        expect((vm.state as PairingError).canRetry, isTrue);
 
-      vm.retry();
-      expect(vm.state, isA<PairingScanning>());
+        vm.retry();
+        expect(vm.state, isA<PairingScanning>());
 
-      vm.dispose();
-    });
+        vm.dispose();
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -451,10 +468,7 @@ class _PairingPageTestHarness extends StatelessWidget {
         PairingError(:final message) => Column(
           children: [
             Text(message),
-            ElevatedButton(
-              onPressed: vm.retry,
-              child: const Text('Try again'),
-            ),
+            ElevatedButton(onPressed: vm.retry, child: const Text('Try again')),
           ],
         ),
       },

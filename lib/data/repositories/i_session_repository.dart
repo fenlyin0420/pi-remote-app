@@ -34,7 +34,10 @@ abstract class ISessionRepository extends Repository {
 
   Future<void> boot();
   Future<void> connectTo(PeerRecord peer);
-  Future<void> sendMessage(String text);
+
+  /// Plan/30 — [image] attaches one inline image (camera/gallery, compressed
+  /// app-side). Omit for text-only messages.
+  Future<void> sendMessage(String text, {MessageImage? image});
   Future<void> cancel(String targetId);
   Future<void> approveTool(String toolCallId, ApproveDecision decision);
 

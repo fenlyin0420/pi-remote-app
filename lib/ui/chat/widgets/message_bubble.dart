@@ -1,5 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/chat/widgets/image_bubble.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -19,6 +20,9 @@ class UserBubble extends StatelessWidget {
     // a red exclamation badge so the user knows to retry.
     final isPending = message.status == UserMsgStatus.pending;
     final isFailed = message.status == UserMsgStatus.failed;
+    // Plan/30 — when an image is attached the bubble becomes an ImageBubble
+    // (thumbnail + caption); otherwise the existing text card.
+    final image = message.image;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
@@ -28,23 +32,29 @@ class UserBubble extends StatelessWidget {
           children: [
             Opacity(
               opacity: isPending ? 0.6 : 1.0,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: kUserBubble,
-                  borderRadius: BorderRadius.circular(12),
-                  border: isFailed
-                      ? Border.all(color: Colors.redAccent, width: 1)
-                      : null,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 10,
-                ),
-                child: Text(
-                  message.text,
-                  style: kSansBody.copyWith(color: kText),
-                ),
-              ),
+              child: image != null
+                  ? ImageBubble(
+                      image: image,
+                      caption: message.text,
+                      isFailed: isFailed,
+                    )
+                  : Container(
+                      decoration: BoxDecoration(
+                        color: kUserBubble,
+                        borderRadius: BorderRadius.circular(12),
+                        border: isFailed
+                            ? Border.all(color: Colors.redAccent, width: 1)
+                            : null,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 13,
+                        vertical: 10,
+                      ),
+                      child: Text(
+                        message.text,
+                        style: kSansBody.copyWith(color: kText),
+                      ),
+                    ),
             ),
             if (isPending || isFailed)
               Padding(
@@ -64,10 +74,7 @@ class UserBubble extends StatelessWidget {
                       const SizedBox(width: 6),
                       Text(
                         'sending…',
-                        style: kSansBody.copyWith(
-                          color: kMuted,
-                          fontSize: 11,
-                        ),
+                        style: kSansBody.copyWith(color: kMuted, fontSize: 11),
                       ),
                     ] else ...[
                       const Icon(
@@ -116,10 +123,7 @@ class AssistantBubble extends StatelessWidget {
   Widget _renderText(String text) {
     // Simple highlight: file paths wrapped in backticks or containing /
     // are colored kHighlight. No full markdown in MVP.
-    return Text.rich(
-      _parseSpans(text),
-      style: kMonoStyle,
-    );
+    return Text.rich(_parseSpans(text), style: kMonoStyle);
   }
 
   TextSpan _parseSpans(String text) {
@@ -128,7 +132,8 @@ class AssistantBubble extends StatelessWidget {
     final words = text.split(' ');
     for (var i = 0; i < words.length; i++) {
       final w = words[i];
-      final isPath = w.contains('/') || w.contains('.ts') || w.contains('.dart');
+      final isPath =
+          w.contains('/') || w.contains('.ts') || w.contains('.dart');
       spans.add(
         TextSpan(
           text: i < words.length - 1 ? '$w ' : w,

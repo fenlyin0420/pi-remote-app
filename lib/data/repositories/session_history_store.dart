@@ -44,11 +44,8 @@ class CachedSession {
     required this.sessionStartedAt,
   });
 
-  factory CachedSession.empty() => const CachedSession(
-        messages: [],
-        lastTs: null,
-        sessionStartedAt: null,
-      );
+  factory CachedSession.empty() =>
+      const CachedSession(messages: [], lastTs: null, sessionStartedAt: null);
 }
 
 class SessionHistoryStore {
@@ -118,8 +115,7 @@ class SessionHistoryStore {
       final legacyRaw = legacy.get(_kDataKey);
       if (legacyRaw != null) {
         final cached = _decode(legacyRaw);
-        if (cached.messages.isNotEmpty ||
-            cached.sessionStartedAt != null) {
+        if (cached.messages.isNotEmpty || cached.sessionStartedAt != null) {
           await _write(epk, roomId, cached);
           return cached;
         }
@@ -134,7 +130,8 @@ class SessionHistoryStore {
     // understand, treat as empty cache (defensive against migrations).
     final version = map['schema_version'];
     if (version != _kSchemaVersion) return CachedSession.empty();
-    final msgs = (map['messages'] as List?)
+    final msgs =
+        (map['messages'] as List?)
             ?.map((m) => _messageFromJson(_coerceMap(m)))
             .whereType<ChatMessage>()
             .toList() ??
@@ -208,10 +205,7 @@ class SessionHistoryStore {
   /// Clear the cache for a single `(epk, roomId)`. For the implicit
   /// 'main' room this also wipes the legacy `session_<epk>` box so
   /// stale data doesn't resurrect on the next load.
-  Future<void> clearFor(
-    String epk, {
-    String roomId = kDefaultRoomId,
-  }) async {
+  Future<void> clearFor(String epk, {String roomId = kDefaultRoomId}) async {
     final box = await _open(epk, roomId);
     await box.clear();
     if (roomId == kDefaultRoomId) {
@@ -243,10 +237,20 @@ class SessionHistoryStore {
 
 Map<String, dynamic> _messageToJson(ChatMessage m) {
   return switch (m) {
-    UserMsg(:final id, :final text, :final status) =>
-      {'kind': 'user', 'id': id, 'text': text, 'status': status.name},
-    AssistantMsg(:final id, :final text) =>
-      {'kind': 'assistant', 'id': id, 'text': text},
+    UserMsg(:final id, :final text, :final status, :final image) => {
+      'kind': 'user',
+      'id': id,
+      'text': text,
+      'status': status.name,
+      // Plan/30 — persist the inline image so a cold restart / reconnect
+      // rebuilds the bubble (decision #8).
+      if (image != null) 'image': {'data': image.data, 'mime': image.mime},
+    },
+    AssistantMsg(:final id, :final text) => {
+      'kind': 'assistant',
+      'id': id,
+      'text': text,
+    },
     ToolEvent(
       :final id,
       :final toolCallId,
@@ -272,33 +276,43 @@ Map<String, dynamic> _messageToJson(ChatMessage m) {
 ChatMessage? _messageFromJson(Map<String, dynamic> j) {
   return switch (j['kind'] as String?) {
     'user' => UserMsg(
-        id: j['id'] as String,
-        text: j['text'] as String,
-        // Back-compat: persisted UserMsgs pre-`status` field are
-        // implicitly `confirmed`.
-        status: UserMsgStatus.values.firstWhere(
-          (s) => s.name == j['status'],
-          orElse: () => UserMsgStatus.confirmed,
-        ),
+      id: j['id'] as String,
+      text: j['text'] as String,
+      // Back-compat: persisted UserMsgs pre-`status` field are
+      // implicitly `confirmed`.
+      status: UserMsgStatus.values.firstWhere(
+        (s) => s.name == j['status'],
+        orElse: () => UserMsgStatus.confirmed,
       ),
+      image: _imageFromJson(j['image']),
+    ),
     'assistant' => AssistantMsg(
-        id: j['id'] as String,
-        text: j['text'] as String,
-      ),
+      id: j['id'] as String,
+      text: j['text'] as String,
+    ),
     'tool' => ToolEvent(
-        id: j['id'] as String,
-        toolCallId: j['tool_call_id'] as String,
-        tool: j['tool'] as String,
-        args: j['args'],
-        status: ToolEventStatus.values.firstWhere(
-          (e) => e.name == j['status'],
-          orElse: () => ToolEventStatus.completed,
-        ),
-        result: j['result'],
-        error: j['error'] as String?,
+      id: j['id'] as String,
+      toolCallId: j['tool_call_id'] as String,
+      tool: j['tool'] as String,
+      args: j['args'],
+      status: ToolEventStatus.values.firstWhere(
+        (e) => e.name == j['status'],
+        orElse: () => ToolEventStatus.completed,
       ),
+      result: j['result'],
+      error: j['error'] as String?,
+    ),
     _ => null,
   };
+}
+
+MessageImage? _imageFromJson(dynamic raw) {
+  final m = raw is Map ? raw.cast<String, dynamic>() : null;
+  if (m == null) return null;
+  final data = m['data'];
+  final mime = m['mime'];
+  if (data is! String || mime is! String) return null;
+  return MessageImage(data: data, mime: mime);
 }
 
 Map<String, dynamic> _coerceMap(dynamic raw) {

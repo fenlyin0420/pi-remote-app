@@ -6,8 +6,10 @@ import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
+import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/detail_placeholder.dart';
 import 'package:app/ui/home/home_page.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -315,7 +317,12 @@ GoRouter buildRouter(
             final t = extra['title'];
             if (t is String && t.isNotEmpty) initialTitle = t;
           }
-          return ViewmodelProvider<ChatViewModel>(
+          return MultiProvider(
+            providers: [
+              ViewmodelProvider<ChatViewModel>(),
+              ViewmodelProvider<VoiceInputViewModel>(),
+              ViewmodelProvider<AttachmentViewModel>(),
+            ],
             child: ChatPage(initialTitle: initialTitle),
           );
         },
@@ -341,8 +348,13 @@ Widget _detailPane() {
     builder: (ctx, sel, _) {
       final cur = sel.current;
       if (cur == null) return const DetailPlaceholder();
-      return ViewmodelProvider<ChatViewModel>(
+      return MultiProvider(
         key: ValueKey('chat-${cur.epk}-${cur.roomId}'),
+        providers: [
+          ViewmodelProvider<ChatViewModel>(),
+          ViewmodelProvider<VoiceInputViewModel>(),
+          ViewmodelProvider<AttachmentViewModel>(),
+        ],
         child: ChatPage(initialTitle: cur.title, showBack: false),
       );
     },

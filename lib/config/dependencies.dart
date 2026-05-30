@@ -11,15 +11,19 @@ import 'package:app/data/repositories/session_repository.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
+import 'package:app/data/voice/speech_service.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/qr_scanner.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
+import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
@@ -82,6 +86,16 @@ Future<void> setupDependencies() async {
     ),
   );
 
+  // Plan 29 — on-device speech-to-text. Singleton: it owns a broadcast
+  // sound-level stream that must survive across chat navigations; the
+  // injector disposes it at app teardown. VoiceInputViewModel never
+  // disposes it (it only stops/cancels sessions).
+  _injector.addService<SpeechService>(() => SpeechToTextService());
+
+  // Plan 30 — image picker + on-device JPEG compression. Stateless, no
+  // dispose hook needed.
+  _injector.addOther<IImagePickerService>(() => ImagePickerService());
+
   // Repositories
   _injector.addRepository<ISessionRepository>(SessionRepository.new);
   _injector.addRepository<IActionsRepository>(
@@ -111,6 +125,19 @@ Future<void> setupDependencies() async {
   _injector.addViewModel<OnboardingViewModel>(OnboardingViewModel.new);
   _injector.addViewModel<QuickActionsViewModel>(
     () => QuickActionsViewModel(_injector.get<IActionsRepository>()),
+  );
+  // Plan 29 — voice input. New instance per chat mount; reuses the shared
+  // SpeechService singleton (which it stops/cancels but never disposes).
+  _injector.addViewModel<VoiceInputViewModel>(
+    () => VoiceInputViewModel(_injector.get<SpeechService>()),
+  );
+  // Plan 30 — image attachment. New instance per chat mount; resolves model
+  // vision via the shared ActionsRepository catalogue cache.
+  _injector.addViewModel<AttachmentViewModel>(
+    () => AttachmentViewModel(
+      _injector.get<IImagePickerService>(),
+      _injector.get<IActionsRepository>(),
+    ),
   );
 
   // Plan/tablet — app-global UI selection (which session the tablet's

@@ -6,6 +6,13 @@
          lets the app detect offline state without polling. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Plan 29 — voice input. RECORD_AUDIO feeds on-device speech
+         recognition; audio is transcribed locally and never written to a
+         file nor sent to any server. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Plan 30 — image attachments. CAMERA covers the photo-capture path;
+         the gallery uses the Android Photo Picker (no storage permission). -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="Remote Pi"
         android:name="${applicationName}"
@@ -47,6 +54,12 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Plan 29 — Android 11+ (API 30) package visibility: lets
+             speech_to_text discover the on-device recognition service.
+             Without this, locales()/listen() find no provider. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

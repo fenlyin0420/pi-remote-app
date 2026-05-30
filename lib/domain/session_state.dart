@@ -24,27 +24,55 @@ sealed class ChatMessage {
 /// authoritative).
 enum UserMsgStatus { pending, confirmed, failed }
 
+/// Plan/30 — an image attached to a user message. Carries the JPEG bytes
+/// base64-encoded plus its mime type, mirroring the SDK's `ImageContent`.
+/// Bytes always travel inline (decision #8: history replays the image too),
+/// so the bubble can render straight from [data] with no extra round-trip.
+class MessageImage {
+  /// Base64-encoded image bytes (no data-URI prefix).
+  final String data;
+
+  /// Mime type, e.g. `image/jpeg`.
+  final String mime;
+
+  const MessageImage({required this.data, required this.mime});
+
+  @override
+  bool operator ==(Object other) =>
+      other is MessageImage && other.data == data && other.mime == mime;
+
+  @override
+  int get hashCode => Object.hash(data, mime);
+}
+
 class UserMsg extends ChatMessage {
   final String text;
   final UserMsgStatus status;
+
+  /// Plan/30 — optional attached image (one max). `null` for text-only
+  /// messages, which is every message before this feature.
+  final MessageImage? image;
+
   const UserMsg({
     required super.id,
     required this.text,
     this.status = UserMsgStatus.confirmed,
+    this.image,
   });
 
   UserMsg copyWith({UserMsgStatus? status}) =>
-      UserMsg(id: id, text: text, status: status ?? this.status);
+      UserMsg(id: id, text: text, status: status ?? this.status, image: image);
 
   @override
   bool operator ==(Object other) =>
       other is UserMsg &&
       other.id == id &&
       other.text == text &&
-      other.status == status;
+      other.status == status &&
+      other.image == image;
 
   @override
-  int get hashCode => Object.hash(id, text, status);
+  int get hashCode => Object.hash(id, text, status, image);
 }
 
 class AssistantMsg extends ChatMessage {
@@ -81,16 +109,15 @@ class ToolEvent extends ChatMessage {
     ToolEventStatus? status,
     dynamic result,
     String? error,
-  }) =>
-      ToolEvent(
-        id: id,
-        toolCallId: toolCallId,
-        tool: tool,
-        args: args,
-        status: status ?? this.status,
-        result: result ?? this.result,
-        error: error ?? this.error,
-      );
+  }) => ToolEvent(
+    id: id,
+    toolCallId: toolCallId,
+    tool: tool,
+    args: args,
+    status: status ?? this.status,
+    result: result ?? this.result,
+    error: error ?? this.error,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -148,12 +175,11 @@ class SessionState {
     List<ChatMessage>? messages,
     StreamingMessage? streaming,
     bool clearStreaming = false,
-  }) =>
-      SessionState(
-        connection: connection ?? this.connection,
-        messages: messages ?? this.messages,
-        streaming: clearStreaming ? null : (streaming ?? this.streaming),
-      );
+  }) => SessionState(
+    connection: connection ?? this.connection,
+    messages: messages ?? this.messages,
+    streaming: clearStreaming ? null : (streaming ?? this.streaming),
+  );
 
   @override
   bool operator ==(Object other) =>
