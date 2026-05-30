@@ -25,6 +25,34 @@ void main() {
     ));
   }
 
+  // Plan/28 — the quick-actions button is wrapped in a SizeTransition that
+  // animates it in/out. When "hidden" the widget STAYS MOUNTED and only
+  // collapses to zero width (it never leaves the tree), so `findsNothing` is
+  // the wrong assertion. Instead: still present, but collapsed to width 0
+  // (and therefore not tappable).
+  final quickActionsKey = find.byKey(const Key('input-bar-quick-actions'));
+
+  void expectCollapsed(WidgetTester tester) {
+    expect(quickActionsKey, findsOneWidget,
+        reason: 'stays mounted — SizeTransition collapses size, not the tree');
+    final sizeTransition = find.ancestor(
+      of: quickActionsKey,
+      matching: find.byType(SizeTransition),
+    );
+    expect(tester.getSize(sizeTransition).width, 0,
+        reason: 'collapsed to zero width when hidden');
+  }
+
+  void expectExpanded(WidgetTester tester) {
+    expect(quickActionsKey, findsOneWidget);
+    final sizeTransition = find.ancestor(
+      of: quickActionsKey,
+      matching: find.byType(SizeTransition),
+    );
+    expect(tester.getSize(sizeTransition).width, greaterThan(0),
+        reason: 'fully expanded when visible');
+  }
+
   testWidgets('quick actions button is visible when input is empty',
       (tester) async {
     await pumpBar(
@@ -33,10 +61,12 @@ void main() {
       streaming: false,
       onOpenQuickActions: () {},
     );
-    expect(find.byKey(const Key('input-bar-quick-actions')), findsOneWidget);
+    await tester.pumpAndSettle();
+    expectExpanded(tester);
   });
 
-  testWidgets('quick actions button hides while typing', (tester) async {
+  testWidgets('quick actions button hides (collapses) while typing',
+      (tester) async {
     await pumpBar(
       tester,
       disabled: false,
@@ -44,28 +74,33 @@ void main() {
       onOpenQuickActions: () {},
     );
     await tester.enterText(find.byType(TextField), 'hello');
-    await tester.pump();
-    expect(find.byKey(const Key('input-bar-quick-actions')), findsNothing);
+    // Let the SizeTransition finish collapsing (it animates out over 320ms).
+    await tester.pumpAndSettle();
+    expectCollapsed(tester);
   });
 
-  testWidgets('quick actions button hides when disabled', (tester) async {
+  testWidgets('quick actions button hides (collapses) when disabled',
+      (tester) async {
     await pumpBar(
       tester,
       disabled: true,
       streaming: false,
       onOpenQuickActions: () {},
     );
-    expect(find.byKey(const Key('input-bar-quick-actions')), findsNothing);
+    await tester.pumpAndSettle();
+    expectCollapsed(tester);
   });
 
-  testWidgets('quick actions button hides while streaming', (tester) async {
+  testWidgets('quick actions button hides (collapses) while streaming',
+      (tester) async {
     await pumpBar(
       tester,
       disabled: false,
       streaming: true,
       onOpenQuickActions: () {},
     );
-    expect(find.byKey(const Key('input-bar-quick-actions')), findsNothing);
+    await tester.pumpAndSettle();
+    expectCollapsed(tester);
   });
 
   testWidgets('tap fires onOpenQuickActions', (tester) async {
