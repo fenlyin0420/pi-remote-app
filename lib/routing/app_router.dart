@@ -245,11 +245,31 @@ GoRouter buildRouter(
           if (!twoPane) {
             return children[navShell.currentIndex];
           }
+          // On a notched iPhone in landscape (width ≥ kTabletBreakpoint, so
+          // two-pane), each pane's own SafeArea reads the *full screen* insets
+          // and pads the edge facing the divider too — a phantom horizontal
+          // gutter beside the divider (which side depends on the notch
+          // orientation). Strip the divider-facing inset per pane so content
+          // reaches the divider; outer screen edges + top/bottom stay inset and
+          // the Scaffold backgrounds keep painting full-bleed.
           return Row(
             children: [
-              SizedBox(width: 360, child: children[0]),
+              SizedBox(
+                width: 360,
+                child: MediaQuery.removePadding(
+                  context: ctx,
+                  removeRight: true,
+                  child: children[0],
+                ),
+              ),
               const VerticalDivider(width: 1, thickness: 1, color: kBorder),
-              Expanded(child: children[1]),
+              Expanded(
+                child: MediaQuery.removePadding(
+                  context: ctx,
+                  removeLeft: true,
+                  child: children[1],
+                ),
+              ),
             ],
           );
         },

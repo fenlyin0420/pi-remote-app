@@ -73,7 +73,20 @@ class SyncService extends Service {
   final StreamController<bool> _workingController =
       StreamController<bool>.broadcast();
 
-  SyncService(this._conn, this._boxes) {
+  // Plan/32 safety net — if the relay never echoes a sent message back, the
+  // optimistic `pending:true` bubble would spin forever. After this window we
+  // remove the bubble SILENTLY (no "failed" state, no spinner). The real fix
+  // lives in the relay; this is the app-side backstop. Per-message (`id`)
+  // timers are armed only when a send is actually attempted online, and
+  // cancelled on echo, user-cancel, session switch, and dispose.
+  final Duration pendingSendTimeout;
+  final Map<String, Timer> _pendingSendTimers = {};
+
+  SyncService(
+    this._conn,
+    this._boxes, {
+    this.pendingSendTimeout = const Duration(seconds: 20),
+  }) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) => _writeRuntime());
     _presenceSub = _conn.presenceStream.listen((_) => _writeRuntime());
@@ -127,6 +140,9 @@ class SyncService extends Service {
     _chunkBuffer.clear();
     _chunkReplyTo = '';
     _workingReplyTo = null;
+    // Session switch: the previous chat's in-flight sends are no longer ours
+    // to confirm — drop their backstops so a stale timer can't fire later.
+    _cancelAllSendTimers();
     if (_streaming != null) _emitStreaming(null);
     if (_working) {
       _working = false;
@@ -175,9 +191,46 @@ class SyncService extends Service {
             : [WireImage(data: image.data, mime: image.mime)],
       ),
     );
+    // Arm the no-echo backstop. ONLY here (the send was actually attempted) —
+    // never on the offline `return` above, where "held pending" is deliberate.
+    _pendingSendTimers.remove(id)?.cancel();
+    _pendingSendTimers[id] = Timer(
+      pendingSendTimeout,
+      () => _onSendTimeout(id),
+    );
   }
 
+  /// No echo arrived within [pendingSendTimeout]: drop the optimistic bubble
+  /// silently and unwind only the turn state that belongs to THIS `id`.
+  void _onSendTimeout(String id) {
+    _pendingSendTimers.remove(id);
+    // ignore: discarded_futures
+    _removeById(id);
+    // Clear the thinking cursor only if it's seeded for this message.
+    if (_streaming?.inReplyTo == id) _emitStreaming(null);
+    // Clear working ONLY if this id owns it — never knock down a turn that a
+    // different (echoed) message is already driving.
+    if (_workingReplyTo == id) _setWorking(false);
+    debugPrint(
+      '[msg-timeout] id=$id removed (no echo in '
+      '${pendingSendTimeout.inSeconds}s)',
+    );
+  }
+
+  void _cancelAllSendTimers() {
+    for (final t in _pendingSendTimers.values) {
+      t.cancel();
+    }
+    _pendingSendTimers.clear();
+  }
+
+  /// Test seam — number of armed no-echo timers (asserts no leak on reset).
+  @visibleForTesting
+  int get debugPendingSendTimerCount => _pendingSendTimers.length;
+
   Future<void> cancel(String targetId) async {
+    // User-driven cancel of this message → disarm its no-echo backstop too.
+    _pendingSendTimers.remove(targetId)?.cancel();
     final ch = _conn.channel;
     if (ch == null) return;
     await ch.send(Cancel(id: _newId(), targetId: targetId));
@@ -224,6 +277,8 @@ class SyncService extends Service {
   Future<void> clearActiveSession() async {
     final epk = _activeEpk;
     if (epk == null) return;
+    // Session wiped → any optimistic sends are moot; disarm their backstops.
+    _cancelAllSendTimers();
     await _enqueue(() async {
       final box = await _boxes.msgsBox(epk, _activeRoomId);
       await box.clear();
@@ -320,6 +375,8 @@ class SyncService extends Service {
         // Echo dedupes against the optimistic row (same id): confirm it
         // (pending=false) or insert as confirmed (foreign device).
         debugPrint('[msg-echo] id=$id');
+        // Echo arrived → the send landed; disarm the no-echo backstop.
+        _pendingSendTimers.remove(id)?.cancel();
         // ignore: discarded_futures
         _upsert(
           MsgRole.user,
@@ -394,6 +451,7 @@ class SyncService extends Service {
         });
 
       case Cancelled(:final targetId):
+        _pendingSendTimers.remove(targetId)?.cancel();
         _emitStreaming(null);
         // ignore: discarded_futures
         _removeById(targetId);
@@ -839,6 +897,7 @@ class SyncService extends Service {
   void dispose() {
     _flushTimer?.cancel();
     _syncDebounce?.cancel();
+    _cancelAllSendTimers();
     _connSub?.cancel();
     _msgSub?.cancel();
     _roomsSub?.cancel();

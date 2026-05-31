@@ -54,14 +54,18 @@ void main() {
   Future<
     ({ConnectionManager conn, _FakeChannel ch, SyncService sync, String epk})
   >
-  setup() async {
+  setup({Duration pendingSendTimeout = const Duration(seconds: 20)}) async {
     final ch = _FakeChannel();
     final conn = ConnectionManager(
       factory: (_, _) async => ch,
       storage: _FakeStorage(),
     );
     final boxes = LocalBoxes();
-    final sync = SyncService(conn, boxes);
+    final sync = SyncService(
+      conn,
+      boxes,
+      pendingSendTimeout: pendingSendTimeout,
+    );
     final epk = 'epk_sync_${++_counter}';
     conn.adopt(
       ch,
@@ -179,46 +183,55 @@ void main() {
     s.sync.dispose();
   });
 
-  test(
-    'switching sessions resets the in-memory turn state — working/streaming '
-    'do NOT leak into the next chat (plan/32)',
-    () async {
-      final s = await setup();
+  test('switching sessions resets the in-memory turn state — working/streaming '
+      'do NOT leak into the next chat (plan/32)', () async {
+    final s = await setup();
 
-      // Session 1 is mid-turn: working flag + streaming buffer populated.
-      s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'thinking...'));
-      await _settle();
-      expect(s.sync.isWorking, isTrue);
-      expect(s.sync.streaming, isNotNull);
-      expect(s.sync.workingReplyTo, 'r1');
+    // Session 1 is mid-turn: working flag + streaming buffer populated.
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'thinking...'));
+    await _settle();
+    expect(s.sync.isWorking, isTrue);
+    expect(s.sync.streaming, isNotNull);
+    expect(s.sync.workingReplyTo, 'r1');
 
-      final flags = <bool>[];
-      final sub = s.sync.workingStream.listen(flags.add);
+    final flags = <bool>[];
+    final sub = s.sync.workingStream.listen(flags.add);
 
-      // Switch the writer to a DIFFERENT session (what the chat does on a
-      // tablet session switch). Must clear the in-memory signals.
-      await s.sync.activate('epk_other_session', 'main');
-      await _settle();
+    // Switch the writer to a DIFFERENT session (what the chat does on a
+    // tablet session switch). Must clear the in-memory signals.
+    await s.sync.activate('epk_other_session', 'main');
+    await _settle();
 
-      expect(s.sync.isWorking, isFalse,
-          reason: 'chat 2 must not inherit chat 1 working');
-      expect(s.sync.streaming, isNull,
-          reason: 'chat 1 streaming buffer must not show in chat 2');
-      expect(s.sync.workingReplyTo, isNull);
-      expect(flags, contains(false),
-          reason: 'listeners are notified the flag cleared');
+    expect(
+      s.sync.isWorking,
+      isFalse,
+      reason: 'chat 2 must not inherit chat 1 working',
+    );
+    expect(
+      s.sync.streaming,
+      isNull,
+      reason: 'chat 1 streaming buffer must not show in chat 2',
+    );
+    expect(s.sync.workingReplyTo, isNull);
+    expect(
+      flags,
+      contains(false),
+      reason: 'listeners are notified the flag cleared',
+    );
 
-      // The previous session's DURABLE index must stay "working" — the Pi
-      // may still be mid-turn and Home reflects it (relay broadcast + DB).
-      // Clearing the in-memory signals must NOT idle the box row.
-      expect(index(s.epk)?.status, SessionActivity.working,
-          reason: 'switching away must not idle chat 1 in the DB');
+    // The previous session's DURABLE index must stay "working" — the Pi
+    // may still be mid-turn and Home reflects it (relay broadcast + DB).
+    // Clearing the in-memory signals must NOT idle the box row.
+    expect(
+      index(s.epk)?.status,
+      SessionActivity.working,
+      reason: 'switching away must not idle chat 1 in the DB',
+    );
 
-      await sub.cancel();
-      s.conn.dispose();
-      s.sync.dispose();
-    },
-  );
+    await sub.cancel();
+    s.conn.dispose();
+    s.sync.dispose();
+  });
 
   test(
     'cursor: streaming is seeded EMPTY at turn start, before any chunk',
@@ -297,53 +310,50 @@ void main() {
     },
   );
 
-  test(
-    're-applying an IDENTICAL SessionHistory is idempotent — no box churn, '
-    'so the relay re-sending history on every reconnect no longer tears the '
-    'list down and rebuilds it (plan/32 flicker fix)',
-    () async {
-      final s = await setup();
-      final read = SessionReadRepository(LocalBoxes());
-      var emits = 0;
-      final sub = read.watchMessages(s.epk, 'main').listen((_) => emits++);
-      await _settle();
+  test('re-applying an IDENTICAL SessionHistory is idempotent — no box churn, '
+      'so the relay re-sending history on every reconnect no longer tears the '
+      'list down and rebuilds it (plan/32 flicker fix)', () async {
+    final s = await setup();
+    final read = SessionReadRepository(LocalBoxes());
+    var emits = 0;
+    final sub = read.watchMessages(s.epk, 'main').listen((_) => emits++);
+    await _settle();
 
-      SessionHistory hist(String inReplyTo) => SessionHistory(
-        inReplyTo: inReplyTo,
-        sessionStartedAt: 0,
-        events: const [
-          UserInputEvt(ts: 1, id: 'u1', text: 'hi'),
-          AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'hello'),
-          ToolRequestEvt(ts: 3, toolCallId: 'c1', tool: 'Read', args: null),
-        ],
-        eos: true,
-      );
+    SessionHistory hist(String inReplyTo) => SessionHistory(
+      inReplyTo: inReplyTo,
+      sessionStartedAt: 0,
+      events: const [
+        UserInputEvt(ts: 1, id: 'u1', text: 'hi'),
+        AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'hello'),
+        ToolRequestEvt(ts: 3, toolCallId: 'c1', tool: 'Read', args: null),
+      ],
+      eos: true,
+    );
 
-      s.ch.push(hist('sync1'));
-      await _settle();
-      final afterFirst = emits;
-      expect(afterFirst, greaterThan(1), reason: 'first apply populates rows');
-      expect(messages(s.epk).map((r) => r.role), [
-        MsgRole.user,
-        MsgRole.assistant,
-        MsgRole.tool,
-      ]);
+    s.ch.push(hist('sync1'));
+    await _settle();
+    final afterFirst = emits;
+    expect(afterFirst, greaterThan(1), reason: 'first apply populates rows');
+    expect(messages(s.epk).map((r) => r.role), [
+      MsgRole.user,
+      MsgRole.assistant,
+      MsgRole.tool,
+    ]);
 
-      // Relay re-delivers the SAME history (different in_reply_to, identical
-      // events) — the reconcile must write nothing → no watch event → no emit.
-      s.ch.push(hist('sync2'));
-      await _settle();
-      expect(
-        emits,
-        afterFirst,
-        reason: 'identical re-apply must not emit (no list rebuild/flicker)',
-      );
+    // Relay re-delivers the SAME history (different in_reply_to, identical
+    // events) — the reconcile must write nothing → no watch event → no emit.
+    s.ch.push(hist('sync2'));
+    await _settle();
+    expect(
+      emits,
+      afterFirst,
+      reason: 'identical re-apply must not emit (no list rebuild/flicker)',
+    );
 
-      await sub.cancel();
-      s.conn.dispose();
-      s.sync.dispose();
-    },
-  );
+    await sub.cancel();
+    s.conn.dispose();
+    s.sync.dispose();
+  });
 
   test(
     'switching the writer to a new session: a late frame from the OLD '
@@ -394,66 +404,60 @@ void main() {
     },
   );
 
-  test(
-    'compaction ServerMessage writes a system row that projects to a '
-    'CompactionMsg system bubble (plan/32)',
-    () async {
-      final s = await setup();
-      s.ch.push(
-        Compaction(
-          summary: 'recapped the thread',
-          tokensBefore: 12000,
-          ts: 1700000000000,
-        ),
-      );
-      await _settle();
+  test('compaction ServerMessage writes a system row that projects to a '
+      'CompactionMsg system bubble (plan/32)', () async {
+    final s = await setup();
+    s.ch.push(
+      Compaction(
+        summary: 'recapped the thread',
+        tokensBefore: 12000,
+        ts: 1700000000000,
+      ),
+    );
+    await _settle();
 
-      final m = messages(s.epk);
-      expect(m, hasLength(1));
-      expect(m.first.role, MsgRole.compaction);
-      expect(m.first.text, 'recapped the thread');
-      expect(m.first.tokensBefore, 12000);
-      // Projects to the domain system-bubble message.
-      expect(m.first.toChatMessage(), isA<CompactionMsg>());
+    final m = messages(s.epk);
+    expect(m, hasLength(1));
+    expect(m.first.role, MsgRole.compaction);
+    expect(m.first.text, 'recapped the thread');
+    expect(m.first.tokensBefore, 12000);
+    // Projects to the domain system-bubble message.
+    expect(m.first.toChatMessage(), isA<CompactionMsg>());
 
-      s.conn.dispose();
-      s.sync.dispose();
-    },
-  );
+    s.conn.dispose();
+    s.sync.dispose();
+  });
 
-  test(
-    'compaction event in session_history reconstructs the system row on '
-    're-sync (plan/32)',
-    () async {
-      final s = await setup();
-      s.ch.push(
-        SessionHistory(
-          inReplyTo: 'sync1',
-          sessionStartedAt: 0,
-          events: const [
-            UserInputEvt(ts: 1, id: 'u1', text: 'hi'),
-            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'hello'),
-            CompactionEvt(ts: 3, summary: 'compacted', tokensBefore: 5000),
-          ],
-          eos: true,
-        ),
-      );
-      await _settle();
+  test('compaction event in session_history reconstructs the system row on '
+      're-sync (plan/32)', () async {
+    final s = await setup();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'sync1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 1, id: 'u1', text: 'hi'),
+          AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'hello'),
+          CompactionEvt(ts: 3, summary: 'compacted', tokensBefore: 5000),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
 
-      final m = messages(s.epk);
-      expect(m.map((r) => r.role), [
-        MsgRole.user,
-        MsgRole.assistant,
-        MsgRole.compaction,
-      ]);
-      expect(m.last.text, 'compacted');
-      expect(m.last.tokensBefore, 5000);
-      expect(m.last.toChatMessage(), isA<CompactionMsg>());
+    final m = messages(s.epk);
+    expect(m.map((r) => r.role), [
+      MsgRole.user,
+      MsgRole.assistant,
+      MsgRole.compaction,
+    ]);
+    expect(m.last.text, 'compacted');
+    expect(m.last.tokensBefore, 5000);
+    expect(m.last.toChatMessage(), isA<CompactionMsg>());
 
-      s.conn.dispose();
-      s.sync.dispose();
-    },
-  );
+    s.conn.dispose();
+    s.sync.dispose();
+  });
 
   test('clearActiveSession wipes the rows + index', () async {
     final s = await setup();
@@ -467,5 +471,117 @@ void main() {
     expect(index(s.epk), isNull);
     s.conn.dispose();
     s.sync.dispose();
+  });
+
+  // Plan/32 safety net — a sent message whose echo never comes back must not
+  // spin forever; the optimistic bubble is removed SILENTLY after the timeout.
+  group('no-echo send timeout', () {
+    const short = Duration(milliseconds: 60);
+
+    test(
+      '(a) pending bubble is removed silently when no echo arrives',
+      () async {
+        final s = await setup(pendingSendTimeout: short);
+        await s.sync.sendMessage('hello');
+        await _settle();
+        expect(messages(s.epk), hasLength(1), reason: 'optimistic pending row');
+        expect(messages(s.epk).first.pending, isTrue);
+        expect(s.sync.isWorking, isTrue);
+        expect(s.sync.streaming, isNotNull, reason: 'thinking cursor seeded');
+
+        // No echo — wait past the timeout window.
+        await Future<void>.delayed(const Duration(milliseconds: 140));
+        await _settle();
+
+        expect(
+          messages(s.epk),
+          isEmpty,
+          reason: 'bubble removed, no failed state',
+        );
+        expect(
+          s.sync.isWorking,
+          isFalse,
+          reason: 'working cleared for this id',
+        );
+        expect(s.sync.streaming, isNull, reason: 'thinking cursor cleared');
+        expect(index(s.epk)?.status, SessionActivity.idle);
+        expect(s.sync.debugPendingSendTimerCount, 0);
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+
+    test(
+      '(b) echo within the window confirms the row and cancels the timer',
+      () async {
+        final s = await setup(pendingSendTimeout: short);
+        await s.sync.sendMessage('hello');
+        await _settle();
+        expect(s.sync.debugPendingSendTimerCount, 1, reason: 'timer armed');
+        final id = s.ch.sent.whereType<UserMessage>().last.id;
+
+        // Echo arrives promptly → confirms + disarms.
+        s.ch.push(UserInput(id: id, text: 'hello'));
+        await _settle();
+        expect(messages(s.epk), hasLength(1));
+        expect(
+          messages(s.epk).first.pending,
+          isFalse,
+          reason: 'confirmed by echo',
+        );
+        expect(
+          s.sync.debugPendingSendTimerCount,
+          0,
+          reason: 'echo cancelled timer',
+        );
+
+        // Wait PAST the timeout — the cancelled timer must NOT remove the row.
+        await Future<void>.delayed(const Duration(milliseconds: 140));
+        await _settle();
+        expect(
+          messages(s.epk),
+          hasLength(1),
+          reason: 'row survives the window',
+        );
+        expect(messages(s.epk).first.pending, isFalse);
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+
+    test(
+      '(c) timers are cancelled on session switch and on dispose (no leak)',
+      () async {
+        // Session switch path.
+        final s = await setup(pendingSendTimeout: short);
+        await s.sync.sendMessage('one');
+        await _settle();
+        expect(s.sync.debugPendingSendTimerCount, 1);
+
+        await s.sync.activate('epk_switch_target', 'main');
+        await _settle();
+        expect(
+          s.sync.debugPendingSendTimerCount,
+          0,
+          reason: 'session switch cancels + clears pending timers',
+        );
+
+        // dispose path (fresh service so the switch above doesn't mask it).
+        final s2 = await setup(pendingSendTimeout: short);
+        await s2.sync.sendMessage('two');
+        await _settle();
+        expect(s2.sync.debugPendingSendTimerCount, 1);
+        s2.sync.dispose();
+        expect(
+          s2.sync.debugPendingSendTimerCount,
+          0,
+          reason: 'dispose cancels + clears pending timers',
+        );
+
+        s.conn.dispose();
+        s.sync.dispose();
+        s2.conn.dispose();
+      },
+    );
   });
 }

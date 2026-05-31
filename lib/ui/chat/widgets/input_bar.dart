@@ -296,7 +296,12 @@ class _InputBarState extends State<InputBar> {
         !hasImage;
 
     final showQuickActions =
-        _empty && !hasImage && canInteract && !widget.streaming && !showStrip;
+        _empty &&
+        !hasImage &&
+        canInteract &&
+        !widget.streaming &&
+        !showStrip &&
+        hasQuickActions;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
@@ -317,11 +322,10 @@ class _InputBarState extends State<InputBar> {
                 ),
               Row(
                 children: [
-                  if (hasQuickActions)
-                    _QuickActionsButton(
-                      show: showQuickActions,
-                      onPressed: widget.onOpenQuickActions,
-                    ),
+                  _QuickActionsButton(
+                    show: showQuickActions,
+                    onPressed: widget.onOpenQuickActions,
+                  ),
                   _AttachButton(
                     enabled: attachEnabled,
                     onTap: widget.onOpenAttach,

@@ -28,20 +28,25 @@ GoRouter _buildAdaptiveRouter() {
           );
         },
         branches: [
-          StatefulShellBranch(routes: [
-            GoRoute(
-              path: '/home',
-              builder: (_, _) =>
-                  const Scaffold(body: Center(child: Text('MASTER'))),
-            ),
-          ]),
-          StatefulShellBranch(preload: true, routes: [
-            GoRoute(
-              path: '/session',
-              builder: (_, _) =>
-                  const Scaffold(body: Center(child: Text('DETAIL'))),
-            ),
-          ]),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/home',
+                builder: (_, _) =>
+                    const Scaffold(body: Center(child: Text('MASTER'))),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            preload: true,
+            routes: [
+              GoRoute(
+                path: '/session',
+                builder: (_, _) =>
+                    const Scaffold(body: Center(child: Text('DETAIL'))),
+              ),
+            ],
+          ),
         ],
       ),
     ],
@@ -53,7 +58,9 @@ Future<void> _pumpAt(WidgetTester tester, Size size) async {
   tester.view.physicalSize = size;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(MaterialApp.router(routerConfig: _buildAdaptiveRouter()));
+  await tester.pumpWidget(
+    MaterialApp.router(routerConfig: _buildAdaptiveRouter()),
+  );
   await tester.pumpAndSettle();
 }
 
@@ -109,13 +116,17 @@ void main() {
     testWidgets('true at/above breakpoint, false below', (tester) async {
       late bool wide;
       Future<void> probe(double width) async {
-        await tester.pumpWidget(MediaQuery(
-          data: MediaQueryData(size: Size(width, 800)),
-          child: Builder(builder: (ctx) {
-            wide = isWideLayout(ctx);
-            return const SizedBox();
-          }),
-        ));
+        await tester.pumpWidget(
+          MediaQuery(
+            data: MediaQueryData(size: Size(width, 800)),
+            child: Builder(
+              builder: (ctx) {
+                wide = isWideLayout(ctx);
+                return const SizedBox();
+              },
+            ),
+          ),
+        );
       }
 
       await probe(kTabletBreakpoint - 1);
@@ -134,8 +145,9 @@ void main() {
       expect(find.text('DETAIL'), findsOneWidget);
     });
 
-    testWidgets('narrow → only the active branch (master) is shown',
-        (tester) async {
+    testWidgets('narrow → only the active branch (master) is shown', (
+      tester,
+    ) async {
       await _pumpAt(tester, const Size(420, 900));
       expect(find.text('MASTER'), findsOneWidget);
       expect(find.text('DETAIL'), findsNothing);
@@ -161,49 +173,181 @@ void main() {
               );
             },
             branches: [
-              StatefulShellBranch(routes: [
-                GoRoute(
-                  path: '/home',
-                  builder: (_, _) =>
-                      const Scaffold(body: Center(child: Text('MASTER'))),
-                ),
-              ]),
-              StatefulShellBranch(preload: true, routes: [
-                GoRoute(
-                  path: '/session',
-                  builder: (_, _) =>
-                      const Scaffold(body: Center(child: Text('DETAIL'))),
-                ),
-              ]),
+              StatefulShellBranch(
+                routes: [
+                  GoRoute(
+                    path: '/home',
+                    builder: (_, _) =>
+                        const Scaffold(body: Center(child: Text('MASTER'))),
+                  ),
+                ],
+              ),
+              StatefulShellBranch(
+                preload: true,
+                routes: [
+                  GoRoute(
+                    path: '/session',
+                    builder: (_, _) =>
+                        const Scaffold(body: Center(child: Text('DETAIL'))),
+                  ),
+                ],
+              ),
             ],
           ),
         ],
       );
     }
 
-    testWidgets('wide + zero-state shows only master; flipping back re-splits',
-        (tester) async {
-      final shell = ShellLayout()..setZeroState(true);
+    testWidgets(
+      'wide + zero-state shows only master; flipping back re-splits',
+      (tester) async {
+        final shell = ShellLayout()..setZeroState(true);
+        tester.view.devicePixelRatio = 1.0;
+        tester.view.physicalSize = const Size(1200, 800);
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await tester.pumpWidget(
+          ChangeNotifierProvider<ShellLayout>.value(
+            value: shell,
+            child: MaterialApp.router(routerConfig: buildGatedRouter()),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Zero-state on a wide screen → single pane (no split).
+        expect(find.text('MASTER'), findsOneWidget);
+        expect(find.text('DETAIL'), findsNothing);
+
+        // Sessions appear → the split returns.
+        shell.setZeroState(false);
+        await tester.pumpAndSettle();
+        expect(find.text('MASTER'), findsOneWidget);
+        expect(find.text('DETAIL'), findsOneWidget);
+      },
+    );
+  });
+
+  group('two-pane SafeArea insets (notch / iPhone landscape)', () {
+    // Mirrors app_router's navigatorContainerBuilder two-pane Row. Each pane is
+    // a Scaffold whose body is wrapped in SafeArea (like HomePage / ChatPage).
+    // The regression: each pane's SafeArea reads the *full screen* padding, so
+    // it also insets the edge facing the divider — a phantom horizontal gutter.
+    // The fix strips the divider-facing inset per pane via MediaQuery.removePadding.
+    const masterKey = Key('master-body');
+    const detailKey = Key('detail-body');
+    const screen = Size(1200, 500);
+    const padLeft = 60.0; // notch side
+    const padRight = 30.0; // rounded-corner side
+    const padTop = 12.0;
+    const padBottom = 21.0; // home indicator
+    const dividerW = 1.0;
+
+    Widget pane(Key k) => Scaffold(
+      body: SafeArea(child: SizedBox.expand(key: k)),
+    );
+
+    Widget twoPaneRow({required bool withFix}) {
+      Widget left = SizedBox(width: 360, child: pane(masterKey));
+      Widget right = Expanded(child: pane(detailKey));
+      if (withFix) {
+        left = SizedBox(
+          width: 360,
+          child: Builder(
+            builder: (ctx) => MediaQuery.removePadding(
+              context: ctx,
+              removeRight: true,
+              child: pane(masterKey),
+            ),
+          ),
+        );
+        right = Expanded(
+          child: Builder(
+            builder: (ctx) => MediaQuery.removePadding(
+              context: ctx,
+              removeLeft: true,
+              child: pane(detailKey),
+            ),
+          ),
+        );
+      }
+      return Row(
+        children: [
+          left,
+          const VerticalDivider(width: dividerW),
+          right,
+        ],
+      );
+    }
+
+    Future<void> pumpRow(WidgetTester tester, {required bool withFix}) async {
       tester.view.devicePixelRatio = 1.0;
-      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.physicalSize = screen;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-
-      await tester.pumpWidget(ChangeNotifierProvider<ShellLayout>.value(
-        value: shell,
-        child: MaterialApp.router(routerConfig: buildGatedRouter()),
-      ));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: screen,
+              padding: EdgeInsets.fromLTRB(
+                padLeft,
+                padTop,
+                padRight,
+                padBottom,
+              ),
+            ),
+            child: twoPaneRow(withFix: withFix),
+          ),
+        ),
+      );
       await tester.pumpAndSettle();
+    }
 
-      // Zero-state on a wide screen → single pane (no split).
-      expect(find.text('MASTER'), findsOneWidget);
-      expect(find.text('DETAIL'), findsNothing);
-
-      // Sessions appear → the split returns.
-      shell.setZeroState(false);
-      await tester.pumpAndSettle();
-      expect(find.text('MASTER'), findsOneWidget);
-      expect(find.text('DETAIL'), findsOneWidget);
+    testWidgets('without the fix: phantom gutter beside the divider', (
+      tester,
+    ) async {
+      await pumpRow(tester, withFix: false);
+      // Master (left pane) wrongly insets its right → stops short of the divider.
+      expect(tester.getRect(find.byKey(masterKey)).right, 360 - padRight);
+      // Detail (right pane) wrongly insets its left → gap after the divider.
+      expect(
+        tester.getRect(find.byKey(detailKey)).left,
+        360 + dividerW + padLeft,
+      );
     });
+
+    testWidgets(
+      'with the fix: content reaches the divider, outer insets kept',
+      (tester) async {
+        await pumpRow(tester, withFix: true);
+        final master = tester.getRect(find.byKey(masterKey));
+        final detail = tester.getRect(find.byKey(detailKey));
+
+        // Divider-facing edges now reach the divider (no phantom gutter).
+        expect(master.right, 360, reason: 'master fills up to the divider');
+        expect(
+          detail.left,
+          360 + dividerW,
+          reason: 'detail starts at the divider',
+        );
+
+        // Outer screen-edge + top/bottom insets are still honored (surgical).
+        expect(master.left, padLeft, reason: 'screen left inset preserved');
+        expect(
+          detail.right,
+          screen.width - padRight,
+          reason: 'screen right inset preserved',
+        );
+        for (final r in [master, detail]) {
+          expect(r.top, padTop, reason: 'top inset preserved');
+          expect(
+            r.bottom,
+            screen.height - padBottom,
+            reason: 'bottom inset preserved',
+          );
+        }
+      },
+    );
   });
 }

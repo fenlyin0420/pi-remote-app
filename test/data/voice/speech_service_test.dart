@@ -173,10 +173,12 @@ void main() {
     });
 
     test(
-      'sound level is normalized to 0..1 on the soundLevel stream',
+      'sound level is normalized to 0..1 on the soundLevel stream (Android scale)',
       () async {
         final plugin = _FakeSttPlugin();
-        final service = SpeechToTextService(plugin);
+        // Pin the Android rmsdB scale so the assertions don't depend on the
+        // host the test runs on (forPlatform() picks darwin on macOS).
+        final service = SpeechToTextService(plugin, SoundLevelScale.android);
         await service.init(preferredLocaleId: 'en_US');
 
         final levels = <double>[];
@@ -197,5 +199,49 @@ void main() {
         service.dispose();
       },
     );
+
+    test(
+      'sound level uses the dBFS scale on iOS/macOS (negative avgPower)',
+      () async {
+        // Regression: iOS reports 20*log10(rms), a negative dBFS value. The
+        // Android range [-2, 10] clamps all of it to 0 → flat waveform. The
+        // darwin scale [-50, -10] must spread typical speech across 0..1.
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin, SoundLevelScale.darwin);
+        await service.init(preferredLocaleId: 'en_US');
+
+        final levels = <double>[];
+        final sub = service.soundLevel.listen(levels.add);
+
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+        );
+        plugin.emitLevel(-50.0); // min → 0
+        plugin.emitLevel(-30.0); // midpoint → 0.5
+        plugin.emitLevel(-10.0); // max → 1
+        plugin.emitLevel(-60.0); // below floor → clamped → 0
+        plugin.emitLevel(double.negativeInfinity); // silent buffer → 0
+        await Future<void>.delayed(Duration.zero);
+
+        expect(levels, [0.0, 0.5, 1.0, 0.0, 0.0]);
+        await sub.cancel();
+        service.dispose();
+      },
+    );
+  });
+
+  group('SoundLevelScale', () {
+    test('forPlatform picks the darwin scale on macOS test host', () {
+      // The unit-test host is macOS, so the platform factory must resolve to
+      // the dBFS scale — guarding the iOS waveform regression directly.
+      expect(SoundLevelScale.forPlatform(), SoundLevelScale.darwin);
+    });
+
+    test('normalize clamps NaN and ±infinity to the endpoints', () {
+      expect(SoundLevelScale.darwin.normalize(double.nan), 0.0);
+      expect(SoundLevelScale.darwin.normalize(double.negativeInfinity), 0.0);
+      expect(SoundLevelScale.darwin.normalize(double.infinity), 1.0);
+    });
   });
 }

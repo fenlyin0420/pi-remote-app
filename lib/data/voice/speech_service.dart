@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:app/domain/contracts/contracts.dart';
@@ -103,10 +104,12 @@ final class SpeechUnsupported extends SpeechAvailability {
 /// The plugin is reached through the [SttPlugin] seam so the locale-resolution
 /// / cap / transcript-accumulation logic is unit-testable without a device.
 class SpeechToTextService implements SpeechService {
-  SpeechToTextService([SttPlugin? plugin])
-    : _plugin = plugin ?? SttPluginImpl();
+  SpeechToTextService([SttPlugin? plugin, SoundLevelScale? levelScale])
+    : _plugin = plugin ?? SttPluginImpl(),
+      _levelScale = levelScale ?? SoundLevelScale.forPlatform();
 
   final SttPlugin _plugin;
+  final SoundLevelScale _levelScale;
   final StreamController<double> _levelController =
       StreamController<double>.broadcast();
 
@@ -152,7 +155,7 @@ class SpeechToTextService implements SpeechService {
       },
       onLevel: (level) {
         if (!_levelController.isClosed) {
-          _levelController.add(_normalizeLevel(level));
+          _levelController.add(_levelScale.normalize(level));
         }
       },
     );
@@ -215,14 +218,45 @@ class SpeechToTextService implements SpeechService {
         firstWhere((s) => s.split('_').first == 'en');
   }
 
-  /// Map the plugin's sound level to `0..1`. The plugin reports a roughly
-  /// dB-like envelope whose exact range is platform/device-specific; this is
-  /// a heuristic suitable for the waveform feel (Risk 4) — tune on a device.
-  static double _normalizeLevel(double level) {
-    const minLevel = -2.0;
-    const maxLevel = 10.0;
-    final clamped = level.clamp(minLevel, maxLevel);
-    return (clamped - minLevel) / (maxLevel - minLevel);
+}
+
+/// Maps the plugin's raw `onSoundLevelChange` value to the `0..1` envelope the
+/// waveform renders. The raw scale is **platform-specific** because each native
+/// side computes it differently (Risk 4 — heuristic, tune on a device):
+///
+/// - **Android** (`SpeechRecognizer.onRmsChanged`) reports an `rmsdB` envelope
+///   roughly in `[-2, 10]`.
+/// - **iOS / macOS** compute `20 * log10(rms)` over the PCM buffer — a *negative*
+///   dBFS value, roughly `[-50, -10]` for typical speech.
+///
+/// A single fixed range cannot serve both: the Android range clamps every iOS
+/// sample (all `< -2`) to `0`, flat-lining the waveform even though capture and
+/// transcription work fine. So the range is chosen per platform.
+class SoundLevelScale {
+  const SoundLevelScale({required this.min, required this.max});
+
+  /// Raw value mapped to `0`; anything at or below is silence.
+  final double min;
+
+  /// Raw value mapped to `1`; anything at or above is full amplitude.
+  final double max;
+
+  /// Android `rmsdB` envelope.
+  static const SoundLevelScale android = SoundLevelScale(min: -2, max: 10);
+
+  /// iOS / macOS dBFS envelope (`20 * log10(rms)`).
+  static const SoundLevelScale darwin = SoundLevelScale(min: -50, max: -10);
+
+  /// The scale matching the native plugin on the current platform.
+  factory SoundLevelScale.forPlatform() =>
+      (Platform.isIOS || Platform.isMacOS) ? darwin : android;
+
+  /// Clamp [level] into `[min, max]` and scale to `0..1`. Tolerates `±∞`/`NaN`
+  /// (a fully silent buffer yields `log10(0) = -∞`): both clamp to an endpoint.
+  double normalize(double level) {
+    if (level.isNaN) return 0;
+    final clamped = level.clamp(min, max);
+    return (clamped - min) / (max - min);
   }
 }
 
