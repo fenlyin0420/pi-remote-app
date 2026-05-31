@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:app/domain/session_state.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 /// Plan/30 — static image thumbnail + optional caption inside the user
@@ -56,12 +56,13 @@ class _ImageBubbleState extends State<ImageBubble> {
   @override
   Widget build(BuildContext context) {
     final caption = widget.caption.trim();
+    final colors = context.colors;
     return Container(
       decoration: BoxDecoration(
-        color: kUserBubble,
+        color: colors.userBubble,
         borderRadius: BorderRadius.circular(12),
         border: widget.isFailed
-            ? Border.all(color: Colors.redAccent, width: 1)
+            ? Border.all(color: colors.error, width: 1)
             : null,
       ),
       clipBehavior: Clip.antiAlias,
@@ -72,7 +73,7 @@ class _ImageBubbleState extends State<ImageBubble> {
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: ImageBubble.maxHeight),
             child: _bytes.isEmpty
-                ? _broken()
+                ? _broken(context)
                 : Image.memory(
                     _bytes,
                     fit: BoxFit.cover,
@@ -82,17 +83,23 @@ class _ImageBubbleState extends State<ImageBubble> {
           if (caption.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-              child: Text(caption, style: kSansBody.copyWith(color: kText)),
+              child: Text(
+                caption,
+                style: context.typo.sansBody.copyWith(color: colors.text),
+              ),
             ),
         ],
       ),
     );
   }
 
-  Widget _broken() => Container(
-    height: 120,
-    color: kCodeBg,
-    alignment: Alignment.center,
-    child: const Icon(Icons.broken_image_outlined, color: kMuted, size: 28),
-  );
+  Widget _broken(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      height: 120,
+      color: colors.codeBg,
+      alignment: Alignment.center,
+      child: Icon(Icons.broken_image_outlined, color: colors.muted, size: 28),
+    );
+  }
 }

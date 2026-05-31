@@ -1,4 +1,4 @@
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 /// Post-pair nickname modal (plan/27 Wave A).
@@ -23,7 +23,7 @@ Future<String?> showNicknameSheet(
 }) {
   return showModalBottomSheet<String>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     isScrollControlled: true,
     isDismissible: true,
     enableDrag: true,
@@ -83,6 +83,7 @@ class _NicknameSheetState extends State<_NicknameSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final viewInsets = MediaQuery.of(context).viewInsets;
     return Padding(
       padding: EdgeInsets.only(bottom: viewInsets.bottom),
@@ -100,23 +101,23 @@ class _NicknameSheetState extends State<_NicknameSheet> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 18),
                   decoration: BoxDecoration(
-                    color: kBorder,
+                    color: colors.border,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-              const Text(
+              Text(
                 'Name this PC',
                 style: TextStyle(
-                  color: kText,
+                  color: colors.text,
                   fontSize: 17,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Pick a label so this Mac is easy to spot in your list. You can change it later from the home screen.',
-                style: TextStyle(color: kMuted2, fontSize: 13),
+                style: TextStyle(color: colors.muted2, fontSize: 13),
               ),
               const SizedBox(height: 20),
               TextField(
@@ -125,15 +126,15 @@ class _NicknameSheetState extends State<_NicknameSheet> {
                 autofocus: true,
                 textInputAction: TextInputAction.done,
                 onSubmitted: (_) => _save(),
-                style: const TextStyle(color: kText, fontFamily: kMono),
+                style: TextStyle(color: colors.text, fontFamily: kMonoFamily),
                 decoration: InputDecoration(
                   hintText: _placeholder,
-                  hintStyle: const TextStyle(color: kMuted),
-                  enabledBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: kBorder),
+                  hintStyle: TextStyle(color: colors.muted),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.border),
                   ),
-                  focusedBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: kAccent),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.accent),
                   ),
                 ),
               ),
@@ -147,9 +148,9 @@ class _NicknameSheetState extends State<_NicknameSheet> {
                       style: TextButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Skip',
-                        style: TextStyle(color: kMuted),
+                        style: TextStyle(color: colors.muted),
                       ),
                     ),
                   ),
@@ -159,8 +160,8 @@ class _NicknameSheetState extends State<_NicknameSheet> {
                       key: const Key('nickname-sheet-save'),
                       onPressed: _save,
                       style: FilledButton.styleFrom(
-                        backgroundColor: kAccent,
-                        foregroundColor: Colors.black,
+                        backgroundColor: colors.accent,
+                        foregroundColor: colors.onAccent,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                       child: const Text('Save'),

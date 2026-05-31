@@ -1,5 +1,5 @@
 import 'package:app/pairing/storage.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 /// Per-pairing section header on the Home list (one per Pi). Shows the device
@@ -11,6 +11,7 @@ class PeerSectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final label = (peer.nickname?.isNotEmpty ?? false)
         ? peer.nickname!
         : peer.sessionName.isNotEmpty
@@ -20,10 +21,10 @@ class PeerSectionHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 6),
       child: Text(
         label.toUpperCase(),
-        style: const TextStyle(
-          fontFamily: kMono,
+        style: TextStyle(
+          fontFamily: kMonoFamily,
           fontSize: 11,
-          color: kMuted,
+          color: colors.muted,
           fontWeight: FontWeight.w600,
           letterSpacing: 1.0,
         ),

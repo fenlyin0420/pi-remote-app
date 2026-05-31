@@ -1,6 +1,6 @@
 import 'package:app/config/dependencies.dart';
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/settings_page.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:flutter/material.dart';
@@ -26,7 +26,7 @@ void openSettings(BuildContext context) {
 Future<void> showSettingsSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     barrierColor: Colors.black.withValues(alpha: 0.6),
     isScrollControlled: true,
     // Clip the embedded Scaffold/AppBar to the rounded top corners.

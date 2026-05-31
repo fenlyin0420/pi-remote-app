@@ -1,5 +1,5 @@
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/onboarding/states/onboarding_state.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/onboarding/widgets/widgets.dart';
@@ -44,14 +44,17 @@ class _OnboardingPageState extends State<OnboardingPage> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (context.mounted) context.go('/home');
       });
-      return const Scaffold(backgroundColor: kBg, body: SizedBox.shrink());
+      return Scaffold(
+        backgroundColor: context.colors.bg,
+        body: const SizedBox.shrink(),
+      );
     }
 
     final s = state as OnboardingInProgress;
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncPage(s.step));
 
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: context.colors.bg,
       // Plan/tablet — cap + centre the stepper on wide screens so the
       // phone-oriented column doesn't stretch edge-to-edge on iPad.
       body: SafeArea(
@@ -100,6 +103,7 @@ class _StepIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
       child: Row(
@@ -113,7 +117,7 @@ class _StepIndicator extends StatelessWidget {
               ),
               height: 3,
               decoration: BoxDecoration(
-                color: active ? kAccent : kBorder,
+                color: active ? colors.accent : colors.border,
                 borderRadius: const BorderRadius.all(Radius.circular(2)),
               ),
             ),

@@ -1,6 +1,6 @@
 import 'package:app/domain/session_state.dart';
-import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -90,7 +90,7 @@ void main() {
         status: ToolEventStatus.completed,
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
-      expect(outcomeColor(tester, '✓ Done'), kSuccess);
+      expect(outcomeColor(tester, '✓ Done'), AppColors.dark.success);
     });
 
     testWidgets('failed → red "✗ {error}" + FAILED label', (tester) async {
@@ -104,13 +104,13 @@ void main() {
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
       expect(find.text('FAILED'), findsOneWidget);
-      expect(outcomeColor(tester, '✗ command failed: exit 1'), kError);
+      expect(outcomeColor(tester, '✗ command failed: exit 1'), AppColors.dark.error);
     });
 
     testWidgets('running → blue "⏳ Running…"', (tester) async {
       // pending defaults
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
-      expect(outcomeColor(tester, '⏳ Running…'), kAccent);
+      expect(outcomeColor(tester, '⏳ Running…'), AppColors.dark.accent);
     });
   });
 }

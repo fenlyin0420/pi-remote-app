@@ -2,7 +2,7 @@ import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -22,6 +22,7 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final vm = context.watch<HomeViewModel>();
     final state = vm.state;
 
@@ -40,16 +41,16 @@ class HomePage extends StatelessWidget {
     });
 
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: colors.bg,
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
             _buildLargeTitleBar(context, vm, state),
             switch (state) {
-              HomeLoading() => const SliverFillRemaining(
+              HomeLoading() => SliverFillRemaining(
                   hasScrollBody: false,
                   child: Center(
-                    child: CircularProgressIndicator(color: kAccent),
+                    child: CircularProgressIndicator(color: colors.accent),
                   ),
                 ),
               HomeNoPeer() => const SliverFillRemaining(
@@ -73,11 +74,12 @@ class HomePage extends StatelessWidget {
     HomeViewModel vm,
     HomeState state,
   ) {
-    final subtitle = _subtitleFor(vm, state);
+    final colors = context.colors;
+    final subtitle = _subtitleFor(context, vm, state);
     const maxExpanded = 124.0;
     return SliverAppBar(
-      backgroundColor: kBg,
-      surfaceTintColor: kBg,
+      backgroundColor: colors.bg,
+      surfaceTintColor: colors.bg,
       elevation: 0,
       scrolledUnderElevation: 0,
       pinned: true,
@@ -89,7 +91,7 @@ class HomePage extends StatelessWidget {
       actions: [
         IconButton(
           tooltip: 'Settings',
-          icon: const Icon(LucideIcons.settings, color: kMuted2),
+          icon: Icon(LucideIcons.settings, color: colors.muted2),
           // Tablet → bottom sheet (keeps the chat in context); phone →
           // full-screen push. See openSettings.
           onPressed: () => openSettings(context),
@@ -111,7 +113,7 @@ class HomePage extends StatelessWidget {
           return Stack(
             fit: StackFit.expand,
             children: [
-              Container(color: kBg),
+              Container(color: colors.bg),
               // Large title block — fades OUT as we collapse.
               Positioned(
                 left: 20,
@@ -125,14 +127,13 @@ class HomePage extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Remote Pi',
-                          style: TextStyle(
-                            fontFamily: kMono,
-                            color: kText,
+                          style: brandTextStyle(
                             fontSize: 32,
                             fontWeight: FontWeight.w700,
-                            letterSpacing: -0.8,
+                            color: colors.text,
+                            letterSpacing: -0.5,
                             height: 1.05,
                           ),
                         ),
@@ -153,16 +154,15 @@ class HomePage extends StatelessWidget {
                   ignoring: t > 0.95,
                   child: Opacity(
                     opacity: 1 - t,
-                    child: const Align(
+                    child: Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
                         'Remote Pi',
-                        style: TextStyle(
-                          fontFamily: kMono,
-                          color: kText,
+                        style: brandTextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
-                          letterSpacing: -0.3,
+                          color: colors.text,
+                          letterSpacing: -0.2,
                         ),
                       ),
                     ),
@@ -176,8 +176,8 @@ class HomePage extends StatelessWidget {
                 bottom: 0,
                 child: Opacity(
                   opacity: 1 - t,
-                  child: const Divider(
-                    color: kBorder,
+                  child: Divider(
+                    color: colors.border,
                     height: 1,
                     thickness: 1,
                   ),
@@ -199,24 +199,25 @@ class HomePage extends StatelessWidget {
   /// pubkey), so `isRelayConnected` is false but that doesn't mean
   /// the relay is down. Render a neutral "Awaiting pairing" instead
   /// of the alarming amber "Offline".
-  Widget _subtitleFor(HomeViewModel vm, HomeState state) {
+  Widget _subtitleFor(BuildContext context, HomeViewModel vm, HomeState state) {
+    final colors = context.colors;
     final connected = vm.isRelayConnected;
     final awaitingPairing = state is HomeNoPeer;
     final Color dotColor;
     final String statusLabel;
     final Color statusColor;
     if (connected) {
-      dotColor = kSuccess;
+      dotColor = colors.success;
       statusLabel = 'Connected';
-      statusColor = kMuted;
+      statusColor = colors.muted;
     } else if (awaitingPairing) {
-      dotColor = kMuted;
+      dotColor = colors.muted;
       statusLabel = 'Awaiting pairing';
-      statusColor = kMuted;
+      statusColor = colors.muted;
     } else {
-      dotColor = Colors.amber.shade600;
+      dotColor = colors.warning;
       statusLabel = 'Offline';
-      statusColor = Colors.amber.shade600;
+      statusColor = colors.warning;
     }
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -230,24 +231,25 @@ class HomePage extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        const Text(
+        Text(
           'Relay',
           style: TextStyle(
-            fontFamily: kMono,
-            color: kText,
+            fontFamily: kMonoFamily,
+            color: colors.text,
             fontSize: 13,
           ),
         ),
         const SizedBox(width: 6),
-        const Text(
+        Text(
           '·',
-          style: TextStyle(fontFamily: kMono, color: kMuted, fontSize: 13),
+          style: TextStyle(
+              fontFamily: kMonoFamily, color: colors.muted, fontSize: 13),
         ),
         const SizedBox(width: 6),
         Text(
           statusLabel,
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             color: statusColor,
             fontSize: 13,
           ),
@@ -301,6 +303,7 @@ class HomePage extends StatelessWidget {
     HomeList state,
     HomeItem it,
   ) {
+    final colors = context.colors;
     final isLive = vm.isRoomLive(it.peer.remoteEpk, it.room.roomId);
     final isReconnecting = !vm.isRelayConnected;
     final isWorking = vm.isRoomWorking(it.peer.remoteEpk, it.room.roomId);
@@ -327,7 +330,7 @@ class HomePage extends StatelessWidget {
           onLongPress: () =>
               _showSessionMenu(context, vm, it, isLive: isLive),
         ),
-        const Divider(color: kBorder, height: 1),
+        Divider(color: colors.border, height: 1),
       ],
     );
   }
@@ -344,17 +347,18 @@ class HomePage extends StatelessWidget {
   }) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: kBg,
+      backgroundColor: context.colors.bg,
       builder: (sheetCtx) {
+        final colors = sheetCtx.colors;
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(LucideIcons.pencil, color: kAccent),
-                title: const Text(
+                leading: Icon(LucideIcons.pencil, color: colors.accent),
+                title: Text(
                   'Rename session',
-                  style: TextStyle(color: kText),
+                  style: TextStyle(color: colors.text),
                 ),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -364,17 +368,17 @@ class HomePage extends StatelessWidget {
               ListTile(
                 leading: Icon(
                   LucideIcons.trash2,
-                  color: isLive ? kMuted : Colors.redAccent,
+                  color: isLive ? colors.muted : colors.error,
                 ),
                 enabled: !isLive,
                 title: Text(
                   'Delete session (local only)',
-                  style: TextStyle(color: isLive ? kMuted : kText),
+                  style: TextStyle(color: isLive ? colors.muted : colors.text),
                 ),
                 subtitle: isLive
-                    ? const Text(
+                    ? Text(
                         'Only available when the room is offline',
-                        style: TextStyle(color: kMuted, fontSize: 11),
+                        style: TextStyle(color: colors.muted, fontSize: 11),
                       )
                     : null,
                 onTap: isLive
@@ -396,34 +400,36 @@ class HomePage extends StatelessWidget {
     final controller = TextEditingController(text: it.room.name ?? '');
     final result = await showDialog<String?>(
       context: context,
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: kBg,
-        title:
-            const Text('Rename session', style: TextStyle(color: kText)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: kText, fontFamily: kMono),
-          decoration: InputDecoration(
-            hintText: it.room.cwd ?? 'Session',
-            hintStyle: const TextStyle(color: kMuted),
-            enabledBorder:
-                const OutlineInputBorder(borderSide: BorderSide(color: kBorder)),
-            focusedBorder:
-                const OutlineInputBorder(borderSide: BorderSide(color: kAccent)),
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          title: Text('Rename session', style: TextStyle(color: colors.text)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: TextStyle(color: colors.text, fontFamily: kMonoFamily),
+            decoration: InputDecoration(
+              hintText: it.room.cwd ?? 'Session',
+              hintStyle: TextStyle(color: colors.muted),
+              enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: colors.border)),
+              focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: colors.accent)),
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(null),
-            child: const Text('Cancel', style: TextStyle(color: kMuted)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
-            child: const Text('Save', style: TextStyle(color: kAccent)),
-          ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(null),
+              child: Text('Cancel', style: TextStyle(color: colors.muted)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
+              child: Text('Save', style: TextStyle(color: colors.accent)),
+            ),
+          ],
+        );
+      },
     );
     if (result == null) return;
     await vm.renameRoom(it.peer.remoteEpk, it.room.roomId, result);
@@ -433,26 +439,28 @@ class HomePage extends StatelessWidget {
       BuildContext context, HomeViewModel vm, HomeItem it) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: kBg,
-        title: const Text('Delete session?', style: TextStyle(color: kText)),
-        content: const Text(
-          'Removes locally only. If the session comes back online on '
-          'the Pi, it reappears in the list.',
-          style: TextStyle(color: kMuted, fontSize: 12),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: kMuted)),
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          title: Text('Delete session?', style: TextStyle(color: colors.text)),
+          content: Text(
+            'Removes locally only. If the session comes back online on '
+            'the Pi, it reappears in the list.',
+            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(true),
-            child:
-                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(false),
+              child: Text('Cancel', style: TextStyle(color: colors.muted)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(true),
+              child: Text('Delete', style: TextStyle(color: colors.error)),
+            ),
+          ],
+        );
+      },
     );
     if (ok != true) return;
     await vm.deleteRoom(it.peer.remoteEpk, it.room.roomId);
@@ -533,6 +541,7 @@ class _LonelyEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: kMaxContentWidth),
@@ -543,24 +552,24 @@ class _LonelyEmptyState extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(LucideIcons.moon, color: kMuted, size: 56),
+                Icon(LucideIcons.moon, color: colors.muted, size: 56),
                 const SizedBox(height: 18),
-                const Text(
+                Text(
                   'Nothing here…',
                   style: TextStyle(
-                    fontFamily: kMono,
-                    color: kMuted2,
+                    fontFamily: kMonoFamily,
+                    color: colors.muted2,
                     fontSize: 14,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
+                Text(
                   'When a paired Pi opens a session, it shows up here.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontFamily: kMono,
-                    color: kMuted,
+                    fontFamily: kMonoFamily,
+                    color: colors.muted,
                     fontSize: 11,
                     height: 1.4,
                   ),
@@ -579,6 +588,7 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: kMaxContentWidth),
@@ -587,23 +597,23 @@ class _EmptyState extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(LucideIcons.scanQrCode, color: kMuted, size: 48),
+              Icon(LucideIcons.scanQrCode, color: colors.muted, size: 48),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 'No pairings yet',
-                style: TextStyle(color: kMuted2, fontSize: 14),
+                style: TextStyle(color: colors.muted2, fontSize: 14),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Scan a QR from your Mac to start.',
-                style: TextStyle(color: kMuted, fontSize: 12),
+                style: TextStyle(color: colors.muted, fontSize: 12),
               ),
               const SizedBox(height: 24),
               FilledButton.icon(
                 onPressed: () => context.push('/pair'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: kAccent,
-                  foregroundColor: Colors.black,
+                  backgroundColor: colors.accent,
+                  foregroundColor: colors.onAccent,
                 ),
                 icon: const Icon(LucideIcons.scanQrCode, size: 18),
                 label: const Text('Scan QR'),

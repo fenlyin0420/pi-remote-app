@@ -1,6 +1,6 @@
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 /// A row in the Home list.
@@ -45,17 +45,18 @@ class SessionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Material(
-      color: kBg,
+      color: colors.bg,
       child: InkWell(
         onTap: onOpen,
         onLongPress: onLongPress,
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: isSelected ? kAccent.withValues(alpha: 0.06) : kBg,
+            color: isSelected ? colors.accent.withValues(alpha: 0.06) : colors.bg,
             border: Border(
               left: BorderSide(
-                color: isSelected ? kAccent : Colors.transparent,
+                color: isSelected ? colors.accent : Colors.transparent,
                 width: 3,
               ),
             ),
@@ -117,14 +118,14 @@ class _PresenceDot extends StatelessWidget {
     //   reconnecting (relay down)   → amber
     //   live (relay up + announced) → green
     //   else (cached / offline)     → grey
-    const kWorking = Color(0xFF3FA9F5);
+    final colors = context.colors;
     final Color color = isWorking
-        ? kWorking
+        ? colors.working
         : isReconnecting
-            ? Colors.amber.shade600
+            ? colors.warning
             : isLive
-                ? kSuccess
-                : kMuted;
+                ? colors.success
+                : colors.muted;
     return Container(
       width: 10,
       height: 10,
@@ -140,6 +141,7 @@ class _TitleBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final r = room;
     // Title preference: explicit room.name → cwd basename → peer
     // nickname → session name. The cwd path line was dropped on purpose
@@ -169,8 +171,8 @@ class _TitleBlock extends StatelessWidget {
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: kText,
+          style: TextStyle(
+            color: colors.text,
             fontSize: 15,
             fontWeight: FontWeight.w500,
           ),
@@ -189,9 +191,9 @@ class _TitleBlock extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              color: hasModel ? kAccent : kMuted,
+              color: hasModel ? colors.accent : colors.muted,
               fontSize: 12,
-              fontFamily: kMono,
+              fontFamily: kMonoFamily,
             ),
           );
         }),
@@ -209,21 +211,22 @@ class _Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final initial = _initial(name);
     return Container(
       width: 40,
       height: 40,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: kSurface,
-        border: Border.all(color: kBorder),
+        color: colors.surface,
+        border: Border.all(color: colors.border),
       ),
       alignment: Alignment.center,
       child: Text(
         initial,
-        style: const TextStyle(
-          color: kAccent,
-          fontFamily: kMono,
+        style: TextStyle(
+          color: colors.accent,
+          fontFamily: kMonoFamily,
           fontSize: 16,
           fontWeight: FontWeight.w600,
         ),

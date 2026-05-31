@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/pairing/widgets/nickname_sheet.dart';
@@ -70,9 +70,13 @@ class _PairingPageState extends State<PairingPage> {
       });
     }
 
+    final colors = context.colors;
     return Scaffold(
-      backgroundColor: kBg,
-      appBar: AppBar(backgroundColor: kBg, title: const Text('Pair device')),
+      backgroundColor: colors.bg,
+      appBar: AppBar(
+        backgroundColor: colors.bg,
+        title: const Text('Pair device'),
+      ),
       body: _buildBody(state, vm),
     );
   }
@@ -98,8 +102,8 @@ class _PairingPageState extends State<PairingPage> {
       PairingIdle() ||
       PairingScanning() ||
       PairingConnecting() => _buildScannerBody(state),
-      PairingPaired() => const Center(
-        child: CircularProgressIndicator(color: kAccent),
+      PairingPaired() => Center(
+        child: CircularProgressIndicator(color: context.colors.accent),
       ),
       PairingError(:final message, :final canRetry) => _ErrorView(
         message: message,
@@ -114,6 +118,7 @@ class _PairingPageState extends State<PairingPage> {
   }
 
   Widget _buildScannerBody(PairingState state) {
+    final colors = context.colors;
     final isConnecting = state is PairingConnecting;
     final sessionName = isConnecting ? state.sessionName : null;
 
@@ -128,10 +133,13 @@ class _PairingPageState extends State<PairingPage> {
             decoration: BoxDecoration(
               color: isConnecting ? Colors.black54 : Colors.transparent,
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: kBorder),
+              border: Border.all(color: colors.border),
             ),
             child: isConnecting
-                ? const Center(child: CircularProgressIndicator(color: kAccent))
+                ? Center(
+                    child:
+                        CircularProgressIndicator(color: colors.accent),
+                  )
                 : _CornerBrackets(),
           ),
         ),
@@ -155,19 +163,19 @@ class _PairingPageState extends State<PairingPage> {
             right: 32,
             child: OutlinedButton.icon(
               onPressed: _openPasteSheet,
-              icon: const Icon(LucideIcons.clipboardPaste,
-                  size: 16, color: kAccent),
-              label: const Text(
+              icon: Icon(LucideIcons.clipboardPaste,
+                  size: 16, color: colors.accent),
+              label: Text(
                 "Can't scan? Paste code instead",
                 style: TextStyle(
-                  color: kAccent,
+                  color: colors.accent,
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                 ),
               ),
               style: OutlinedButton.styleFrom(
                 backgroundColor: Colors.black54,
-                side: const BorderSide(color: kAccent, width: 1),
+                side: BorderSide(color: colors.accent, width: 1),
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.all(Radius.circular(8)),
@@ -210,7 +218,9 @@ class _Bracket extends StatelessWidget {
       child: SizedBox(
         width: 32,
         height: 32,
-        child: CustomPaint(painter: _BracketPainter(color: kAccent)),
+        child: CustomPaint(
+          painter: _BracketPainter(color: context.colors.accent),
+        ),
       ),
     );
   }
@@ -251,30 +261,31 @@ class _ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
+            Icon(
               LucideIcons.circleAlert,
-              color: Colors.redAccent,
+              color: colors.error,
               size: 48,
             ),
             const SizedBox(height: 16),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: kMuted2, fontSize: 14),
+              style: TextStyle(color: colors.muted2, fontSize: 14),
             ),
             if (canRetry) ...[
               const SizedBox(height: 24),
               FilledButton(
                 onPressed: onRetry,
                 style: FilledButton.styleFrom(
-                  backgroundColor: kAccent,
-                  foregroundColor: Colors.black,
+                  backgroundColor: colors.accent,
+                  foregroundColor: colors.onAccent,
                 ),
                 child: const Text('Try again'),
               ),

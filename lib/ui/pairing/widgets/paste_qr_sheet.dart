@@ -1,4 +1,4 @@
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -18,7 +18,7 @@ Future<void> showPasteQrSheet(
 }) async {
   await showModalBottomSheet<void>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     isScrollControlled: true,
     builder: (sheetCtx) {
       return Padding(
@@ -108,6 +108,7 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return SafeArea(
       top: false,
       child: Padding(
@@ -123,28 +124,28 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: kBorder,
+                  color: colors.border,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
             ),
-            const Text(
+            Text(
               'Paste pairing code',
               style: TextStyle(
-                fontFamily: kMono,
+                fontFamily: kMonoFamily,
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
-                color: kText,
+                color: colors.text,
               ),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               "Can't scan the QR? Paste the text from your Mac terminal "
               "below. It starts with remotepi://pair?…",
               style: TextStyle(
-                fontFamily: kMono,
+                fontFamily: kMonoFamily,
                 fontSize: 11,
-                color: kMuted,
+                color: colors.muted,
                 height: 1.4,
               ),
             ),
@@ -157,26 +158,27 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
               enableSuggestions: false,
               textCapitalization: TextCapitalization.none,
               keyboardType: TextInputType.url,
-              style: const TextStyle(
-                fontFamily: kMono,
+              style: TextStyle(
+                fontFamily: kMonoFamily,
                 fontSize: 12,
-                color: kText,
+                color: colors.text,
               ),
               decoration: InputDecoration(
                 isDense: true,
                 hintText: 'remotepi://pair?t=…',
-                hintStyle: const TextStyle(fontFamily: kMono, color: kMuted),
+                hintStyle:
+                    TextStyle(fontFamily: kMonoFamily, color: colors.muted),
                 filled: true,
-                fillColor: kSurface,
+                fillColor: colors.surface,
                 contentPadding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 12,
                 ),
-                enabledBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: kBorder),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: colors.border),
                 ),
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: kAccent),
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: colors.accent),
                 ),
               ),
             ),
@@ -186,21 +188,21 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: _pasteFromClipboard,
-                    icon: const Icon(
+                    icon: Icon(
                       LucideIcons.clipboardPaste,
                       size: 16,
-                      color: kAccent,
+                      color: colors.accent,
                     ),
-                    label: const Text(
+                    label: Text(
                       'Paste from clipboard',
                       style: TextStyle(
-                        fontFamily: kMono,
+                        fontFamily: kMonoFamily,
                         fontSize: 12,
-                        color: kAccent,
+                        color: colors.accent,
                       ),
                     ),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: kBorder),
+                      side: BorderSide(color: colors.border),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: const RoundedRectangleBorder(
                         borderRadius: BorderRadius.all(Radius.circular(6)),
@@ -214,9 +216,9 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
             FilledButton(
               onPressed: _canSubmit ? _submit : null,
               style: FilledButton.styleFrom(
-                backgroundColor: kAccent,
-                foregroundColor: Colors.black,
-                disabledBackgroundColor: kBorder,
+                backgroundColor: colors.accent,
+                foregroundColor: colors.onAccent,
+                disabledBackgroundColor: colors.border,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.all(Radius.circular(6)),
@@ -225,7 +227,7 @@ class _PasteQrSheetBodyState extends State<_PasteQrSheetBody> {
               child: const Text(
                 'Pair',
                 style: TextStyle(
-                  fontFamily: kMono,
+                  fontFamily: kMonoFamily,
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),

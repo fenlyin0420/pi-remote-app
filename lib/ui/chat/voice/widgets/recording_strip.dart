@@ -1,6 +1,6 @@
 import 'dart:collection';
 
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -89,13 +89,14 @@ class _RecordingStripState extends State<RecordingStrip>
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final warn = _isWarning;
     final cancel = widget.cancelArmed;
     final timerColor = cancel
-        ? kMuted
+        ? colors.muted
         : warn
-        ? Colors.amber.shade600
-        : kText;
+        ? colors.warning
+        : colors.text;
 
     return Row(
       key: const Key('recording-strip'),
@@ -106,9 +107,9 @@ class _RecordingStripState extends State<RecordingStrip>
           child: Container(
             width: 11,
             height: 11,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Color(0xFFE5484D),
+              color: colors.error,
             ),
           ),
         ),
@@ -118,7 +119,7 @@ class _RecordingStripState extends State<RecordingStrip>
           _timer,
           key: const Key('recording-strip-timer'),
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 13,
             color: timerColor,
             fontWeight: FontWeight.w500,
@@ -190,7 +191,9 @@ class _Bar extends StatelessWidget {
         width: 3,
         height: height,
         decoration: BoxDecoration(
-          color: kAccent.withValues(alpha: 0.35 + level.clamp(0.0, 1.0) * 0.6),
+          color: context.colors.accent.withValues(
+            alpha: 0.35 + level.clamp(0.0, 1.0) * 0.6,
+          ),
           borderRadius: BorderRadius.circular(2),
         ),
       ),
@@ -203,14 +206,19 @@ class _SlideToCancelHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
+    final colors = context.colors;
+    return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(LucideIcons.chevronLeft, size: 14, color: kMuted),
-        SizedBox(width: 2),
+        Icon(LucideIcons.chevronLeft, size: 14, color: colors.muted),
+        const SizedBox(width: 2),
         Text(
           'slide to cancel',
-          style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
+          style: TextStyle(
+            fontFamily: kMonoFamily,
+            fontSize: 11,
+            color: colors.muted,
+          ),
         ),
       ],
     );
@@ -220,17 +228,18 @@ class _SlideToCancelHint extends StatelessWidget {
 class _CancelHint extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(LucideIcons.trash2, size: 14, color: Colors.red.shade400),
+        Icon(LucideIcons.trash2, size: 14, color: colors.error),
         const SizedBox(width: 6),
         Text(
           'release to cancel',
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 12,
-            color: Colors.red.shade400,
+            color: colors.error,
             fontWeight: FontWeight.w500,
           ),
         ),

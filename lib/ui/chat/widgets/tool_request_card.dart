@@ -1,6 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 // Inline tool execution card that appears in the chat flow.
@@ -24,16 +24,19 @@ class ToolRequestCard extends StatelessWidget {
 
   /// Plan/32 — one color drives the whole card so the outcome is unmistakable:
   /// running → blue, done → green, failed → red, denied/expired → grey.
-  Color get _statusColor => switch (tool.status) {
-    ToolEventStatus.pending || ToolEventStatus.allowed => kAccent,
-    ToolEventStatus.completed => kSuccess,
-    ToolEventStatus.failed => kError,
-    ToolEventStatus.denied || ToolEventStatus.expired => kMuted,
-  };
+  Color _statusColor(BuildContext context) {
+    final colors = context.colors;
+    return switch (tool.status) {
+      ToolEventStatus.pending || ToolEventStatus.allowed => colors.accent,
+      ToolEventStatus.completed => colors.success,
+      ToolEventStatus.failed => colors.error,
+      ToolEventStatus.denied || ToolEventStatus.expired => colors.muted,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
-    final color = _statusColor;
+    final color = _statusColor(context);
     // Dim only the inert states (denied/expired); keep done/failed at full
     // opacity so their green/red read clearly.
     final dimmed = tool.status == ToolEventStatus.denied ||
@@ -43,7 +46,7 @@ class ToolRequestCard extends StatelessWidget {
       opacity: dimmed ? 0.65 : 1.0,
       child: Container(
         decoration: BoxDecoration(
-          color: kSurface,
+          color: context.colors.surface,
           border: Border.all(color: color, width: 1),
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
@@ -59,9 +62,9 @@ class ToolRequestCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildHeader(color),
+            _buildHeader(context, color),
             const SizedBox(height: 10),
-            _buildCodeBlock(),
+            _buildCodeBlock(context),
             const SizedBox(height: 8),
             _buildOutcome(color),
           ],
@@ -70,7 +73,7 @@ class ToolRequestCard extends StatelessWidget {
     );
   }
 
-  Widget _buildHeader(Color color) {
+  Widget _buildHeader(BuildContext context, Color color) {
     final statusLabel = switch (tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => 'RUNNING',
       ToolEventStatus.completed => 'DONE',
@@ -89,7 +92,7 @@ class ToolRequestCard extends StatelessWidget {
         Text(
           tool.tool.toUpperCase(),
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 11.5,
             color: color,
             letterSpacing: 0.6,
@@ -99,7 +102,7 @@ class ToolRequestCard extends StatelessWidget {
         Text(
           statusLabel,
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 10,
             color: color,
             letterSpacing: 0.4,
@@ -109,21 +112,23 @@ class ToolRequestCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCodeBlock() {
+  Widget _buildCodeBlock(BuildContext context) {
+    final colors = context.colors;
+    final typo = context.typo;
     final commandText = _formatArgs(tool.tool, tool.args);
     return Container(
       decoration: BoxDecoration(
-        color: kCodeBg,
-        border: Border.all(color: kBorder),
+        color: colors.codeBg,
+        border: Border.all(color: colors.border),
         borderRadius: BorderRadius.circular(8),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(r'$ ', style: kMonoStyle.copyWith(color: kMuted)),
+          Text(r'$ ', style: typo.mono.copyWith(color: colors.muted)),
           Expanded(
-            child: Text(commandText, style: kMonoStyle),
+            child: Text(commandText, style: typo.mono),
           ),
         ],
       ),
@@ -141,7 +146,7 @@ class ToolRequestCard extends StatelessWidget {
     return Text(
       text,
       style: TextStyle(
-        fontFamily: kMono,
+        fontFamily: kMonoFamily,
         fontSize: 12,
         color: color,
       ),

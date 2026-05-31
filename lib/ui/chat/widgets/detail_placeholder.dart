@@ -1,4 +1,4 @@
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -9,32 +9,33 @@ class DetailPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: colors.bg,
       body: Center(
         child: Opacity(
           opacity: 0.4,
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: const [
-              Icon(LucideIcons.messagesSquare, color: kMuted, size: 56),
-              SizedBox(height: 18),
+            children: [
+              Icon(LucideIcons.messagesSquare, color: colors.muted, size: 56),
+              const SizedBox(height: 18),
               Text(
                 'Select a session',
                 style: TextStyle(
-                  fontFamily: kMono,
-                  color: kMuted2,
+                  fontFamily: kMonoFamily,
+                  color: colors.muted2,
                   fontSize: 14,
                   fontWeight: FontWeight.w500,
                 ),
               ),
-              SizedBox(height: 6),
+              const SizedBox(height: 6),
               Text(
                 'Pick a session on the left to open its chat.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontFamily: kMono,
-                  color: kMuted,
+                  fontFamily: kMonoFamily,
+                  color: colors.muted,
                   fontSize: 11,
                   height: 1.4,
                 ),

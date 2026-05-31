@@ -1,6 +1,6 @@
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/quick_actions/widgets/dismiss_on_session_change.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
@@ -19,7 +19,7 @@ Future<AttachSource?> showAttachSheet(BuildContext context) {
   final selection = context.read<SessionSelection>();
   return showModalBottomSheet<AttachSource>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     barrierColor: Colors.black.withValues(alpha: 0.6),
     isScrollControlled: true,
     showDragHandle: false,
@@ -50,7 +50,7 @@ class _AttachSheetBody extends StatelessWidget {
               height: 4,
               margin: const EdgeInsets.only(bottom: 12),
               decoration: BoxDecoration(
-                color: kBorder,
+                color: context.colors.border,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -87,12 +87,17 @@ class _AttachOption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return ListTile(
       onTap: onTap,
-      leading: Icon(icon, color: kAccent, size: 20),
+      leading: Icon(icon, color: colors.accent, size: 20),
       title: Text(
         label,
-        style: const TextStyle(fontFamily: kMono, fontSize: 14, color: kText),
+        style: TextStyle(
+          fontFamily: kMonoFamily,
+          fontSize: 14,
+          color: colors.text,
+        ),
       ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     );

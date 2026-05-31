@@ -2,7 +2,7 @@ import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/quick_actions/widgets/quick_actions_sheet.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
@@ -61,7 +61,7 @@ class ChatPage extends StatelessWidget {
     final state = vm.state;
 
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: context.colors.bg,
       body: SafeArea(
         child: Column(
           children: [
@@ -87,6 +87,7 @@ class ChatPage extends StatelessWidget {
     //   Line 2: peer (Mac nickname or sessionName) + presence dot.
     // The dot reads from the ChatReady.peerPresence flag (which the
     // ViewModel sources from `isRoomLive`).
+    final colors = context.colors;
     final vm = context.watch<ChatViewModel>();
     final peer = vm.activePeer;
     final room = vm.activeRoom;
@@ -117,15 +118,15 @@ class ChatPage extends StatelessWidget {
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 4),
-      decoration: const BoxDecoration(
-        color: kBg,
-        border: Border(bottom: BorderSide(color: kBorder)),
+      decoration: BoxDecoration(
+        color: colors.bg,
+        border: Border(bottom: BorderSide(color: colors.border)),
       ),
       child: Row(
         children: [
           if (showBack)
             IconButton(
-              icon: const Icon(LucideIcons.chevronLeft, size: 18, color: kText),
+              icon: Icon(LucideIcons.chevronLeft, size: 18, color: colors.text),
               tooltip: 'Back',
               onPressed: () =>
                   context.canPop() ? context.pop() : context.go('/home'),
@@ -139,10 +140,10 @@ class ChatPage extends StatelessWidget {
               children: [
                 Text(
                   _truncate(roomName, 28),
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 13,
-                    color: kText,
+                    color: colors.text,
                     letterSpacing: -0.2,
                     fontWeight: FontWeight.w500,
                   ),
@@ -155,10 +156,10 @@ class ChatPage extends StatelessWidget {
                       child: Text(
                         _truncate(peerLabel, 24),
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: kMono,
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
                           fontSize: 10,
-                          color: kMuted,
+                          color: colors.muted,
                         ),
                       ),
                     ),
@@ -168,14 +169,13 @@ class ChatPage extends StatelessWidget {
                         // Plan-18 follow-up — 4-state pill:
                         // working / reconnecting / online / offline.
                         // Priority: working > reconnecting > online > offline.
-                        const kWorking = Color(0xFF3FA9F5);
                         final color = isWorking
-                            ? kWorking
+                            ? colors.working
                             : isReconnecting
-                            ? Colors.amber.shade600
+                            ? colors.warning
                             : isOnline
-                            ? kSuccess
-                            : kMuted;
+                            ? colors.success
+                            : colors.muted;
                         final label = isWorking
                             ? 'working…'
                             : isReconnecting
@@ -198,7 +198,7 @@ class ChatPage extends StatelessWidget {
                             Text(
                               label,
                               style: TextStyle(
-                                fontFamily: kMono,
+                                fontFamily: kMonoFamily,
                                 fontSize: 10,
                                 color: color,
                               ),
@@ -219,7 +219,7 @@ class ChatPage extends StatelessWidget {
           // loaded PeerRecord; we read it at tap time (loaded within ms of
           // mount for the connection) and no-op in the unlikely pre-load tap.
           IconButton(
-            icon: const Icon(LucideIcons.info, size: 18, color: kMuted2),
+            icon: Icon(LucideIcons.info, size: 18, color: colors.muted2),
             tooltip: 'Session info',
             onPressed: () {
               final p = vm.activePeer;
@@ -253,39 +253,46 @@ class ChatPage extends StatelessWidget {
         : peer.pairedAt;
     return showDialog<void>(
       context: context,
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: kBg,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: kBorder),
-        ),
-        title: const Text(
-          'Session info',
-          style: TextStyle(fontFamily: kMono, fontSize: 15, color: kText),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _InfoRow(label: 'Name', value: name),
-            _InfoRow(label: 'Path', value: room?.cwd ?? '—'),
-            _InfoRow(label: 'Owner', value: owner),
-            if (model != null && model.isNotEmpty)
-              _InfoRow(label: 'Model', value: model),
-            _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
-            _InfoRow(label: 'Paired', value: paired),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(),
-            child: const Text(
-              'Close',
-              style: TextStyle(fontFamily: kMono, color: kAccent),
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: colors.border),
+          ),
+          title: Text(
+            'Session info',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 15,
+              color: colors.text,
             ),
           ),
-        ],
-      ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _InfoRow(label: 'Name', value: name),
+              _InfoRow(label: 'Path', value: room?.cwd ?? '—'),
+              _InfoRow(label: 'Owner', value: owner),
+              if (model != null && model.isNotEmpty)
+                _InfoRow(label: 'Model', value: model),
+              _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
+              _InfoRow(label: 'Paired', value: paired),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(),
+              child: Text(
+                'Close',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.accent),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -594,20 +601,21 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: kMuted, size: 48),
+          Icon(icon, color: colors.muted, size: 48),
           const SizedBox(height: 16),
-          Text(message, style: const TextStyle(color: kMuted, fontSize: 14)),
+          Text(message, style: TextStyle(color: colors.muted, fontSize: 14)),
           if (actionLabel != null && onAction != null) ...[
             const SizedBox(height: 24),
             FilledButton(
               onPressed: onAction,
               style: FilledButton.styleFrom(
-                backgroundColor: kAccent,
-                foregroundColor: Colors.black,
+                backgroundColor: colors.accent,
+                foregroundColor: colors.onAccent,
               ),
               child: Text(actionLabel!),
             ),
@@ -669,6 +677,7 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
@@ -676,20 +685,20 @@ class _InfoRow extends StatelessWidget {
         children: [
           Text(
             label.toUpperCase(),
-            style: const TextStyle(
-              fontFamily: kMono,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
               fontSize: 10,
-              color: kMuted,
+              color: colors.muted,
               letterSpacing: 0.4,
             ),
           ),
           const SizedBox(height: 2),
           SelectableText(
             value,
-            style: const TextStyle(
-              fontFamily: kMono,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
               fontSize: 13,
-              color: kText,
+              color: colors.text,
             ),
           ),
         ],

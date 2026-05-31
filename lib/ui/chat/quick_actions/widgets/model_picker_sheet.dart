@@ -1,6 +1,6 @@
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -16,7 +16,7 @@ Future<void> showModelPickerSheet(
 }) {
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     barrierColor: Colors.black.withValues(alpha: 0.6),
     isScrollControlled: true,
     showDragHandle: false,
@@ -74,6 +74,7 @@ class _ModelPickerBodyState extends State<_ModelPickerBody> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final mq = MediaQuery.of(context);
     final maxHeight = mq.size.height * 0.78;
     return SafeArea(
@@ -89,7 +90,7 @@ class _ModelPickerBodyState extends State<_ModelPickerBody> {
               _DragHandle(),
               const SizedBox(height: 8),
               _Header(onRefresh: _refresh),
-              const Divider(color: kBorder, height: 1, thickness: 1),
+              Divider(color: colors.border, height: 1, thickness: 1),
               Flexible(
                 child: FutureBuilder<ModelsCatalogue>(
                   future: _future,
@@ -136,7 +137,7 @@ class _DragHandle extends StatelessWidget {
       width: 36,
       height: 4,
       decoration: BoxDecoration(
-        color: kBorder,
+        color: context.colors.border,
         borderRadius: BorderRadius.circular(2),
       ),
     );
@@ -149,30 +150,31 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 8, 10),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(LucideIcons.arrowLeft, size: 18, color: kMuted),
+            icon: Icon(LucideIcons.arrowLeft, size: 18, color: colors.muted),
             onPressed: () => Navigator.of(context).pop(),
             tooltip: 'Back',
           ),
           const SizedBox(width: 4),
-          const Expanded(
+          Expanded(
             child: Text(
               'Choose a model',
               style: TextStyle(
-                fontFamily: kMono,
+                fontFamily: kMonoFamily,
                 fontSize: 13,
-                color: kText,
+                color: colors.text,
                 fontWeight: FontWeight.w500,
               ),
             ),
           ),
           IconButton(
             key: const Key('model-picker-refresh'),
-            icon: const Icon(LucideIcons.refreshCw, size: 18, color: kMuted),
+            icon: Icon(LucideIcons.refreshCw, size: 18, color: colors.muted),
             onPressed: onRefresh,
             tooltip: 'Refresh',
           ),
@@ -196,6 +198,7 @@ class _ProviderTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final providers = <String>{
       for (final m in catalogue.models) m.provider,
     }.toList()
@@ -237,7 +240,7 @@ class _ProviderTabs extends StatelessWidget {
             shrinkWrap: true,
             itemCount: filtered.length,
             separatorBuilder: (_, _) =>
-                const Divider(color: kBorder, height: 1, thickness: 1),
+                Divider(color: colors.border, height: 1, thickness: 1),
             itemBuilder: (_, i) {
               final m = filtered[i];
               final isCurrent = catalogue.current?.id == m.id &&
@@ -267,23 +270,24 @@ class _Chip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           border: Border.all(
-            color: selected ? kAccent : kBorder,
+            color: selected ? colors.accent : colors.border,
           ),
-          color: selected ? kAccent.withValues(alpha: 0.12) : kBg,
+          color: selected ? colors.accent.withValues(alpha: 0.12) : colors.bg,
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 11,
-            color: selected ? kAccent : kMuted,
+            color: selected ? colors.accent : colors.muted,
           ),
         ),
       ),
@@ -303,6 +307,7 @@ class _ModelTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -320,9 +325,9 @@ class _ModelTile extends StatelessWidget {
                           model.name,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontFamily: kMono,
+                            fontFamily: kMonoFamily,
                             fontSize: 13,
-                            color: current ? kAccent : kText,
+                            color: current ? colors.accent : colors.text,
                           ),
                         ),
                       ),
@@ -335,17 +340,17 @@ class _ModelTile extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     _subtitle(model),
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 10,
-                      color: kMuted,
+                      color: colors.muted,
                     ),
                   ),
                 ],
               ),
             ),
             if (current)
-              const Icon(LucideIcons.check, color: kAccent, size: 18),
+              Icon(LucideIcons.check, color: colors.accent, size: 18),
           ],
         ),
       ),
@@ -365,18 +370,19 @@ class _Badge extends StatelessWidget {
   const _Badge({required this.label});
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
-        color: kAccent.withValues(alpha: 0.14),
+        color: colors.accent.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(3),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          fontFamily: kMono,
+        style: TextStyle(
+          fontFamily: kMonoFamily,
           fontSize: 9,
-          color: kAccent,
+          color: colors.accent,
         ),
       ),
     );
@@ -387,13 +393,16 @@ class _LoadingState extends StatelessWidget {
   const _LoadingState();
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
+    return SizedBox(
       height: 120,
       child: Center(
         child: SizedBox(
           width: 18,
           height: 18,
-          child: CircularProgressIndicator(strokeWidth: 1.6, color: kAccent),
+          child: CircularProgressIndicator(
+            strokeWidth: 1.6,
+            color: context.colors.accent,
+          ),
         ),
       ),
     );
@@ -404,15 +413,15 @@ class _EmptyState extends StatelessWidget {
   const _EmptyState();
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
+    return SizedBox(
       height: 120,
       child: Center(
         child: Text(
           'No models available',
           style: TextStyle(
-            fontFamily: kMono,
+            fontFamily: kMonoFamily,
             fontSize: 12,
-            color: kMuted,
+            color: context.colors.muted,
           ),
         ),
       ),
@@ -427,6 +436,7 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -435,22 +445,22 @@ class _ErrorState extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontFamily: kMono,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
               fontSize: 12,
-              color: Colors.redAccent,
+              color: colors.error,
             ),
           ),
           const SizedBox(height: 14),
           OutlinedButton(
             onPressed: onRetry,
             style: OutlinedButton.styleFrom(
-              foregroundColor: kAccent,
-              side: const BorderSide(color: kBorder),
+              foregroundColor: colors.accent,
+              side: BorderSide(color: colors.border),
             ),
             child: const Text(
               'Retry',
-              style: TextStyle(fontFamily: kMono, fontSize: 12),
+              style: TextStyle(fontFamily: kMonoFamily, fontSize: 12),
             ),
           ),
         ],

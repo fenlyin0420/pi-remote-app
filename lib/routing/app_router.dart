@@ -5,7 +5,7 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -262,7 +262,7 @@ GoRouter buildRouter(
                   child: children[0],
                 ),
               ),
-              const VerticalDivider(width: 1, thickness: 1, color: kBorder),
+              VerticalDivider(width: 1, thickness: 1, color: ctx.colors.border),
               Expanded(
                 child: MediaQuery.removePadding(
                   context: ctx,
@@ -409,14 +409,14 @@ class _BootSplash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFF000000),
+    return Scaffold(
+      backgroundColor: context.colors.bg,
       body: Center(
         child: SizedBox(
           width: 24,
           height: 24,
           child: CircularProgressIndicator(
-            color: Color(0xFF00D4FF),
+            color: context.colors.accent,
             strokeWidth: 2,
           ),
         ),

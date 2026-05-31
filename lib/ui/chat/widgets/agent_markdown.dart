@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -22,14 +22,19 @@ class AgentMarkdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final typo = context.typo;
     final markdown = GptMarkdown(
       data,
-      style: kMonoStyle,
+      style: typo.mono,
       onLinkTap: (url, _) => _openLink(context, url),
       // Inline `code` — subtle highlight, keeps the baseline.
       highlightBuilder: (context, text, style) => Text(
         text,
-        style: kMonoStyle.copyWith(color: kHighlight, backgroundColor: kCodeBg),
+        style: typo.mono.copyWith(
+          color: colors.highlight,
+          backgroundColor: colors.codeBg,
+        ),
       ),
       // Fenced ``` blocks — dark card + copy button.
       codeBuilder: (context, name, code, closed) =>
@@ -61,13 +66,15 @@ class _CodeBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    final typo = context.typo;
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
-        color: kCodeBg,
+        color: colors.codeBg,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: kBorder),
+        border: Border.all(color: colors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -79,10 +86,10 @@ class _CodeBlock extends StatelessWidget {
                 Expanded(
                   child: Text(
                     language.isEmpty ? 'code' : language,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 10,
-                      color: kMuted,
+                      color: colors.muted,
                       letterSpacing: 0.3,
                     ),
                   ),
@@ -96,7 +103,7 @@ class _CodeBlock extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
             child: Text(
               code,
-              style: kMonoStyle.copyWith(color: kText, height: 1.45),
+              style: typo.mono.copyWith(color: colors.text, height: 1.45),
             ),
           ),
         ],
@@ -136,6 +143,7 @@ class _CopyButtonState extends State<_CopyButton> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return IconButton(
       key: const Key('code-copy'),
       padding: EdgeInsets.zero,
@@ -146,7 +154,7 @@ class _CopyButtonState extends State<_CopyButton> {
       onPressed: _copy,
       icon: Icon(
         _copied ? LucideIcons.check : LucideIcons.copy,
-        color: _copied ? kSuccess : kMuted,
+        color: _copied ? colors.success : colors.muted,
       ),
     );
   }

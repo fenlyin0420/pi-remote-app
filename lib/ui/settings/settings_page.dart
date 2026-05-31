@@ -1,7 +1,7 @@
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/storage.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/settings/widgets/widgets.dart';
@@ -22,40 +22,43 @@ class SettingsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final vm = context.watch<SettingsViewModel>();
     final state = vm.state;
+    final colors = context.colors;
 
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: colors.bg,
       appBar: AppBar(
-        backgroundColor: kBg,
+        backgroundColor: colors.bg,
         title: const Text('Settings'),
         automaticallyImplyLeading: false,
         leading: IconButton(
           icon: Icon(
             embedded ? LucideIcons.x : LucideIcons.chevronLeft,
             size: embedded ? 22 : 18,
-            color: kText,
+            color: colors.text,
           ),
           tooltip: embedded ? 'Close' : 'Back',
           onPressed: () =>
               context.canPop() ? context.pop() : context.go('/home'),
         ),
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(color: kBorder, height: 1),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(color: colors.border, height: 1),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
           const _RelaySection(),
-          const Divider(color: kBorder, height: 1),
+          Divider(color: colors.border, height: 1),
           const _DisplaySection(),
-          const Divider(color: kBorder, height: 1),
+          Divider(color: colors.border, height: 1),
           const _SectionHeader('Pairings'),
           switch (state) {
-            SettingsLoading() => const Padding(
-              padding: EdgeInsets.symmetric(vertical: 32),
-              child: Center(child: CircularProgressIndicator(color: kAccent)),
+            SettingsLoading() => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: CircularProgressIndicator(color: colors.accent),
+              ),
             ),
             SettingsNoPeer() => const _EmptyState(),
             SettingsList(:final peers) => _PeerList(
@@ -80,13 +83,14 @@ class _AddPairingButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
       child: OutlinedButton.icon(
         onPressed: () => context.push('/pair'),
         style: OutlinedButton.styleFrom(
-          foregroundColor: kAccent,
-          side: const BorderSide(color: kBorder),
+          foregroundColor: colors.accent,
+          side: BorderSide(color: colors.border),
           padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(6)),
@@ -94,9 +98,9 @@ class _AddPairingButton extends StatelessWidget {
           minimumSize: const Size.fromHeight(0),
         ),
         icon: const Icon(LucideIcons.scanQrCode, size: 18),
-        label: const Text(
+        label: Text(
           'Add new pairing',
-          style: TextStyle(fontFamily: kMono, fontSize: 13),
+          style: const TextStyle(fontFamily: kMonoFamily, fontSize: 13),
         ),
       ),
     );
@@ -135,7 +139,10 @@ class _RelaySectionState extends State<_RelaySection> {
     if (err == null) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('Relay updated', style: TextStyle(fontFamily: kMono)),
+          content: Text(
+            'Relay updated',
+            style: TextStyle(fontFamily: kMonoFamily),
+          ),
           duration: Duration(seconds: 2),
         ),
       );
@@ -145,6 +152,7 @@ class _RelaySectionState extends State<_RelaySection> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<SettingsViewModel>();
+    final colors = context.colors;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -156,40 +164,36 @@ class _RelaySectionState extends State<_RelaySection> {
             children: [
               TextField(
                 controller: _ctrl,
-                style: const TextStyle(
-                  fontFamily: kMono,
+                style: context.typo.mono.copyWith(
                   fontSize: 13,
-                  color: kText,
+                  color: colors.text,
                 ),
                 decoration: InputDecoration(
                   isDense: true,
                   hintText: 'https://my-relay.example.com',
-                  hintStyle: const TextStyle(
-                    fontFamily: kMono,
-                    color: kMuted,
+                  hintStyle: context.typo.mono.copyWith(
+                    color: colors.muted,
                     fontSize: 12,
                   ),
                   helperText: 'Current: ${vm.effectiveRelayUrl}',
-                  helperStyle: const TextStyle(
-                    fontFamily: kMono,
+                  helperStyle: context.typo.mono.copyWith(
                     fontSize: 10,
-                    color: kMuted,
+                    color: colors.muted,
                   ),
                   errorText: _error,
-                  errorStyle: const TextStyle(
-                    fontFamily: kMono,
+                  errorStyle: context.typo.mono.copyWith(
                     fontSize: 10,
-                    color: Colors.redAccent,
+                    color: colors.error,
                   ),
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 10,
                     vertical: 10,
                   ),
-                  enabledBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: kBorder),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.border),
                   ),
-                  focusedBorder: const OutlineInputBorder(
-                    borderSide: BorderSide(color: kAccent),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.accent),
                   ),
                 ),
               ),
@@ -202,8 +206,8 @@ class _RelaySectionState extends State<_RelaySection> {
                     FilledButton(
                       onPressed: _save,
                       style: FilledButton.styleFrom(
-                        backgroundColor: kAccent,
-                        foregroundColor: Colors.black,
+                        backgroundColor: colors.accent,
+                        foregroundColor: colors.onAccent,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 18,
                           vertical: 10,
@@ -212,12 +216,15 @@ class _RelaySectionState extends State<_RelaySection> {
                           borderRadius: BorderRadius.all(Radius.circular(6)),
                         ),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Save',
-                        style: TextStyle(fontFamily: kMono, fontSize: 13),
+                        style: const TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 13,
+                        ),
                       ),
                     ),
-                    SizedBox(width: 12),
+                    const SizedBox(width: 12),
                     TextButton(
                       onPressed: () {
                         _ctrl.text = kDefaultRelayUrl;
@@ -225,7 +232,10 @@ class _RelaySectionState extends State<_RelaySection> {
                       },
                       child: Text(
                         'Use default Relay',
-                        style: TextStyle(fontFamily: kMono, fontSize: 13),
+                        style: const TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 13,
+                        ),
                       ),
                     ),
                   ],
@@ -245,20 +255,60 @@ class _DisplaySection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final prefs = context.watch<Preferences>();
+    final colors = context.colors;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _SectionHeader('Display'),
+        // Theme mode — System follows the OS; Light / Dark pin it.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Theme',
+                style: context.typo.sansBody.copyWith(color: colors.text),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<ThemeMode>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(
+                      value: ThemeMode.system,
+                      label: Text('System'),
+                    ),
+                    ButtonSegment(
+                      value: ThemeMode.light,
+                      label: Text('Light'),
+                    ),
+                    ButtonSegment(
+                      value: ThemeMode.dark,
+                      label: Text('Dark'),
+                    ),
+                  ],
+                  selected: {prefs.themeMode},
+                  onSelectionChanged: (s) => prefs.setThemeMode(s.first),
+                ),
+              ),
+            ],
+          ),
+        ),
         SwitchListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 18),
-          activeThumbColor: kAccent,
-          title: const Text(
+          activeThumbColor: colors.accent,
+          title: Text(
             'Hide tool calls in chat',
-            style: TextStyle(color: kText, fontSize: 14),
+            style: context.typo.sansBody.copyWith(color: colors.text),
           ),
-          subtitle: const Text(
+          subtitle: Text(
             'Only show your messages and the assistant replies.',
-            style: TextStyle(color: kMuted, fontSize: 12),
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
           ),
           value: prefs.hideToolCalls,
           onChanged: (v) => prefs.setHideToolCalls(v),
@@ -279,10 +329,10 @@ class _SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
       child: Text(
         label.toUpperCase(),
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.w600,
-          color: kMuted,
+          color: context.colors.muted,
           letterSpacing: 1.4,
         ),
       ),
@@ -295,28 +345,29 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.all(32),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(LucideIcons.monitorSmartphone, color: kMuted, size: 40),
+          Icon(LucideIcons.monitorSmartphone, color: colors.muted, size: 40),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'No pairings yet',
-            style: TextStyle(color: kMuted2, fontSize: 14),
+            style: TextStyle(color: colors.muted2, fontSize: 14),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Tap + to pair a new Mac.',
-            style: TextStyle(color: kMuted, fontSize: 12),
+            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
             onPressed: () => context.push('/pair'),
             style: FilledButton.styleFrom(
-              backgroundColor: kAccent,
-              foregroundColor: Colors.black,
+              backgroundColor: colors.accent,
+              foregroundColor: colors.onAccent,
             ),
             icon: const Icon(LucideIcons.scanQrCode, size: 18),
             label: const Text('Scan QR'),

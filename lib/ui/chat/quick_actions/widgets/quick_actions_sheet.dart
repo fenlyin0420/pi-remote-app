@@ -4,7 +4,7 @@ import 'package:app/config/dependencies.dart';
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/adaptive.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/quick_actions/states/quick_actions_state.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:app/ui/chat/quick_actions/widgets/dismiss_on_session_change.dart';
@@ -32,7 +32,7 @@ Future<void> showQuickActionsSheet(BuildContext context) {
   final selection = context.read<SessionSelection>();
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: kBg,
+    backgroundColor: context.colors.bg,
     barrierColor: Colors.black.withValues(alpha: 0.6),
     isScrollControlled: true,
     showDragHandle: false,
@@ -89,19 +89,21 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
     });
   }
 
-  void _showError(String message) => _toast(message, Colors.redAccent);
+  void _showError(String message) =>
+      _toast(message, widget.messenger.context.colors.error);
 
   /// Toasts go through the chat scaffold's messenger (captured before the
   /// sheet opened) so success/failure feedback survives the sheet being
   /// popped on success.
   void _toast(String message, Color color) {
+    final colors = widget.messenger.context.colors;
     widget.messenger.showSnackBar(
       SnackBar(
-        backgroundColor: const Color(0xFF1A1A1A),
+        backgroundColor: colors.surface,
         behavior: SnackBarBehavior.floating,
         content: Text(
           message,
-          style: TextStyle(fontFamily: kMono, fontSize: 12, color: color),
+          style: TextStyle(fontFamily: kMonoFamily, fontSize: 12, color: color),
         ),
         duration: const Duration(seconds: 3),
       ),
@@ -195,39 +197,53 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
       context: rootNavigator.context,
       // Pop via the dialog's OWN context (dCtx) — Cancel/Start close the
       // dialog regardless of which navigator it sits on.
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: kBg,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-          side: const BorderSide(color: kBorder),
-        ),
-        title: const Text(
-          'Start a new session?',
-          style: TextStyle(fontFamily: kMono, fontSize: 14, color: kText),
-        ),
-        content: const Text(
-          'This clears the Pi-side conversation history. The current '
-          'thread cannot be resumed.',
-          style: TextStyle(fontFamily: kMono, fontSize: 12, color: kMuted),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dCtx).pop(false),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(fontFamily: kMono, color: kMuted),
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(color: colors.border),
+          ),
+          title: Text(
+            'Start a new session?',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 14,
+              color: colors.text,
             ),
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: kAccent,
-              foregroundColor: Colors.black,
+          content: Text(
+            'This clears the Pi-side conversation history. The current '
+            'thread cannot be resumed.',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 12,
+              color: colors.muted,
             ),
-            onPressed: () => Navigator.of(dCtx).pop(true),
-            child: const Text('Start new', style: TextStyle(fontFamily: kMono)),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(false),
+              child: Text(
+                'Cancel',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
+              ),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: colors.accent,
+                foregroundColor: colors.onAccent,
+              ),
+              onPressed: () => Navigator.of(dCtx).pop(true),
+              child: const Text(
+                'Start new',
+                style: TextStyle(fontFamily: kMonoFamily),
+              ),
+            ),
+          ],
+        );
+      },
     );
     if (confirm != true) return;
     try {
@@ -273,7 +289,7 @@ class _DragHandle extends StatelessWidget {
       width: 36,
       height: 4,
       decoration: BoxDecoration(
-        color: kBorder,
+        color: context.colors.border,
         borderRadius: BorderRadius.circular(2),
       ),
     );
@@ -292,10 +308,10 @@ class _SheetTitle extends StatelessWidget {
         alignment: Alignment.centerLeft,
         child: Text(
           text,
-          style: const TextStyle(
-            fontFamily: kMono,
+          style: TextStyle(
+            fontFamily: kMonoFamily,
             fontSize: 12,
-            color: kMuted,
+            color: context.colors.muted,
             letterSpacing: 0.4,
           ),
         ),
@@ -308,7 +324,7 @@ class _Divider extends StatelessWidget {
   const _Divider();
   @override
   Widget build(BuildContext context) =>
-      const Divider(color: kBorder, height: 1, thickness: 1);
+      Divider(color: context.colors.border, height: 1, thickness: 1);
 }
 
 class _ActionTile extends StatelessWidget {
@@ -328,13 +344,14 @@ class _ActionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return InkWell(
       onTap: busy ? null : onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(
           children: [
-            Icon(icon, color: kAccent, size: 18),
+            Icon(icon, color: colors.accent, size: 18),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -342,31 +359,31 @@ class _ActionTile extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 13,
-                      color: kText,
+                      color: colors.text,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 11,
-                      color: kMuted,
+                      color: colors.muted,
                     ),
                   ),
                 ],
               ),
             ),
             if (busy)
-              const SizedBox(
+              SizedBox(
                 width: 14,
                 height: 14,
                 child: CircularProgressIndicator(
                   strokeWidth: 1.6,
-                  color: kAccent,
+                  color: colors.accent,
                 ),
               ),
           ],
@@ -391,6 +408,7 @@ class _ModelRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final label = currentLabel ?? (busy ? 'Switching…' : 'Choose a model');
     return InkWell(
       key: const Key('qa-model-row'),
@@ -399,43 +417,43 @@ class _ModelRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(
           children: [
-            const Icon(LucideIcons.memoryStick, color: kAccent, size: 18),
+            Icon(LucideIcons.memoryStick, color: colors.accent, size: 18),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Model',
                     style: TextStyle(
-                      fontFamily: kMono,
+                      fontFamily: kMonoFamily,
                       fontSize: 11,
-                      color: kMuted,
+                      color: colors.muted,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     label,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 13,
-                      color: kText,
+                      color: colors.text,
                     ),
                   ),
                 ],
               ),
             ),
             if (busy)
-              const SizedBox(
+              SizedBox(
                 width: 14,
                 height: 14,
                 child: CircularProgressIndicator(
                   strokeWidth: 1.6,
-                  color: kAccent,
+                  color: colors.accent,
                 ),
               )
             else
-              const Icon(LucideIcons.chevronRight, color: kMuted, size: 18),
+              Icon(LucideIcons.chevronRight, color: colors.muted, size: 18),
           ],
         ),
       ),
@@ -455,6 +473,7 @@ class _ThinkingRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       child: Column(
@@ -462,24 +481,24 @@ class _ThinkingRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(LucideIcons.brain, color: kAccent, size: 18),
+              Icon(LucideIcons.brain, color: colors.accent, size: 18),
               const SizedBox(width: 14),
-              const Text(
+              Text(
                 'Thinking',
                 style: TextStyle(
-                  fontFamily: kMono,
+                  fontFamily: kMonoFamily,
                   fontSize: 11,
-                  color: kMuted,
+                  color: colors.muted,
                 ),
               ),
               const Spacer(),
               if (busy)
-                const SizedBox(
+                SizedBox(
                   width: 14,
                   height: 14,
                   child: CircularProgressIndicator(
                     strokeWidth: 1.6,
-                    color: kAccent,
+                    color: colors.accent,
                   ),
                 ),
             ],
@@ -517,7 +536,7 @@ class _ThinkingSegmented extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: kBorder),
+        border: Border.all(color: context.colors.border),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
@@ -553,6 +572,7 @@ class _SegButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return GestureDetector(
       onTap: disabled ? null : onTap,
       child: AnimatedContainer(
@@ -560,20 +580,20 @@ class _SegButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
           color: selected
-              ? kAccent.withValues(alpha: 0.15)
+              ? colors.accent.withValues(alpha: 0.15)
               : Colors.transparent,
         ),
         child: Center(
           child: Text(
             label,
             style: TextStyle(
-              fontFamily: kMono,
+              fontFamily: kMonoFamily,
               fontSize: 11,
               color: disabled
-                  ? kMuted.withValues(alpha: 0.5)
+                  ? colors.muted.withValues(alpha: 0.5)
                   : selected
-                  ? kAccent
-                  : kText,
+                  ? colors.accent
+                  : colors.text,
             ),
           ),
         ),

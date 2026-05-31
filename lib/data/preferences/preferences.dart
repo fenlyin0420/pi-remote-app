@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// App-wide UI preferences (persisted across launches).
@@ -13,6 +14,7 @@ class Preferences extends ChangeNotifier {
   String? _selectedPeerEpk;
   String? _relayUrl;
   bool _onboardingCompleted = false;
+  ThemeMode _themeMode = ThemeMode.system;
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -21,6 +23,7 @@ class Preferences extends ChangeNotifier {
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
+  static const _kThemeModeKey = 'prefs.theme_mode';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -67,6 +70,11 @@ class Preferences extends ChangeNotifier {
   /// once. Drives `/boot` redirect: false → `/onboarding`, true → `/home`.
   bool get onboardingCompleted => _onboardingCompleted;
 
+  /// Preferred app theme. `ThemeMode.system` (default) follows the OS
+  /// light/dark setting; `light` / `dark` pin it. Consumed by `MaterialApp`
+  /// in `main.dart` and set from the Settings "Display" section.
+  ThemeMode get themeMode => _themeMode;
+
   /// Hydrate from secure storage. Safe to call multiple times.
   Future<void> load() async {
     var changed = false;
@@ -96,6 +104,13 @@ class Preferences extends ChangeNotifier {
     final onboardedBool = onboarded == 'true';
     if (onboardedBool != _onboardingCompleted) {
       _onboardingCompleted = onboardedBool;
+      changed = true;
+    }
+
+    final theme = await _store.read(key: _kThemeModeKey);
+    final themeMode = _themeModeFromString(theme);
+    if (themeMode != _themeMode) {
+      _themeMode = themeMode;
       changed = true;
     }
 
@@ -160,5 +175,25 @@ class Preferences extends ChangeNotifier {
       value: value.toString(),
     );
     notifyListeners();
+  }
+
+  /// Persist the preferred [ThemeMode]. Stored as a stable string key so the
+  /// value survives enum reordering.
+  Future<void> setThemeMode(ThemeMode value) async {
+    if (_themeMode == value) return;
+    _themeMode = value;
+    await _store.write(key: _kThemeModeKey, value: value.name);
+    notifyListeners();
+  }
+
+  static ThemeMode _themeModeFromString(String? raw) {
+    switch (raw) {
+      case 'light':
+        return ThemeMode.light;
+      case 'dark':
+        return ThemeMode.dark;
+      default:
+        return ThemeMode.system;
+    }
   }
 }

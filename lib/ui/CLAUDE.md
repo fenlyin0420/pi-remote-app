@@ -15,8 +15,15 @@ use cases para refletir o estado da aplicação por feature.
    UI → ViewModel → UseCase → ViewModel → UI claro e unidirecional.
 4. **Cultivar widgets pequenos** — preferir `StatelessWidget`, com
    `widgets.dart` exportando componentes da feature (barrel file).
-5. **Aplicar linguagem visual consistente** — seguir temas definidos em
-   `config/theme.dart`.
+5. **Aplicar linguagem visual consistente** — todo tema (cores, tipografia,
+   fonte) vive em [`core/themes/`](core/themes/themes.dart). **Nunca** hardcode
+   `Color(0x…)`, `Colors.*` ou `TextStyle(fontFamily: …)` num widget: leia via
+   `context.colors.<token>` e `context.typo.<estilo>` (import do barrel
+   `package:app/ui/core/themes/themes.dart`). Cores semânticas novas entram em
+   `AppColors` (dark + light), estilos de texto em `AppTypography`, e a família
+   da fonte é a constante `kMonoFamily`. Exceções permitidas: scrims/overlays
+   independentes de tema (`Colors.black.withValues(...)` como `barrierColor`,
+   overlays sobre câmera/foto, fundo vermelho sólido de ação destrutiva).
 6. **Consumir ViewModels via Provider** — sempre via `context.watch<T>()`,
    `context.read<T>()` ou `context.select<T, R>()`. **Nunca** instancie
    ViewModels diretamente na página.

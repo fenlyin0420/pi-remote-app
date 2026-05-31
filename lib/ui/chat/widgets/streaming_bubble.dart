@@ -1,6 +1,6 @@
 import 'package:app/domain/session_state.dart';
-import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 // StreamingBubble — shows the assistant's growing response + blinking cursor.
@@ -68,7 +68,7 @@ class _BlinkingCursor extends AnimatedWidget {
       width: 7,
       height: 14,
       margin: const EdgeInsets.only(left: 3, bottom: 1),
-      color: visible ? kAccent : Colors.transparent,
+      color: visible ? context.colors.accent : Colors.transparent,
     );
   }
 }

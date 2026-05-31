@@ -1,4 +1,4 @@
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/pairing/states/pairing_state.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/pairing/widgets/paste_qr_sheet.dart';
@@ -74,47 +74,50 @@ class _PairStepState extends State<PairStep> {
     }
     _lastObserved = state;
 
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 24),
-          const Text(
+          Text(
             'Connect to your device',
             style: TextStyle(
-              fontFamily: kMono,
+              fontFamily: kMonoFamily,
               fontSize: 16,
-              color: kText,
+              color: colors.text,
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'On your computer (Mac, Linux, or Windows), open Pi and run:',
-            style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
+            style: TextStyle(
+                fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
           ),
           const SizedBox(height: 6),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: kBg,
-              border: Border.all(color: kBorder),
+              color: colors.bg,
+              border: Border.all(color: colors.border),
               borderRadius: const BorderRadius.all(Radius.circular(6)),
             ),
-            child: const Text(
+            child: Text(
               '/remote-pi pair',
               style: TextStyle(
-                fontFamily: kMono,
+                fontFamily: kMonoFamily,
                 fontSize: 13,
-                color: kAccent,
+                color: colors.accent,
               ),
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'Scan the QR code that appears:',
-            style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
+            style: TextStyle(
+                fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
           ),
           const SizedBox(height: 12),
           Expanded(
@@ -128,14 +131,14 @@ class _PairStepState extends State<PairStep> {
           if (state is PairingScanning || state is PairingIdle)
             TextButton.icon(
               onPressed: () => _openPasteSheet(vm),
-              icon: const Icon(LucideIcons.clipboardPaste,
-                  size: 16, color: kAccent),
-              label: const Text(
+              icon: Icon(LucideIcons.clipboardPaste,
+                  size: 16, color: colors.accent),
+              label: Text(
                 "Can't scan? Paste code instead",
                 style: TextStyle(
-                  fontFamily: kMono,
+                  fontFamily: kMonoFamily,
                   fontSize: 12,
-                  color: kAccent,
+                  color: colors.accent,
                 ),
               ),
               style: TextButton.styleFrom(
@@ -148,8 +151,8 @@ class _PairStepState extends State<PairStep> {
               OutlinedButton(
                 onPressed: widget.onBack,
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: kMuted,
-                  side: const BorderSide(color: kBorder),
+                  foregroundColor: colors.muted,
+                  side: BorderSide(color: colors.border),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 18,
                     vertical: 12,
@@ -158,25 +161,25 @@ class _PairStepState extends State<PairStep> {
                     borderRadius: BorderRadius.all(Radius.circular(6)),
                   ),
                 ),
-                child: const Text(
+                child: Text(
                   'Back',
-                  style: TextStyle(fontFamily: kMono, fontSize: 13),
+                  style: TextStyle(fontFamily: kMonoFamily, fontSize: 13),
                 ),
               ),
               const Spacer(),
               TextButton(
                 onPressed: widget.onSkip,
                 style: TextButton.styleFrom(
-                  foregroundColor: kAccent,
+                  foregroundColor: colors.accent,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 12,
                   ),
                 ),
-                child: const Text(
+                child: Text(
                   'Scan later',
                   style: TextStyle(
-                    fontFamily: kMono,
+                    fontFamily: kMonoFamily,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
@@ -200,7 +203,7 @@ class _PairStepState extends State<PairStep> {
           ),
           Container(
             decoration: BoxDecoration(
-              border: Border.all(color: kAccent, width: 2),
+              border: Border.all(color: context.colors.accent, width: 2),
               borderRadius: const BorderRadius.all(Radius.circular(8)),
             ),
           ),
@@ -251,21 +254,22 @@ class _StatusOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Container(
-      color: kBg,
+      color: colors.bg,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: kAccent, size: 40),
+            Icon(icon, color: colors.accent, size: 40),
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 28),
               child: Text(
                 message,
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontFamily: kMono, fontSize: 12, color: kText),
+                style: TextStyle(
+                    fontFamily: kMonoFamily, fontSize: 12, color: colors.text),
               ),
             ),
             if (actionLabel != null && onAction != null) ...[
@@ -273,12 +277,13 @@ class _StatusOverlay extends StatelessWidget {
               FilledButton(
                 onPressed: onAction,
                 style: FilledButton.styleFrom(
-                  backgroundColor: kAccent,
-                  foregroundColor: Colors.black,
+                  backgroundColor: colors.accent,
+                  foregroundColor: colors.onAccent,
                 ),
                 child: Text(
                   actionLabel!,
-                  style: const TextStyle(fontFamily: kMono, fontSize: 12),
+                  style:
+                      TextStyle(fontFamily: kMonoFamily, fontSize: 12),
                 ),
               ),
             ],

@@ -1,12 +1,12 @@
 import 'dart:async';
 
 import 'package:app/data/images/image_picker_service.dart';
-import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/voice/widgets/recording_strip.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -272,6 +272,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   Widget _composer(BuildContext context) {
+    final colors = context.colors;
     final voiceState = widget.voice?.state;
     final attachState = widget.attachment?.state;
     final canInteract = !widget.disabled;
@@ -305,9 +306,9 @@ class _InputBarState extends State<InputBar> {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
-      decoration: const BoxDecoration(
-        color: kBg,
-        border: Border(top: BorderSide(color: kBorder)),
+      decoration: BoxDecoration(
+        color: colors.bg,
+        border: Border(top: BorderSide(color: colors.border)),
       ),
       child: Stack(
         children: [
@@ -350,12 +351,12 @@ class _InputBarState extends State<InputBar> {
                       maxLines: 6,
                       keyboardType: TextInputType.multiline,
                       textInputAction: TextInputAction.newline,
-                      style: const TextStyle(
-                        fontFamily: kMono,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
                         fontSize: 13,
-                        color: kText,
+                        color: colors.text,
                       ),
-                      cursorColor: kAccent,
+                      cursorColor: colors.accent,
                       decoration: InputDecoration(
                         hintText: widget.disabled
                             ? 'Offline…'
@@ -364,34 +365,34 @@ class _InputBarState extends State<InputBar> {
                             : hasImage
                             ? 'Add a caption…'
                             : 'Send a message…',
-                        hintStyle: const TextStyle(
-                          color: kMuted,
-                          fontFamily: kMono,
+                        hintStyle: TextStyle(
+                          color: colors.muted,
+                          fontFamily: kMonoFamily,
                         ),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 14,
                           vertical: 10,
                         ),
                         filled: true,
-                        fillColor: const Color(0xFF0E0E0E),
+                        fillColor: colors.inputFill,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(19),
-                          borderSide: const BorderSide(color: kBorder),
+                          borderSide: BorderSide(color: colors.border),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(19),
-                          borderSide: const BorderSide(color: kBorder),
+                          borderSide: BorderSide(color: colors.border),
                         ),
                         disabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(19),
                           borderSide: BorderSide(
-                            color: kBorder.withValues(alpha: 0.5),
+                            color: colors.border.withValues(alpha: 0.5),
                           ),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(19),
-                          borderSide: const BorderSide(
-                            color: kAccent,
+                          borderSide: BorderSide(
+                            color: colors.accent,
                             width: 1.2,
                           ),
                         ),
@@ -425,7 +426,7 @@ class _InputBarState extends State<InputBar> {
             Positioned.fill(
               child: IgnorePointer(
                 child: ColoredBox(
-                  color: kBg,
+                  color: colors.bg,
                   child: Center(
                     child: recording
                         ? RecordingStrip(
@@ -469,7 +470,9 @@ class _AttachButton extends StatelessWidget {
         tooltip: 'Attach image',
         icon: Icon(
           LucideIcons.paperclip,
-          color: enabled ? kMuted2 : kMuted.withValues(alpha: 0.35),
+          color: enabled
+              ? context.colors.muted2
+              : context.colors.muted.withValues(alpha: 0.35),
         ),
         onPressed: enabled ? onTap : null,
       ),
@@ -516,10 +519,14 @@ class _AttachmentPreview extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.75),
                     shape: BoxShape.circle,
-                    border: Border.all(color: kBorder),
+                    border: Border.all(color: context.colors.border),
                   ),
                   padding: const EdgeInsets.all(3),
-                  child: const Icon(LucideIcons.x, size: 13, color: kText),
+                  child: Icon(
+                    LucideIcons.x,
+                    size: 13,
+                    color: context.colors.text,
+                  ),
                 ),
               ),
             ),
@@ -535,19 +542,24 @@ class _TranscribingStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
-      key: Key('transcribing-strip'),
+    final colors = context.colors;
+    return Row(
+      key: const Key('transcribing-strip'),
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         SizedBox(
           width: 13,
           height: 13,
-          child: CircularProgressIndicator(strokeWidth: 2, color: kAccent),
+          child: CircularProgressIndicator(strokeWidth: 2, color: colors.accent),
         ),
-        SizedBox(width: 10),
+        const SizedBox(width: 10),
         Text(
           'transcribing…',
-          style: TextStyle(fontFamily: kMono, fontSize: 12, color: kMuted2),
+          style: TextStyle(
+            fontFamily: kMonoFamily,
+            fontSize: 12,
+            color: colors.muted2,
+          ),
         ),
       ],
     );
@@ -627,7 +639,10 @@ class _QuickActionsButtonState extends State<_QuickActionsButton>
                 iconSize: 18,
                 splashRadius: 18,
                 tooltip: 'Quick actions',
-                icon: const Icon(LucideIcons.slidersHorizontal, color: kMuted),
+                icon: Icon(
+                  LucideIcons.slidersHorizontal,
+                  color: context.colors.muted,
+                ),
                 onPressed: widget.onPressed,
               ),
             ),
@@ -718,26 +733,29 @@ class _ComposerActionButton extends StatelessWidget {
         onLongPressStart: disabled ? null : (_) => onVoiceLongPressStart(),
         onLongPressMoveUpdate: disabled ? null : onVoiceLongPressMoveUpdate,
         onLongPressEnd: disabled ? null : (_) => onVoiceLongPressEnd(),
-        child: _button(),
+        child: _button(context),
       );
     }
 
-    return GestureDetector(onTap: _resolveTap(), child: _button());
+    return GestureDetector(onTap: _resolveTap(), child: _button(context));
   }
 
-  Widget _button() {
+  Widget _button(BuildContext context) {
+    final colors = context.colors;
     final visualEnabled = !disabled;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       width: 38,
       height: 38,
       decoration: BoxDecoration(
-        color: visualEnabled ? kAccent : kMuted.withValues(alpha: 0.3),
+        color: visualEnabled
+            ? colors.accent
+            : colors.muted.withValues(alpha: 0.3),
         borderRadius: BorderRadius.circular(19),
         boxShadow: visualEnabled
             ? [
                 BoxShadow(
-                  color: kAccent.withValues(alpha: 0.33),
+                  color: colors.accent.withValues(alpha: 0.33),
                   blurRadius: 16,
                 ),
               ]
@@ -752,7 +770,7 @@ class _ComposerActionButton extends StatelessWidget {
         child: Icon(
           _icon,
           key: ValueKey(_mode),
-          color: visualEnabled ? Colors.black : kMuted,
+          color: visualEnabled ? colors.onAccent : colors.muted,
           size: 20,
         ),
       ),

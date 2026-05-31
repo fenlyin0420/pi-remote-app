@@ -1,7 +1,7 @@
 import 'package:app/domain/session_state.dart';
-import 'package:app/ui/app_theme.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/image_bubble.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -24,6 +24,8 @@ class UserBubble extends StatelessWidget {
     // Plan/30 — when an image is attached the bubble becomes an ImageBubble
     // (thumbnail + caption); otherwise the existing text card.
     final image = message.image;
+    final colors = context.colors;
+    final typo = context.typo;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
@@ -41,10 +43,10 @@ class UserBubble extends StatelessWidget {
                     )
                   : Container(
                       decoration: BoxDecoration(
-                        color: kUserBubble,
+                        color: colors.userBubble,
                         borderRadius: BorderRadius.circular(12),
                         border: isFailed
-                            ? Border.all(color: Colors.redAccent, width: 1)
+                            ? Border.all(color: colors.error, width: 1)
                             : null,
                       ),
                       padding: const EdgeInsets.symmetric(
@@ -55,7 +57,7 @@ class UserBubble extends StatelessWidget {
                       // agent reply is already selectable via AgentMarkdown).
                       child: SelectableText(
                         message.text,
-                        style: kSansBody.copyWith(color: kText),
+                        style: typo.sansBody.copyWith(color: colors.text),
                       ),
                     ),
             ),
@@ -66,30 +68,33 @@ class UserBubble extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isPending) ...[
-                      const SizedBox(
+                      SizedBox(
                         width: 10,
                         height: 10,
                         child: CircularProgressIndicator(
-                          color: kMuted,
+                          color: colors.muted,
                           strokeWidth: 1.2,
                         ),
                       ),
                       const SizedBox(width: 6),
                       Text(
                         'sending…',
-                        style: kSansBody.copyWith(color: kMuted, fontSize: 11),
+                        style: typo.sansBody.copyWith(
+                          color: colors.muted,
+                          fontSize: 11,
+                        ),
                       ),
                     ] else ...[
-                      const Icon(
+                      Icon(
                         LucideIcons.circleAlert,
                         size: 12,
-                        color: Colors.redAccent,
+                        color: colors.error,
                       ),
                       const SizedBox(width: 4),
                       Text(
                         'not delivered',
-                        style: kSansBody.copyWith(
-                          color: Colors.redAccent,
+                        style: typo.sansBody.copyWith(
+                          color: colors.error,
                           fontSize: 11,
                         ),
                       ),
@@ -119,15 +124,16 @@ class CompactionBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = message.tokensBefore;
     final summary = message.summary;
+    final colors = context.colors;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 360),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: kSurface,
+            color: colors.surface,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: kBorder),
+            border: Border.all(color: colors.border),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -135,15 +141,15 @@ class CompactionBubble extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(LucideIcons.check, size: 13, color: kSuccess),
+                  Icon(LucideIcons.check, size: 13, color: colors.success),
                   const SizedBox(width: 6),
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       'Context compacted',
                       style: TextStyle(
-                        fontFamily: kMono,
+                        fontFamily: kMonoFamily,
                         fontSize: 12,
-                        color: kText,
+                        color: colors.text,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -151,10 +157,10 @@ class CompactionBubble extends StatelessWidget {
                   if (tokens != null)
                     Text(
                       '~$tokens tokens',
-                      style: const TextStyle(
-                        fontFamily: kMono,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
                         fontSize: 11,
-                        color: kMuted,
+                        color: colors.muted,
                       ),
                     ),
                 ],
@@ -163,10 +169,10 @@ class CompactionBubble extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   summary,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 12,
-                    color: kMuted2,
+                    color: colors.muted2,
                   ),
                 ),
               ],

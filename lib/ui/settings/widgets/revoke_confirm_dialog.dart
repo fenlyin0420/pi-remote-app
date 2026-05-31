@@ -1,5 +1,5 @@
 import 'package:app/pairing/storage.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 /// Confirmation dialog shown before a peer is revoked. Returns true if the
@@ -11,25 +11,25 @@ Future<bool> showRevokeConfirmDialog(
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      backgroundColor: kSurface,
+      backgroundColor: ctx.colors.surface,
       title: Text(
         'Revoke "${peer.sessionName}"?',
-        style: const TextStyle(color: kText),
+        style: TextStyle(color: ctx.colors.text),
       ),
-      content: const Text(
+      content: Text(
         "You'll need to pair again from the PC or Mac to reconnect.",
-        style: TextStyle(color: kMuted2),
+        style: TextStyle(color: ctx.colors.muted2),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(false),
-          child: const Text('Cancel', style: TextStyle(color: kMuted2)),
+          child: Text('Cancel', style: TextStyle(color: ctx.colors.muted2)),
         ),
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(true),
-          child: const Text(
+          child: Text(
             'Revoke',
-            style: TextStyle(color: Colors.redAccent),
+            style: TextStyle(color: ctx.colors.error),
           ),
         ),
       ],

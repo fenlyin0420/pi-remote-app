@@ -76,6 +76,11 @@ dependencies:
   gpt_markdown: ^1.1.7
   url_launcher: ^6.3.0
 
+  # Theme — brand wordmark font (Inter, the wireframe's RP_SANS). Served at
+  # runtime + cached by google_fonts so "Remote Pi" renders identically on
+  # iOS and Android without bundling a .ttf. See ui/core/themes/app_typography.
+  google_fonts: ^6.2.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

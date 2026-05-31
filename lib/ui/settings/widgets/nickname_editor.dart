@@ -1,4 +1,4 @@
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -16,7 +16,7 @@ Future<String?> showNicknameEditor(
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: kSurface,
+    backgroundColor: context.colors.surface,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
@@ -72,6 +72,7 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final hasCurrent = widget.currentNickname.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
@@ -84,14 +85,14 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
             height: 4,
             margin: const EdgeInsets.only(bottom: 16),
             decoration: BoxDecoration(
-              color: kBorder,
+              color: colors.border,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const Text(
+          Text(
             'Nickname',
             style: TextStyle(
-              color: kText,
+              color: colors.text,
               fontSize: 16,
               fontWeight: FontWeight.w600,
             ),
@@ -99,21 +100,21 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
           const SizedBox(height: 4),
           Text(
             'Local only — the Mac is not notified.',
-            style: const TextStyle(color: kMuted, fontSize: 12),
+            style: TextStyle(color: colors.muted, fontSize: 12),
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _ctrl,
             autofocus: true,
             maxLength: 40,
-            style: const TextStyle(color: kText, fontSize: 15),
-            cursorColor: kAccent,
+            style: TextStyle(color: colors.text, fontSize: 15),
+            cursorColor: colors.accent,
             decoration: InputDecoration(
               labelText: 'Nickname',
-              labelStyle: const TextStyle(color: kMuted),
+              labelStyle: TextStyle(color: colors.muted),
               helperText: 'Default: ${widget.defaultName}',
-              helperStyle: const TextStyle(color: kMuted, fontSize: 11),
-              counterStyle: const TextStyle(color: kMuted, fontSize: 11),
+              helperStyle: TextStyle(color: colors.muted, fontSize: 11),
+              counterStyle: TextStyle(color: colors.muted, fontSize: 11),
             ),
             onSubmitted: (_) => _save(),
           ),
@@ -121,7 +122,7 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
           if (hasCurrent) ...[
             TextButton.icon(
               onPressed: _remove,
-              style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+              style: TextButton.styleFrom(foregroundColor: colors.error),
               icon: const Icon(LucideIcons.trash2, size: 16),
               label: const Text('Remove nickname'),
             ),
@@ -133,8 +134,8 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
                 child: OutlinedButton(
                   onPressed: _cancel,
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: kMuted2,
-                    side: const BorderSide(color: kBorder),
+                    foregroundColor: colors.muted2,
+                    side: BorderSide(color: colors.border),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   child: const Text('Cancel'),
@@ -145,8 +146,8 @@ class _NicknameEditorSheetState extends State<_NicknameEditorSheet> {
                 child: FilledButton(
                   onPressed: _save,
                   style: FilledButton.styleFrom(
-                    backgroundColor: kAccent,
-                    foregroundColor: Colors.black,
+                    backgroundColor: colors.accent,
+                    foregroundColor: colors.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   child: const Text(

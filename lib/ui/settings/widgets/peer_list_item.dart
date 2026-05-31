@@ -1,5 +1,5 @@
 import 'package:app/pairing/storage.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -37,6 +37,7 @@ class PeerListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     final nickname = peer.nickname;
     final hasNickname = nickname != null && nickname.isNotEmpty;
 
@@ -66,9 +67,9 @@ class PeerListItem extends StatelessWidget {
       confirmDismiss: (_) => onRevokeRequested(),
       child: Container(
         padding: const EdgeInsets.fromLTRB(18, 14, 6, 14),
-        decoration: const BoxDecoration(
-          color: kBg,
-          border: Border(bottom: BorderSide(color: kBorder)),
+        decoration: BoxDecoration(
+          color: colors.bg,
+          border: Border(bottom: BorderSide(color: colors.border)),
         ),
         child: Row(
           children: [
@@ -78,8 +79,8 @@ class PeerListItem extends StatelessWidget {
                 children: [
                   Text(
                     hasNickname ? nickname : peer.sessionName,
-                    style: const TextStyle(
-                      color: kText,
+                    style: TextStyle(
+                      color: colors.text,
                       fontSize: 14,
                       fontWeight: FontWeight.w500,
                     ),
@@ -89,8 +90,8 @@ class PeerListItem extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       peer.sessionName,
-                      style: const TextStyle(
-                        color: kMuted2,
+                      style: TextStyle(
+                        color: colors.muted2,
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -106,10 +107,10 @@ class PeerListItem extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       _platformLabel(peer)!,
-                      style: const TextStyle(
-                        fontFamily: kMono,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
                         fontSize: 11,
-                        color: kMuted,
+                        color: colors.muted,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -120,7 +121,7 @@ class PeerListItem extends StatelessWidget {
             IconButton(
               tooltip: 'Edit nickname',
               icon: const Icon(LucideIcons.pencil, size: 18),
-              color: kMuted2,
+              color: colors.muted2,
               onPressed: onEditNickname,
             ),
           ],

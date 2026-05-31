@@ -2,7 +2,7 @@ import 'dart:io' show Platform;
 
 import 'package:app/config/dependencies.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -46,8 +46,9 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
               'so you can restore it on a new device through Google '
               'Backup without losing your paired Pis.';
 
+    final colors = context.colors;
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: colors.bg,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -57,36 +58,36 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
               const SizedBox(height: 24),
               Icon(
                 isIOS ? LucideIcons.cloudOff : LucideIcons.cloudUpload,
-                color: kAccent,
+                color: colors.accent,
                 size: 44,
               ),
               const SizedBox(height: 20),
-              const Text(
+              Text(
                 'Sync required',
                 style: TextStyle(
-                  fontFamily: kMono,
+                  fontFamily: kMonoFamily,
                   fontSize: 20,
                   fontWeight: FontWeight.w600,
-                  color: kText,
+                  color: colors.text,
                 ),
               ),
               const SizedBox(height: 10),
               Text(
                 why,
-                style: const TextStyle(
-                  fontFamily: kMono,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
                   fontSize: 12,
-                  color: kMuted2,
+                  color: colors.muted2,
                   height: 1.4,
                 ),
               ),
               const SizedBox(height: 20),
-              const Text(
+              Text(
                 'To enable, on this device:',
                 style: TextStyle(
-                  fontFamily: kMono,
+                  fontFamily: kMonoFamily,
                   fontSize: 11,
-                  color: kMuted,
+                  color: colors.muted,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.4,
                 ),
@@ -106,27 +107,27 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
               FilledButton(
                 onPressed: _checking ? null : _recheck,
                 style: FilledButton.styleFrom(
-                  backgroundColor: kAccent,
-                  foregroundColor: Colors.black,
-                  disabledBackgroundColor: kBorder,
+                  backgroundColor: colors.accent,
+                  foregroundColor: colors.onAccent,
+                  disabledBackgroundColor: colors.border,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: const RoundedRectangleBorder(
                     borderRadius: BorderRadius.all(Radius.circular(6)),
                   ),
                 ),
                 child: _checking
-                    ? const SizedBox(
+                    ? SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                          color: Colors.black,
+                          color: colors.onAccent,
                           strokeWidth: 2,
                         ),
                       )
-                    : const Text(
+                    : Text(
                         'Check again',
                         style: TextStyle(
-                          fontFamily: kMono,
+                          fontFamily: kMonoFamily,
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
@@ -185,11 +186,12 @@ class _RequirementCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: kSurface,
-        border: Border.all(color: kBorder),
+        color: colors.surface,
+        border: Border.all(color: colors.border),
         borderRadius: const BorderRadius.all(Radius.circular(6)),
       ),
       child: Row(
@@ -200,15 +202,15 @@ class _RequirementCard extends StatelessWidget {
             height: 22,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: kAccent.withValues(alpha: 0.15),
+              color: colors.accent.withValues(alpha: 0.15),
               borderRadius: const BorderRadius.all(Radius.circular(11)),
             ),
             child: Text(
               '$index',
-              style: const TextStyle(
-                fontFamily: kMono,
+              style: TextStyle(
+                fontFamily: kMonoFamily,
                 fontSize: 11,
-                color: kAccent,
+                color: colors.accent,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -220,20 +222,20 @@ class _RequirementCard extends StatelessWidget {
               children: [
                 Text(
                   requirement.title,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 13,
-                    color: kText,
+                    color: colors.text,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   requirement.path,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 11,
-                    color: kMuted2,
+                    color: colors.muted2,
                     height: 1.4,
                   ),
                 ),
@@ -241,10 +243,10 @@ class _RequirementCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     requirement.note!,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 10.5,
-                      color: kMuted,
+                      color: colors.muted,
                       height: 1.4,
                       fontStyle: FontStyle.italic,
                     ),

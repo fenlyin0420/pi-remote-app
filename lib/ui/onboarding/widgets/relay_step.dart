@@ -1,5 +1,5 @@
 import 'package:app/data/transport/relay_config.dart';
-import 'package:app/ui/app_theme.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/onboarding/states/onboarding_state.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -37,25 +37,27 @@ class RelayStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 24),
-          const Text(
+          Text(
             'Choose a relay',
             style: TextStyle(
-              fontFamily: kMono,
+              fontFamily: kMonoFamily,
               fontSize: 16,
-              color: kText,
+              color: colors.text,
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Where the app and your PC meet.',
-            style: TextStyle(fontFamily: kMono, fontSize: 11, color: kMuted),
+            style: TextStyle(
+                fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
           ),
           const SizedBox(height: 24),
           _CustomRelayCard(
@@ -81,17 +83,17 @@ class RelayStep extends StatelessWidget {
               OutlinedButton(
                 onPressed: onBack,
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: kMuted,
-                  side: const BorderSide(color: kBorder),
+                  foregroundColor: colors.muted,
+                  side: BorderSide(color: colors.border),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                   shape: const RoundedRectangleBorder(
                     borderRadius: BorderRadius.all(Radius.circular(6)),
                   ),
                 ),
-                child: const Text(
+                child: Text(
                   'Back',
-                  style: TextStyle(fontFamily: kMono, fontSize: 13),
+                  style: TextStyle(fontFamily: kMonoFamily, fontSize: 13),
                 ),
               ),
               const SizedBox(width: 12),
@@ -99,9 +101,9 @@ class RelayStep extends StatelessWidget {
                 child: FilledButton(
                   onPressed: _canContinue ? onNext : null,
                   style: FilledButton.styleFrom(
-                    backgroundColor: kAccent,
-                    foregroundColor: Colors.black,
-                    disabledBackgroundColor: kBorder,
+                    backgroundColor: colors.accent,
+                    foregroundColor: colors.onAccent,
+                    disabledBackgroundColor: colors.border,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: const RoundedRectangleBorder(
                       borderRadius: BorderRadius.all(Radius.circular(6)),
@@ -110,7 +112,7 @@ class RelayStep extends StatelessWidget {
                   child: const Text(
                     'Continue',
                     style: TextStyle(
-                      fontFamily: kMono,
+                      fontFamily: kMonoFamily,
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
@@ -142,15 +144,16 @@ class _RelayCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: kBg,
+          color: colors.bg,
           border: Border.all(
-            color: selected ? kAccent : kBorder,
+            color: selected ? colors.accent : colors.border,
             width: selected ? 1.5 : 1,
           ),
           borderRadius: const BorderRadius.all(Radius.circular(8)),
@@ -163,16 +166,16 @@ class _RelayCard extends StatelessWidget {
                 Icon(
                   selected ? LucideIcons.circleDot : LucideIcons.circle,
                   size: 16,
-                  color: selected ? kAccent : kMuted,
+                  color: selected ? colors.accent : colors.muted,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
-                      fontFamily: kMono,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 13,
-                      color: kText,
+                      color: colors.text,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -184,10 +187,10 @@ class _RelayCard extends StatelessWidget {
               padding: const EdgeInsets.only(left: 26),
               child: Text(
                 description,
-                style: const TextStyle(
-                  fontFamily: kMono,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
                   fontSize: 11,
-                  color: kMuted,
+                  color: colors.muted,
                   height: 1.4,
                 ),
               ),
@@ -198,10 +201,10 @@ class _RelayCard extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 26),
                 child: Text(
                   footer!,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 10,
-                    color: kMuted,
+                    color: colors.muted,
                   ),
                 ),
               ),
@@ -233,15 +236,16 @@ class _CustomRelayCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: kBg,
+          color: colors.bg,
           border: Border.all(
-            color: selected ? kAccent : kBorder,
+            color: selected ? colors.accent : colors.border,
             width: selected ? 1.5 : 1,
           ),
           borderRadius: const BorderRadius.all(Radius.circular(8)),
@@ -254,16 +258,16 @@ class _CustomRelayCard extends StatelessWidget {
                 Icon(
                   selected ? LucideIcons.circleDot : LucideIcons.circle,
                   size: 16,
-                  color: selected ? kAccent : kMuted,
+                  color: selected ? colors.accent : colors.muted,
                 ),
                 const SizedBox(width: 10),
-                const Expanded(
+                Expanded(
                   child: Text(
                     'Use my own server',
                     style: TextStyle(
-                      fontFamily: kMono,
+                      fontFamily: kMonoFamily,
                       fontSize: 13,
-                      color: kText,
+                      color: colors.text,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -273,16 +277,16 @@ class _CustomRelayCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: kAccent.withValues(alpha: 0.15),
+                      color: colors.accent.withValues(alpha: 0.15),
                       borderRadius:
                           const BorderRadius.all(Radius.circular(4)),
                     ),
                     child: Text(
                       badge!,
-                      style: const TextStyle(
-                        fontFamily: kMono,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
                         fontSize: 9,
-                        color: kAccent,
+                        color: colors.accent,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -295,10 +299,10 @@ class _CustomRelayCard extends StatelessWidget {
                 padding: const EdgeInsets.only(left: 26),
                 child: Text(
                   description!,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 11,
-                    color: kMuted,
+                    color: colors.muted,
                     height: 1.4,
                   ),
                 ),
@@ -314,29 +318,29 @@ class _CustomRelayCard extends StatelessWidget {
                       TextPosition(offset: customUrl.length),
                     ),
                   onChanged: onUrlChanged,
-                  style: const TextStyle(
-                    fontFamily: kMono,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
                     fontSize: 12,
-                    color: kText,
+                    color: colors.text,
                   ),
                   decoration: InputDecoration(
                     isDense: true,
                     hintText: 'https://my-relay.com',
                     hintStyle:
-                        const TextStyle(fontFamily: kMono, color: kMuted),
+                        TextStyle(fontFamily: kMonoFamily, color: colors.muted),
                     errorText: error,
-                    errorStyle: const TextStyle(
-                      fontFamily: kMono,
+                    errorStyle: TextStyle(
+                      fontFamily: kMonoFamily,
                       fontSize: 10,
-                      color: Colors.redAccent,
+                      color: colors.error,
                     ),
                     contentPadding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    enabledBorder: const OutlineInputBorder(
-                      borderSide: BorderSide(color: kBorder),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: colors.border),
                     ),
-                    focusedBorder: const OutlineInputBorder(
-                      borderSide: BorderSide(color: kAccent),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: colors.accent),
                     ),
                   ),
                 ),
