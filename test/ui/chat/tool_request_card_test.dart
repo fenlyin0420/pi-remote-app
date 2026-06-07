@@ -13,21 +13,60 @@ const _bashTool = ToolEvent(
   args: {'command': 'ls -la'},
 );
 
+const _editToolWithHunk = ToolEvent(
+  id: 'tc2',
+  toolCallId: 'tc4',
+  tool: 'edit',
+  args: {
+    'path': 'app/test/ui/chat/tool_request_card_test.dart',
+    'hunks': [
+      {
+        'lines': [
+          {'kind': 'context', 'oldLine': 16, 'newLine': 16, 'text': 'args: {'},
+          {'kind': 'remove', 'oldLine': 17, 'text': "  tool: 'Edit',"},
+          {'kind': 'add', 'newLine': 17, 'text': "  tool: 'edit',"},
+          {'kind': 'context', 'oldLine': 18, 'newLine': 18, 'text': '},'},
+        ],
+      },
+    ],
+  },
+);
+
 void main() {
   group('ToolRequestCard (informational)', () {
     testWidgets('shows tool name and command', (tester) async {
-      await tester.pumpWidget(_wrap(
-        const ToolRequestCard(tool: _bashTool),
-      ));
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(find.text('BASH'), findsOneWidget);
       expect(find.text('ls -la'), findsOneWidget);
     });
 
-    testWidgets('pending state shows RUNNING and no Allow/Deny buttons',
-        (tester) async {
-      await tester.pumpWidget(_wrap(
-        const ToolRequestCard(tool: _bashTool),
-      ));
+    testWidgets('edit renders rich hunks with context lines', (tester) async {
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(tool: _editToolWithHunk)),
+      );
+
+      expect(
+        find.textContaining('   16 args: {', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining("-  17   tool: 'Edit',", findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining("+  17   tool: 'edit',", findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('   18 },', findRichText: true),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('pending state shows RUNNING and no Allow/Deny buttons', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(find.text('RUNNING'), findsOneWidget);
       expect(find.text('Allow'), findsNothing);
       expect(find.text('Deny'), findsNothing);
@@ -61,8 +100,9 @@ void main() {
       expect(find.text('DENIED'), findsOneWidget);
     });
 
-    testWidgets('allowed state shows RUNNING (still in flight)',
-        (tester) async {
+    testWidgets('allowed state shows RUNNING (still in flight)', (
+      tester,
+    ) async {
       const allowed = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -104,7 +144,10 @@ void main() {
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
       expect(find.text('FAILED'), findsOneWidget);
-      expect(outcomeColor(tester, '✗ command failed: exit 1'), AppColors.dark.error);
+      expect(
+        outcomeColor(tester, '✗ command failed: exit 1'),
+        AppColors.dark.error,
+      );
     });
 
     testWidgets('running → blue "⏳ Running…"', (tester) async {

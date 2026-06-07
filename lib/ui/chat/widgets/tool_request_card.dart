@@ -39,7 +39,8 @@ class ToolRequestCard extends StatelessWidget {
     final color = _statusColor(context);
     // Dim only the inert states (denied/expired); keep done/failed at full
     // opacity so their green/red read clearly.
-    final dimmed = tool.status == ToolEventStatus.denied ||
+    final dimmed =
+        tool.status == ToolEventStatus.denied ||
         tool.status == ToolEventStatus.expired;
 
     return Opacity(
@@ -115,7 +116,7 @@ class ToolRequestCard extends StatelessWidget {
   Widget _buildCodeBlock(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
-    final commandText = _formatArgs(tool.tool, tool.args);
+    final content = _buildToolSummary(context);
     return Container(
       decoration: BoxDecoration(
         color: colors.codeBg,
@@ -127,9 +128,32 @@ class ToolRequestCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(r'$ ', style: typo.mono.copyWith(color: colors.muted)),
-          Expanded(
-            child: Text(commandText, style: typo.mono),
-          ),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolSummary(BuildContext context) {
+    final colors = context.colors;
+    final typo = context.typo;
+    final display = _formatToolDisplay(tool.tool, tool.args);
+    if (display == null) {
+      return Text(_formatArgs(tool.tool, tool.args), style: typo.mono);
+    }
+
+    return Text.rich(
+      TextSpan(
+        style: typo.mono,
+        children: [
+          TextSpan(text: display.command),
+          for (final line in display.lines) ...[
+            const TextSpan(text: '\n'),
+            TextSpan(
+              text: line.text,
+              style: TextStyle(color: line.color(colors)),
+            ),
+          ],
         ],
       ),
     );
@@ -145,27 +169,102 @@ class ToolRequestCard extends StatelessWidget {
     };
     return Text(
       text,
-      style: TextStyle(
-        fontFamily: kMonoFamily,
-        fontSize: 12,
-        color: color,
-      ),
+      style: TextStyle(fontFamily: kMonoFamily, fontSize: 12, color: color),
     );
   }
 
   static String _formatArgs(String tool, dynamic args) {
     if (args == null) return '';
+    final normalizedTool = tool.toLowerCase();
     if (args is Map) {
-      return switch (tool) {
-        'Bash' => (args['command'] as String?) ?? '',
-        'Edit' || 'Write' => (args['file_path'] as String?) ?? '',
-        _ => args.entries
-            .map((e) => '${e.key}=${e.value}')
-            .join(' '),
+      return switch (normalizedTool) {
+        'bash' => (args['command'] as String?) ?? '',
+        'edit' || 'write' =>
+          '$normalizedTool ${_stringArg(args, const ['file_path', 'path'])}',
+        _ => args.entries.map((e) => '${e.key}=${e.value}').join(' '),
       };
     }
     return args.toString();
   }
+
+  static _ToolDisplay? _formatToolDisplay(String tool, dynamic args) {
+    if (args is! Map) return null;
+    return switch (tool.toLowerCase()) {
+      'edit' => _formatEditDisplay(args),
+      _ => null,
+    };
+  }
+
+  static _ToolDisplay? _formatEditDisplay(Map args) {
+    final filePath = _stringArg(args, const ['file_path', 'path']);
+    final lines = <_DiffLine>[];
+    final hunks = args['hunks'];
+    if (hunks is! Iterable) return null;
+
+    for (final hunk in hunks) {
+      if (hunk is! Map || hunk['lines'] is! Iterable) continue;
+      if (lines.isNotEmpty) lines.add(_DiffLine.context('      ...'));
+      for (final rawLine in hunk['lines'] as Iterable) {
+        if (rawLine is! Map) continue;
+        final text = _lineText(rawLine);
+        switch (rawLine['kind']) {
+          case 'context':
+            lines.add(_DiffLine.context(text));
+          case 'remove':
+            lines.add(_DiffLine.removed(text));
+          case 'add':
+            lines.add(_DiffLine.added(text));
+          case 'ellipsis':
+            lines.add(_DiffLine.context('      ...'));
+        }
+      }
+    }
+
+    if (lines.isEmpty) return null;
+    return _ToolDisplay(command: 'edit $filePath', lines: lines);
+  }
+
+  static String _lineText(Map rawLine) {
+    final sign = switch (rawLine['kind']) {
+      'remove' => '-',
+      'add' => '+',
+      _ => ' ',
+    };
+    final lineNumber = rawLine['oldLine'] ?? rawLine['newLine'];
+    final number = lineNumber is int ? lineNumber.toString().padLeft(3) : '   ';
+    return '$sign $number ${rawLine['text'] ?? ''}';
+  }
+
+  static String _stringArg(Map args, List<String> keys) {
+    for (final key in keys) {
+      final value = args[key];
+      if (value is String) return value;
+    }
+    return '';
+  }
+}
+
+class _ToolDisplay {
+  final String command;
+  final List<_DiffLine> lines;
+
+  const _ToolDisplay({required this.command, required this.lines});
+}
+
+class _DiffLine {
+  final String text;
+  final Color Function(AppColors colors) color;
+
+  const _DiffLine._(this.text, this.color);
+
+  factory _DiffLine.removed(String text) =>
+      _DiffLine._(text, (colors) => colors.error);
+
+  factory _DiffLine.added(String text) =>
+      _DiffLine._(text, (colors) => colors.success);
+
+  factory _DiffLine.context(String text) =>
+      _DiffLine._(text, (colors) => colors.text);
 }
 
 // Minimal terminal icon (rectangle + > and —)
