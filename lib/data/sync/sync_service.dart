@@ -782,6 +782,10 @@ class SyncService extends Service {
       on ? SessionActivity.working : SessionActivity.idle,
       preview: preview,
     );
+    final epk = _activeEpk;
+    if (epk != null) {
+      _conn.markRoomWorking(epk, _activeRoomId, on);
+    }
     if (on) {
       if (replyTo != null) _workingReplyTo = replyTo;
     } else {
