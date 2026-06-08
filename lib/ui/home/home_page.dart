@@ -48,15 +48,15 @@ class HomePage extends StatelessWidget {
             _buildLargeTitleBar(context, vm, state),
             switch (state) {
               HomeLoading() => SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(
-                    child: CircularProgressIndicator(color: colors.accent),
-                  ),
+                hasScrollBody: false,
+                child: Center(
+                  child: CircularProgressIndicator(color: colors.accent),
                 ),
+              ),
               HomeNoPeer() => const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: _EmptyState(),
-                ),
+                hasScrollBody: false,
+                child: _EmptyState(),
+              ),
               HomeList() => _buildListSlivers(context, vm, state),
             },
           ],
@@ -108,8 +108,7 @@ class HomePage extends StatelessWidget {
           final maxH = constraints.maxHeight;
           const minH = 56.0;
           // t=1 → fully expanded; t=0 → fully collapsed.
-          final t =
-              ((maxH - minH) / (maxExpanded - minH)).clamp(0.0, 1.0);
+          final t = ((maxH - minH) / (maxExpanded - minH)).clamp(0.0, 1.0);
           return Stack(
             fit: StackFit.expand,
             children: [
@@ -176,11 +175,7 @@ class HomePage extends StatelessWidget {
                 bottom: 0,
                 child: Opacity(
                   opacity: 1 - t,
-                  child: Divider(
-                    color: colors.border,
-                    height: 1,
-                    thickness: 1,
-                  ),
+                  child: Divider(color: colors.border, height: 1, thickness: 1),
                 ),
               ),
             ],
@@ -225,10 +220,7 @@ class HomePage extends StatelessWidget {
         Container(
           width: 7,
           height: 7,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: dotColor,
-          ),
+          decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
         ),
         const SizedBox(width: 8),
         Text(
@@ -243,7 +235,10 @@ class HomePage extends StatelessWidget {
         Text(
           '·',
           style: TextStyle(
-              fontFamily: kMonoFamily, color: colors.muted, fontSize: 13),
+            fontFamily: kMonoFamily,
+            color: colors.muted,
+            fontSize: 13,
+          ),
         ),
         const SizedBox(width: 6),
         Text(
@@ -267,33 +262,68 @@ class HomePage extends StatelessWidget {
     HomeViewModel vm,
     HomeList state,
   ) {
-    final items = state.items(normalizeEpk: toStandardB64);
-    if (items.isEmpty) {
+    final counts = vm.counts;
+    // Globally empty (paired Pi, no rooms at all): keep the original lonely
+    // state and DON'T show the tabs — there's nothing to filter.
+    if (counts.all == 0) {
       return const SliverFillRemaining(
         hasScrollBody: false,
         child: _LonelyEmptyState(),
       );
     }
-    // Build the per-peer groups: each group is [header, tile, tile, …].
-    // Plan-18 follow-up — always include a header even when there's a
-    // single Mac, per the mock ("SESSIONS"-style header per pairing).
+
+    // Plan-38 Fase 3 — presence filter at the top of the list. Pure view:
+    // tapping a tab only swaps `state.filter` → `vm.visibleItems` re-derives.
+    final tabs = SliverToBoxAdapter(
+      child: HomeFilterTabs(
+        filter: state.filter,
+        counts: counts,
+        onSelected: vm.setFilter,
+      ),
+    );
+
+    final visible = vm.visibleItems;
+    if (visible.isEmpty) {
+      // Items exist, but none match this tab → per-tab empty state beneath
+      // the tabs (which stay visible so the user can switch back).
+      return SliverMainAxisGroup(
+        slivers: [
+          tabs,
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: HomeFilterEmptyState(filter: state.filter),
+          ),
+        ],
+      );
+    }
+
+    // Build the per-peer groups over the VISIBLE items: each group is
+    // [header, tile, tile, …]. Plan-18 follow-up — always include a header
+    // even when there's a single Mac, per the mock. A peer with no visible
+    // item in this filter contributes no header (the `lastEpk` cursor only
+    // advances on rows we actually render).
     final children = <Widget>[];
     String? lastEpk;
-    for (final it in items) {
+    for (final it in visible) {
       if (it.peer.remoteEpk != lastEpk) {
         children.add(PeerSectionHeader(peer: it.peer));
         lastEpk = it.peer.remoteEpk;
       }
       children.add(_buildItemRowAt(context, vm, state, it));
     }
-    return SliverPadding(
-      padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
-      sliver: SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (ctx, i) => children[i],
-          childCount: children.length,
+    return SliverMainAxisGroup(
+      slivers: [
+        tabs,
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(0, 0, 0, 24),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (ctx, i) => children[i],
+              childCount: children.length,
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 
@@ -310,11 +340,12 @@ class HomePage extends StatelessWidget {
     // Plan/tablet — highlight the open session, but only in the two-pane
     // layout (on phone the list is covered by the pushed chat, so a
     // persistent highlight would be meaningless).
-    final isSelected = isWideLayout(context) &&
+    final isSelected =
+        isWideLayout(context) &&
         context.watch<SessionSelection>().matches(
-              it.peer.remoteEpk,
-              it.room.roomId,
-            );
+          it.peer.remoteEpk,
+          it.room.roomId,
+        );
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -325,10 +356,8 @@ class HomePage extends StatelessWidget {
           isWorking: isWorking,
           isSelected: isSelected,
           room: it.room,
-          onOpen: () =>
-              _open(context, vm, it.peer, it.room),
-          onLongPress: () =>
-              _showSessionMenu(context, vm, it, isLive: isLive),
+          onOpen: () => _open(context, vm, it.peer, it.room),
+          onLongPress: () => _showSessionMenu(context, vm, it, isLive: isLive),
         ),
         Divider(color: colors.border, height: 1),
       ],
@@ -396,7 +425,10 @@ class HomePage extends StatelessWidget {
   }
 
   Future<void> _promptRename(
-      BuildContext context, HomeViewModel vm, HomeItem it) async {
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
     final controller = TextEditingController(text: it.room.name ?? '');
     final result = await showDialog<String?>(
       context: context,
@@ -413,9 +445,11 @@ class HomePage extends StatelessWidget {
               hintText: it.room.cwd ?? 'Session',
               hintStyle: TextStyle(color: colors.muted),
               enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: colors.border)),
+                borderSide: BorderSide(color: colors.border),
+              ),
               focusedBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: colors.accent)),
+                borderSide: BorderSide(color: colors.accent),
+              ),
             ),
           ),
           actions: [
@@ -436,7 +470,10 @@ class HomePage extends StatelessWidget {
   }
 
   Future<void> _confirmDelete(
-      BuildContext context, HomeViewModel vm, HomeItem it) async {
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dCtx) {
@@ -520,20 +557,21 @@ class HomePage extends StatelessWidget {
   /// loads the PeerRecord + the first room_meta_updated arrives. Prefers
   /// room.name (per-cwd title) → cwd tail → nickname → sessionName.
   static String _titleFor(PeerRecord peer, RoomInfo room) {
-    final roomCwdTail =
-        room.cwd?.split('/').where((s) => s.isNotEmpty).lastOrNull;
+    final roomCwdTail = room.cwd
+        ?.split('/')
+        .where((s) => s.isNotEmpty)
+        .lastOrNull;
     return (room.name?.isNotEmpty ?? false)
         ? room.name!
         : (roomCwdTail != null && roomCwdTail.isNotEmpty)
-            ? roomCwdTail
-            : (peer.nickname?.isNotEmpty ?? false)
-                ? peer.nickname!
-                : peer.sessionName.isNotEmpty
-                    ? peer.sessionName
-                    : peer.remoteEpk.substring(0, 8);
+        ? roomCwdTail
+        : (peer.nickname?.isNotEmpty ?? false)
+        ? peer.nickname!
+        : peer.sessionName.isNotEmpty
+        ? peer.sessionName
+        : peer.remoteEpk.substring(0, 8);
   }
 }
-
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.
 class _LonelyEmptyState extends StatelessWidget {

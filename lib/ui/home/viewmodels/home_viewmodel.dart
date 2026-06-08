@@ -111,14 +111,59 @@ class HomeViewModel extends ViewModel<HomeState> {
     if (s is HomeList) {
       // emit a duplicate-looking HomeList so context.watch() triggers
       // even though peers / roomsByPeer / presence didn't change.
+      // Preserve `filter` — otherwise a status flip would silently reset
+      // the user's tab back to the Online default (and, because the new
+      // object would then differ, actually fire that reset).
       emit(
         HomeList(
           peers: s.peers,
           statusByEpk: s.statusByEpk,
           roomsByPeer: s.roomsByPeer,
+          filter: s.filter,
         ),
       );
     }
+  }
+
+  /// Plan-38 Fase 3 — switch the presence tab. No reload: it only swaps the
+  /// `filter` in state so [visibleItems] re-derives. No-op when the state
+  /// isn't a list or the filter is unchanged.
+  void setFilter(HomeFilter filter) {
+    final s = state;
+    if (s is! HomeList) return;
+    if (s.filter == filter) return;
+    emit(s.copyWith(filter: filter));
+  }
+
+  /// `true` when `(epk, roomId)` is live on the relay AND the relay itself
+  /// is reachable. The single source of truth for the Online/Offline split.
+  /// [ConnectionManager.isRoomLive] is already gated on `StatusOnline`, so
+  /// the `_relayConnected &&` is belt-and-suspenders that also documents
+  /// intent: "online" requires a live relay.
+  bool _online(HomeItem it) =>
+      _relayConnected && _conn.isRoomLive(it.peer.remoteEpk, it.room.roomId);
+
+  /// Plan-38 Fase 3 — the items the current [HomeList.filter] keeps. A pure
+  /// view over `state.items()`; returns `const []` outside a list state.
+  List<HomeItem> get visibleItems {
+    final s = state;
+    if (s is! HomeList) return const [];
+    final all = s.items(normalizeEpk: normalizeEpkForLookup);
+    return switch (s.filter) {
+      HomeFilter.all => all,
+      HomeFilter.online => all.where(_online).toList(),
+      HomeFilter.offline => all.where((i) => !_online(i)).toList(),
+    };
+  }
+
+  /// Plan-38 Fase 3 — per-tab counts for the filter badges. Independent of
+  /// the active tab (each badge always shows its own slice's size).
+  ({int all, int online, int offline}) get counts {
+    final s = state;
+    if (s is! HomeList) return (all: 0, online: 0, offline: 0);
+    final all = s.items(normalizeEpk: normalizeEpkForLookup);
+    final online = all.where(_online).length;
+    return (all: all.length, online: online, offline: all.length - online);
   }
 
   /// Remember which (peer, room) the user picked. Falls back to

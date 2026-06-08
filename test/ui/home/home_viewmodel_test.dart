@@ -174,34 +174,36 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         // Room comes online idle.
-        ch.pushControl(const RoomAnnounced(
-          peer: 'epk_A',
-          roomId: 'r1',
-          startedAt: 1,
-        ));
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect(vm.isRoomWorking('epk_A', 'r1'), isFalse);
 
         // turn_start → relay broadcasts meta.working=true.
-        ch.pushControl(const RoomMetaUpdated(
-          peer: 'epk_A',
-          roomId: 'r1',
-          working: true,
-          hasModel: false,
-          hasThinking: false,
-        ));
+        ch.pushControl(
+          const RoomMetaUpdated(
+            peer: 'epk_A',
+            roomId: 'r1',
+            working: true,
+            hasModel: false,
+            hasThinking: false,
+          ),
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect(vm.isRoomWorking('epk_A', 'r1'), isTrue);
 
         // turn_end → meta.working=false → dot goes back off (this is the
         // case that previously stayed blue forever).
-        ch.pushControl(const RoomMetaUpdated(
-          peer: 'epk_A',
-          roomId: 'r1',
-          working: false,
-          hasModel: false,
-          hasThinking: false,
-        ));
+        ch.pushControl(
+          const RoomMetaUpdated(
+            peer: 'epk_A',
+            roomId: 'r1',
+            working: false,
+            hasModel: false,
+            hasThinking: false,
+          ),
+        );
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect(vm.isRoomWorking('epk_A', 'r1'), isFalse);
 
@@ -326,5 +328,95 @@ void main() {
         vm.dispose();
       },
     );
+  });
+
+  group('HomeViewModel — presence filter (plan-38 Fase 3)', () {
+    test('counts / visibleItems split rooms by liveness; setFilter re-derives '
+        'without reloading', () async {
+      final ch = _ControllableChannel();
+      final storage = _FakeStorage([_peerA]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // r1 stays live; r2 is announced then ended → cached but offline
+      // (grey tile — still in _roomsByPeer, dropped from _liveRoomIds).
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+      );
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_A', roomId: 'r2', startedAt: 2),
+      );
+      ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r2', sinceTs: 3));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // Sanity — one live, one cached/offline.
+      expect(vm.isRoomLive('epk_A', 'r1'), isTrue);
+      expect(vm.isRoomLive('epk_A', 'r2'), isFalse);
+
+      // Counts are independent of the selected tab.
+      expect(vm.counts, (all: 2, online: 1, offline: 1));
+
+      // Default tab is Online → only the live room is visible.
+      expect((vm.state as HomeList).filter, HomeFilter.online);
+      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1']);
+
+      // Offline → only the cached room.
+      vm.setFilter(HomeFilter.offline);
+      expect((vm.state as HomeList).filter, HomeFilter.offline);
+      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r2']);
+
+      // All → both (sorted), and the counts are unchanged.
+      vm.setFilter(HomeFilter.all);
+      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1', 'r2']);
+      expect(vm.counts, (all: 2, online: 1, offline: 1));
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
+
+    test(
+      'setFilter is a no-op when the tab is unchanged, and emits exactly once '
+      'when it changes',
+      () async {
+        final storage = _FakeStorage([_peerA]);
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+        await Future<void>.delayed(Duration.zero);
+
+        expect((vm.state as HomeList).filter, HomeFilter.online);
+        var notifies = 0;
+        vm.addListener(() => notifies++);
+
+        vm.setFilter(HomeFilter.online); // same tab → no emit
+        expect(notifies, 0);
+
+        vm.setFilter(HomeFilter.offline); // changed → one emit
+        expect(notifies, 1);
+        expect((vm.state as HomeList).filter, HomeFilter.offline);
+
+        vm.dispose();
+      },
+    );
+
+    test('counts / visibleItems are empty-safe outside a HomeList', () {
+      final storage = _FakeStorage([_peerA]);
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage));
+
+      // Synchronously still HomeLoading — the getters must not throw.
+      expect(vm.state, isA<HomeLoading>());
+      expect(vm.counts, (all: 0, online: 0, offline: 0));
+      expect(vm.visibleItems, isEmpty);
+
+      vm.dispose();
+    });
   });
 }
