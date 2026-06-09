@@ -41,6 +41,11 @@ class InputBar extends StatefulWidget {
   final VoidCallback? onOpenQuickActions;
   final VoidCallback? onStartAudio;
 
+  /// Pi-side queued text. Null means no queued message.
+  final String? queuedText;
+  final void Function(String text)? onSetQueued;
+  final VoidCallback? onClearQueued;
+
   /// Plan/29 — voice-input ViewModel. When null the mic falls back to the
   /// legacy [onStartAudio] tap (and existing tests pump InputBar without it).
   final VoiceInputViewModel? voice;
@@ -63,6 +68,9 @@ class InputBar extends StatefulWidget {
     this.onCancel,
     this.onOpenQuickActions,
     this.onStartAudio,
+    this.queuedText,
+    this.onSetQueued,
+    this.onClearQueued,
     this.voice,
     this.onVoiceHint,
     this.attachment,
@@ -87,6 +95,10 @@ class _InputBarState extends State<InputBar> {
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
   bool _cancelArmed = false;
+  // Message committed (via Enter/send) while a turn was working. Held here —
+  // not auto-derived from the field — so draft text the user is still editing
+  // is never sent without an explicit Enter. Flushed when the turn ends.
+  String? _queued;
   // True while the hold-to-talk gesture is active. Lets `_beginVoice` tell
   // whether the user is still holding once `startRecording` resolves — if not
   // (the permission prompt ended the hold), the recording is discarded.
@@ -96,6 +108,7 @@ class _InputBarState extends State<InputBar> {
   @override
   void initState() {
     super.initState();
+    _queued = widget.queuedText;
     _controller.addListener(_onTextChange);
     _subscribeTranscripts();
   }
@@ -106,6 +119,9 @@ class _InputBarState extends State<InputBar> {
     if (!identical(old.voice, widget.voice)) {
       _transcriptSub?.cancel();
       _subscribeTranscripts();
+    }
+    if (old.queuedText != widget.queuedText) {
+      _queued = widget.queuedText;
     }
   }
 
@@ -143,8 +159,37 @@ class _InputBarState extends State<InputBar> {
     // Plan/30 — an attached image makes an empty-caption send valid.
     final hasImage = widget.attachment?.hasImage ?? false;
     if (text.isEmpty && !hasImage) return;
+    // During a working turn, commit text into the local queued draft. Multiple
+    // queue taps append with a newline, producing one combined message when the
+    // turn ends. Images can't be queued mid-turn.
+    if (widget.streaming) {
+      if (text.isEmpty) return; // image-only → nothing to queue
+      final combined = _queued == null || _queued!.isEmpty
+          ? text
+          : '${_queued!}\n$text';
+      setState(() => _queued = combined);
+      widget.onSetQueued?.call(combined);
+      _controller.clear();
+      return;
+    }
     _controller.clear();
     widget.onSend(text);
+  }
+
+  void _clearQueued() {
+    if (_queued == null) return;
+    setState(() => _queued = null);
+    widget.onClearQueued?.call();
+  }
+
+  void _editQueued() {
+    final text = _queued;
+    if (text == null) return;
+    setState(() => _queued = null);
+    widget.onClearQueued?.call();
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
+    _focusNode.requestFocus();
   }
 
   /// Hardware-keyboard behaviour (iPad keyboard case, etc.): plain Enter
@@ -165,11 +210,10 @@ class _InputBarState extends State<InputBar> {
       '[input.enter] shift=${HardwareKeyboard.instance.isShiftPressed} '
       'disabled=${widget.disabled} streaming=${widget.streaming}',
     );
-    // Don't intercept while offline/streaming, or mid-IME-composition (a CJK
+    // Don't intercept while offline, or mid-IME-composition (a CJK
     // candidate is confirmed with Enter, not sent) — let the field/IME deal.
-    if (widget.disabled ||
-        widget.streaming ||
-        !_controller.value.composing.isCollapsed) {
+    // Streaming is now allowed: Enter queues the message for auto-send when turn ends.
+    if (widget.disabled || !_controller.value.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
     if (HardwareKeyboard.instance.isShiftPressed) {
@@ -304,6 +348,13 @@ class _InputBarState extends State<InputBar> {
         !showStrip &&
         hasQuickActions;
 
+    // During a working turn, surface a dedicated queue/send button when the
+    // user has typed text (the main action button stays as "stop"). Lets phone
+    // users queue a message — they have no hardware Enter. Text-only: images
+    // can't be queued mid-turn.
+    final showQueue =
+        widget.streaming && !_empty && canInteract && !showStrip;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
       decoration: BoxDecoration(
@@ -320,6 +371,12 @@ class _InputBarState extends State<InputBar> {
                 _AttachmentPreview(
                   image: attachState.image,
                   onRemove: widget.attachment!.removeImage,
+                ),
+              if (_queued != null && _queued!.isNotEmpty)
+                _QueuedMessagePreview(
+                  text: _queued!,
+                  onTap: _editQueued,
+                  onClear: _clearQueued,
                 ),
               Row(
                 children: [
@@ -342,7 +399,7 @@ class _InputBarState extends State<InputBar> {
                       // newline handling consumes Enter first.
                       focusNode: _focusNode,
                       controller: _controller,
-                      enabled: canInteract && !widget.streaming,
+                      enabled: canInteract,
                       // Grow with the content: starts at one line, expands up
                       // to 6 then scrolls internally. On a touch soft-keyboard
                       // Enter inserts a newline; sending is via the composer
@@ -361,7 +418,7 @@ class _InputBarState extends State<InputBar> {
                         hintText: widget.disabled
                             ? 'Offline…'
                             : widget.streaming
-                            ? 'Waiting for response…'
+                            ? 'Queue a message…'
                             : hasImage
                             ? 'Add a caption…'
                             : 'Send a message…',
@@ -414,6 +471,10 @@ class _InputBarState extends State<InputBar> {
                     onVoiceLongPressEnd: _onVoiceEnd,
                     onVoiceTap: _onVoiceTap,
                   ),
+                  if (showQueue) ...[
+                    const SizedBox(width: 8),
+                    _QueueButton(onTap: _submit),
+                  ],
                 ],
               ),
             ],
@@ -443,6 +504,131 @@ class _InputBarState extends State<InputBar> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Shows the message committed for auto-send after the current turn ends.
+/// Tapping pulls it back into the composer for edit and cancels the pending
+/// auto-send; X drops it.
+class _QueuedMessagePreview extends StatelessWidget {
+  const _QueuedMessagePreview({
+    required this.text,
+    required this.onTap,
+    required this.onClear,
+  });
+
+  final String text;
+  final VoidCallback onTap;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 10),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const Key('input-bar-queued-preview'),
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+            decoration: BoxDecoration(
+              color: colors.accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: colors.accent.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Icon(
+                    LucideIcons.messageCircle,
+                    size: 15,
+                    color: colors.accent,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Queued. Tap to edit.',
+                        style: TextStyle(
+                          color: colors.accent,
+                          fontFamily: kMonoFamily,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        text,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.text,
+                          fontFamily: kMonoFamily,
+                          fontSize: 12,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: IconButton(
+                    key: const Key('input-bar-clear-queued'),
+                    tooltip: 'Clear queued message',
+                    padding: EdgeInsets.zero,
+                    iconSize: 16,
+                    splashRadius: 16,
+                    onPressed: onClear,
+                    icon: Icon(LucideIcons.x, color: colors.muted2),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The queue/send affordance shown next to the "stop" button during a working
+/// turn when the user has typed text. Tapping queues the message (sent when the
+/// turn ends). Smaller than the main action button so "stop" stays primary.
+class _QueueButton extends StatelessWidget {
+  const _QueueButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return GestureDetector(
+      key: const Key('input-bar-queue'),
+      onTap: onTap,
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: colors.accent.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(19),
+          border: Border.all(color: colors.accent.withValues(alpha: 0.6)),
+        ),
+        child: Icon(LucideIcons.cornerDownLeft, color: colors.accent, size: 18),
       ),
     );
   }

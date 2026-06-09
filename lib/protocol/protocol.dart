@@ -453,6 +453,27 @@ class UserMessage extends ClientMessage {
   };
 }
 
+class QueuedMessageSet extends ClientMessage {
+  final String id;
+  final String text;
+  QueuedMessageSet({required this.id, required this.text});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'queued_message_set',
+    'id': id,
+    'text': text,
+  };
+}
+
+class QueuedMessageClear extends ClientMessage {
+  final String id;
+  QueuedMessageClear({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'queued_message_clear', 'id': id};
+}
+
 class ApproveTool extends ClientMessage {
   final String id;
   final String toolCallId;
@@ -722,6 +743,7 @@ sealed class ServerMessage {
       // echoing back. Treat both as the same payload — `UserInput`
       // here is the "user-text-arrived" event regardless of origin.
       'user_input' || 'user_message' => UserInput.fromJson(json),
+      'queued_message_state' => QueuedMessageState.fromJson(json),
       'agent_message' => AgentMessage.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
       'compaction' => Compaction.fromJson(json),
@@ -925,6 +947,15 @@ WireImage? _firstImage(dynamic raw) {
   final first = raw.first;
   if (first is! Map) return null;
   return WireImage.fromJson(first.cast<String, dynamic>());
+}
+
+class QueuedMessageState extends ServerMessage {
+  final String? id;
+  final String? text;
+  QueuedMessageState({this.id, this.text});
+
+  factory QueuedMessageState.fromJson(Map<String, dynamic> j) =>
+      QueuedMessageState(id: j['id'] as String?, text: j['text'] as String?);
 }
 
 class UserInput extends ServerMessage {

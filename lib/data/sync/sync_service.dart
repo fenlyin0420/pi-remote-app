@@ -58,6 +58,10 @@ class SyncService extends Service {
   final StreamController<SessionEvent> _eventController =
       StreamController<SessionEvent>.broadcast();
 
+  String? _queuedText;
+  final StreamController<String?> _queuedController =
+      StreamController<String?>.broadcast();
+
   bool _pendingSyncRequest = false;
   Timer? _syncDebounce;
 
@@ -100,6 +104,8 @@ class SyncService extends Service {
   StreamingMessage? get streaming => _streaming;
   Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
   Stream<SessionEvent> get events => _eventController.stream;
+  String? get queuedText => _queuedText;
+  Stream<String?> get queuedStream => _queuedController.stream;
 
   /// True while the active session's agent is producing a reply (whole turn).
   bool get isWorking => _working;
@@ -140,6 +146,7 @@ class SyncService extends Service {
     _chunkBuffer.clear();
     _chunkReplyTo = '';
     _workingReplyTo = null;
+    _setQueuedText(null);
     // Session switch: the previous chat's in-flight sends are no longer ours
     // to confirm — drop their backstops so a stale timer can't fire later.
     _cancelAllSendTimers();
@@ -242,6 +249,20 @@ class SyncService extends Service {
   /// Test seam — number of armed no-echo timers (asserts no leak on reset).
   @visibleForTesting
   int get debugPendingSendTimerCount => _pendingSendTimers.length;
+
+  Future<void> setQueuedMessage(String text) async {
+    final ch = _conn.channel;
+    if (ch == null) return;
+    _setQueuedText(text);
+    await ch.send(QueuedMessageSet(id: _newId(), text: text));
+  }
+
+  Future<void> clearQueuedMessage() async {
+    final ch = _conn.channel;
+    _setQueuedText(null);
+    if (ch == null) return;
+    await ch.send(QueuedMessageClear(id: _newId()));
+  }
 
   Future<void> cancel(String targetId) async {
     // User-driven cancel of this message → disarm its no-echo backstop too.
@@ -387,6 +408,9 @@ class SyncService extends Service {
                 ts: DateTime.now(),
               ),
         );
+
+      case QueuedMessageState(:final text):
+        _setQueuedText(text?.isNotEmpty == true ? text : null);
 
       case UserInput(:final id, :final text, :final image):
         // Echo dedupes against the optimistic row (same id): confirm it
@@ -791,6 +815,12 @@ class SyncService extends Service {
 
   /// Single source of "the active session is working". Drives the in-memory
   /// flag/stream (chat pill) AND the durable session index (Home dot).
+  void _setQueuedText(String? text) {
+    if (_queuedText == text) return;
+    _queuedText = text;
+    if (!_queuedController.isClosed) _queuedController.add(text);
+  }
+
   void _setWorking(bool on, {String? preview, String? replyTo}) {
     _setActivity(
       on ? SessionActivity.working : SessionActivity.idle,
@@ -944,5 +974,6 @@ class SyncService extends Service {
     _streamingController.close();
     _eventController.close();
     _workingController.close();
+    _queuedController.close();
   }
 }

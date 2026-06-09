@@ -43,6 +43,7 @@ class ChatReady extends ChatState {
   /// per-room, like Home) actually triggers a rebuild even when nothing
   /// else changed. See [ChatViewModel.isWorking].
   final bool isWorking;
+  final String? queuedText;
 
   const ChatReady({
     required this.messages,
@@ -52,6 +53,7 @@ class ChatReady extends ChatState {
     this.peerOfflineReason,
     this.peerPresence = const PresenceUnknown(),
     this.isWorking = false,
+    this.queuedText,
   });
 
   ChatReady copyWith({
@@ -62,6 +64,7 @@ class ChatReady extends ChatState {
     String? peerOfflineReason,
     PresenceState? peerPresence,
     bool? isWorking,
+    String? queuedText,
     bool clearStreaming = false,
     bool clearPeerOffline = false,
   }) =>
@@ -75,6 +78,7 @@ class ChatReady extends ChatState {
             : (peerOfflineReason ?? this.peerOfflineReason),
         peerPresence: peerPresence ?? this.peerPresence,
         isWorking: isWorking ?? this.isWorking,
+        queuedText: queuedText ?? this.queuedText,
       );
 
   @override
@@ -86,7 +90,8 @@ class ChatReady extends ChatState {
       other.pairingRevoked == pairingRevoked &&
       other.peerOfflineReason == peerOfflineReason &&
       other.peerPresence.runtimeType == peerPresence.runtimeType &&
-      other.isWorking == isWorking;
+      other.isWorking == isWorking &&
+      other.queuedText == queuedText;
 
   @override
   int get hashCode => Object.hash(
@@ -97,6 +102,7 @@ class ChatReady extends ChatState {
         peerOfflineReason,
         peerPresence.runtimeType,
         isWorking,
+        queuedText,
       );
 }
 

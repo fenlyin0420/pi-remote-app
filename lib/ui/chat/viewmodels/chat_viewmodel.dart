@@ -31,6 +31,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamSubscription<RuntimeRecord>? _runtimeSub;
   StreamSubscription<StreamingMessage?>? _streamingSub;
   StreamSubscription<bool>? _workingSub;
+  StreamSubscription<String?>? _queuedSub;
   StreamSubscription<SessionEvent>? _eventSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -43,6 +44,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   List<ChatMessage> _messages = const [];
   StreamingMessage? _streaming;
   bool _working = false;
+  String? _queuedText;
   RuntimeRecord _runtime = const RuntimeRecord();
   bool _pairingRevoked = false;
   String? _peerOfflineReason;
@@ -57,6 +59,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     // seed AFTER activate() in _bootstrap, when the sync owns THIS session.
     _streamingSub = _sync.streamingStream.listen(_onStreaming);
     _workingSub = _sync.workingStream.listen(_onWorking);
+    _queuedSub = _sync.queuedStream.listen(_onQueued);
     _eventSub = _sync.events.listen(_onEvent);
     _roomsSub = _conn.roomsStream.listen((_) => _recompute());
     _statusSub = _conn.statusStream.listen(_onStatus);
@@ -89,21 +92,31 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// inherits the previous one's working state (previously `_working`
   /// was a single global flag that leaked across sessions).
   ///
-  /// OR'd with the local SyncService signals for the CONNECTED session:
-  /// `_working` is set optimistically on send (before the relay's
-  /// turn_start round-trips) and `_streaming != null` keeps the pill blue
-  /// during token flow — both are reset by [SyncService.activate] on a
-  /// session switch, so they only ever refer to the current chat.
+  /// The active room metadata is authoritative for whole-turn state. SyncService
+  /// mirrors local sends into that metadata via `markRoomWorking`, so we do not
+  /// OR in its private `_working` flag here; that flag can be stale after a
+  /// missed live `agent_done`, while Home/list already show the room as idle.
+  /// Streaming text remains a valid live signal during token flow.
   bool get isWorking {
     final epk = _activePeer?.remoteEpk;
     final roomWorking = epk != null && _conn.isRoomWorking(epk, _activeRoomId);
-    return roomWorking || _working || _streaming != null;
+    return roomWorking || _streaming != null;
   }
 
   /// The id to `cancel` to stop the in-flight reply (the user message the
   /// agent is answering). Null when idle. Prefers the live streaming target,
   /// falls back to the SyncService's tracked turn id.
   String? get cancelTargetId => _streaming?.inReplyTo ?? _sync.workingReplyTo;
+
+  String? get queuedText => _queuedText;
+
+  void setQueuedMessage(String text) {
+    unawaited(_sync.setQueuedMessage(text));
+  }
+
+  void clearQueuedMessage() {
+    unawaited(_sync.clearQueuedMessage());
+  }
 
   // ---------------------------------------------------------------------------
 
@@ -145,6 +158,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     // the constructor avoids inheriting the previous chat's bubble/pill.
     _streaming = _sync.streaming;
     _working = _sync.isWorking;
+    _queuedText = _sync.queuedText;
     _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
     _runtimeSub = _read.watchRuntime(epk, roomId).listen(_onRuntime);
 
@@ -165,6 +179,11 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onWorking(bool working) {
     _working = working;
+    _recompute();
+  }
+
+  void _onQueued(String? text) {
+    _queuedText = text;
     _recompute();
   }
 
@@ -229,6 +248,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       peerOfflineReason: _peerOfflineReason,
       peerPresence: peerPresence,
       isWorking: isWorking,
+      queuedText: _queuedText,
     );
   }
 
@@ -261,6 +281,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _runtimeSub?.cancel();
     _streamingSub?.cancel();
     _workingSub?.cancel();
+    _queuedSub?.cancel();
     _eventSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();
