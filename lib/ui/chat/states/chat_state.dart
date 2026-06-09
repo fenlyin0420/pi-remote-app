@@ -67,6 +67,7 @@ class ChatReady extends ChatState {
     String? queuedText,
     bool clearStreaming = false,
     bool clearPeerOffline = false,
+    bool clearQueuedText = false,
   }) =>
       ChatReady(
         messages: messages ?? this.messages,
@@ -78,7 +79,7 @@ class ChatReady extends ChatState {
             : (peerOfflineReason ?? this.peerOfflineReason),
         peerPresence: peerPresence ?? this.peerPresence,
         isWorking: isWorking ?? this.isWorking,
-        queuedText: queuedText ?? this.queuedText,
+        queuedText: clearQueuedText ? null : (queuedText ?? this.queuedText),
       );
 
   @override

@@ -92,15 +92,15 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// inherits the previous one's working state (previously `_working`
   /// was a single global flag that leaked across sessions).
   ///
-  /// The active room metadata is authoritative for whole-turn state. SyncService
-  /// mirrors local sends into that metadata via `markRoomWorking`, so we do not
-  /// OR in its private `_working` flag here; that flag can be stale after a
-  /// missed live `agent_done`, while Home/list already show the room as idle.
-  /// Streaming text remains a valid live signal during token flow.
+  /// OR'd with the local SyncService signals for the CONNECTED session:
+  /// `_working` is set optimistically on send (before the relay's
+  /// turn_start round-trips) and `_streaming != null` keeps the pill blue
+  /// during token flow — both are reset by [SyncService.activate] on a
+  /// session switch, so they only ever refer to the current chat.
   bool get isWorking {
     final epk = _activePeer?.remoteEpk;
     final roomWorking = epk != null && _conn.isRoomWorking(epk, _activeRoomId);
-    return roomWorking || _streaming != null;
+    return roomWorking || _working || _streaming != null;
   }
 
   /// The id to `cancel` to stop the in-flight reply (the user message the
