@@ -157,10 +157,15 @@ class SyncService extends Service {
     }
   }
 
-  Future<void> sendMessage(String text, {MessageImage? image}) async {
+  Future<void> sendMessage(
+    String text, {
+    MessageImage? image,
+    UserMessageStreamingBehavior? streamingBehavior,
+  }) async {
     final epk = _activeEpk;
     final id = _newId();
     final now = DateTime.now();
+    final isSteer = streamingBehavior == UserMessageStreamingBehavior.steer;
     // Optimistic pending row (#defaults: optimistic + dedupe by id).
     if (epk != null) {
       await _upsert(
@@ -176,7 +181,9 @@ class SyncService extends Service {
           pending: true,
         ),
       );
-      _setWorking(true, preview: _preview(text, image), replyTo: id);
+      if (!isSteer) {
+        _setWorking(true, preview: _preview(text, image), replyTo: id);
+      }
       // Arm the no-echo backstop for this row. The timeout is keyed off the
       // row's `ts`, NOT online-ness: an offline "held pending" send is reaped
       // 20s after its ts too, and ANY pending row is re-armed on session load
@@ -196,12 +203,17 @@ class SyncService extends Service {
     // "thinking" gap before the first agent_chunk (pre-31 behavior). In-memory
     // only (#7) — never written to the DB. agent_chunk appends; agent_done
     // clears it (even for a text-less, tool-only turn).
-    _emitStreaming(StreamingMessage(inReplyTo: id));
+    // Steering messages should not create a new cursor, because they do not
+    // start a fresh assistant turn.
+    if (!isSteer) {
+      _emitStreaming(StreamingMessage(inReplyTo: id));
+    }
     debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
     await ch.send(
       UserMessage(
         id: id,
         text: text,
+        streamingBehavior: streamingBehavior,
         images: image == null
             ? null
             : [WireImage(data: image.data, mime: image.mime)],
@@ -412,7 +424,12 @@ class SyncService extends Service {
       case QueuedMessageState(:final text):
         _setQueuedText(text?.isNotEmpty == true ? text : null);
 
-      case UserInput(:final id, :final text, :final image):
+      case UserInput(
+        :final id,
+        :final text,
+        :final image,
+        :final streamingBehavior,
+      ):
         // Echo dedupes against the optimistic row (same id): confirm it
         // (pending=false) or insert as confirmed (foreign device).
         debugPrint('[msg-echo] id=$id');
@@ -435,12 +452,17 @@ class SyncService extends Service {
                   ts: DateTime.now(),
                 ),
         );
-        _setWorking(true, preview: text, replyTo: id);
-        // Show the thinking cursor for this turn (foreign-device echo, or the
-        // local echo when the send-seed was already cleared). Guarded so it
-        // never wipes a buffer that's already accumulating for this id.
-        if (_streaming?.inReplyTo != id) {
-          _emitStreaming(StreamingMessage(inReplyTo: id));
+        // Steering input should not start/replace the working turn bubble.
+        if (streamingBehavior == UserMessageStreamingBehavior.steer) {
+          _setActivity(SessionActivity.working, preview: text);
+        } else {
+          _setWorking(true, preview: text, replyTo: id);
+          // Show the thinking cursor for this turn (foreign-device echo, or the
+          // local echo when the send-seed was already cleared). Guarded so it
+          // never wipes a buffer that's already accumulating for this id.
+          if (_streaming?.inReplyTo != id) {
+            _emitStreaming(StreamingMessage(inReplyTo: id));
+          }
         }
 
       case ToolRequest(:final toolCallId, :final tool, :final args):

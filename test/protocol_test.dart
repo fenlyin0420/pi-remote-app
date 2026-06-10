@@ -295,6 +295,18 @@ void main() {
       expect(decoded['type'], 'user_message');
       expect(decoded['id'], 'test-id-1');
       expect(decoded['text'], 'hello world');
+      expect(decoded.containsKey('streaming_behavior'), isFalse);
+    });
+
+    test('UserMessage with steer behavior includes streaming_behavior', () {
+      final msg = UserMessage(
+        id: 'test-id-steer',
+        text: 'refine this',
+        streamingBehavior: UserMessageStreamingBehavior.steer,
+      );
+      final line = encodeClient(msg);
+      final decoded = jsonDecode(line.trim()) as Map<String, dynamic>;
+      expect(decoded['streaming_behavior'], 'steer');
     });
 
     test('ApproveTool encodes decision as string', () {
@@ -363,6 +375,30 @@ void main() {
       expect(msg.image, isNotNull);
       expect(msg.image!.data, 'QUJD');
       expect(msg.image!.mime, 'image/jpeg');
+    });
+
+    test('user_message echo with steer behavior parses on UserInput', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'user_message',
+                'id': 'u-steer',
+                'text': 'refine',
+                'streaming_behavior': 'steer',
+              })
+              as UserInput;
+      expect(msg.streamingBehavior, UserMessageStreamingBehavior.steer);
+    });
+
+    test('unknown streaming_behavior is ignored (compatibility)', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'user_message',
+                'id': 'u-unknown',
+                'text': 'legacy',
+                'streaming_behavior': 'unknown-mode',
+              })
+              as UserInput;
+      expect(msg.streamingBehavior, isNull);
     });
 
     test('user_message without images → UserInput.image is null', () {

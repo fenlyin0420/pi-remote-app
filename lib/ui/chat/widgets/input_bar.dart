@@ -12,8 +12,8 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 // InputBar — bottom message composer.
-// - Disabled (grayed) when offline or streaming.
-// - Send button turns to Cancel icon during streaming.
+// - Disabled (grayed) when offline.
+// - During streaming, empty composer shows Stop; typed text sends steering.
 // - Plan/28 — quick actions (⚙) icon sits to the left of the attach
 //   button and is visible only while the field is empty (so it never
 //   competes with the send affordance).
@@ -159,19 +159,6 @@ class _InputBarState extends State<InputBar> {
     // Plan/30 — an attached image makes an empty-caption send valid.
     final hasImage = widget.attachment?.hasImage ?? false;
     if (text.isEmpty && !hasImage) return;
-    // During a working turn, commit text into the local queued draft. Multiple
-    // queue taps append with a newline, producing one combined message when the
-    // turn ends. Images can't be queued mid-turn.
-    if (widget.streaming) {
-      if (text.isEmpty) return; // image-only → nothing to queue
-      final combined = _queued == null || _queued!.isEmpty
-          ? text
-          : '${_queued!}\n$text';
-      setState(() => _queued = combined);
-      widget.onSetQueued?.call(combined);
-      _controller.clear();
-      return;
-    }
     _controller.clear();
     widget.onSend(text);
   }
@@ -210,9 +197,8 @@ class _InputBarState extends State<InputBar> {
       '[input.enter] shift=${HardwareKeyboard.instance.isShiftPressed} '
       'disabled=${widget.disabled} streaming=${widget.streaming}',
     );
-    // Don't intercept while offline, or mid-IME-composition (a CJK
+    // Don't intercept while disabled, or mid-IME-composition (a CJK
     // candidate is confirmed with Enter, not sent) — let the field/IME deal.
-    // Streaming is now allowed: Enter queues the message for auto-send when turn ends.
     if (widget.disabled || !_controller.value.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
@@ -348,12 +334,14 @@ class _InputBarState extends State<InputBar> {
         !showStrip &&
         hasQuickActions;
 
-    // During a working turn, surface a dedicated queue/send button when the
-    // user has typed text (the main action button stays as "stop"). Lets phone
-    // users queue a message — they have no hardware Enter. Text-only: images
-    // can't be queued mid-turn.
-    final showQueue =
-        widget.streaming && !_empty && canInteract && !showStrip;
+    // During a working turn with typed content, the main action sends steering;
+    // keep a compact Stop affordance beside it so cancellation remains reachable.
+    final showInlineStop =
+        widget.streaming &&
+        hasContent &&
+        canInteract &&
+        !showStrip &&
+        widget.onCancel != null;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
@@ -418,7 +406,7 @@ class _InputBarState extends State<InputBar> {
                         hintText: widget.disabled
                             ? 'Offline…'
                             : widget.streaming
-                            ? 'Queue a message…'
+                            ? 'Steer current response…'
                             : hasImage
                             ? 'Add a caption…'
                             : 'Send a message…',
@@ -471,9 +459,9 @@ class _InputBarState extends State<InputBar> {
                     onVoiceLongPressEnd: _onVoiceEnd,
                     onVoiceTap: _onVoiceTap,
                   ),
-                  if (showQueue) ...[
+                  if (showInlineStop) ...[
                     const SizedBox(width: 8),
-                    _QueueButton(onTap: _submit),
+                    _InlineStopButton(onTap: widget.onCancel!),
                   ],
                 ],
               ),
@@ -606,11 +594,9 @@ class _QueuedMessagePreview extends StatelessWidget {
   }
 }
 
-/// The queue/send affordance shown next to the "stop" button during a working
-/// turn when the user has typed text. Tapping queues the message (sent when the
-/// turn ends). Smaller than the main action button so "stop" stays primary.
-class _QueueButton extends StatelessWidget {
-  const _QueueButton({required this.onTap});
+/// Compact Stop affordance shown beside Send while steering text is typed.
+class _InlineStopButton extends StatelessWidget {
+  const _InlineStopButton({required this.onTap});
 
   final VoidCallback onTap;
 
@@ -618,17 +604,17 @@ class _QueueButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return GestureDetector(
-      key: const Key('input-bar-queue'),
+      key: const Key('input-bar-inline-stop'),
       onTap: onTap,
       child: Container(
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-          color: colors.accent.withValues(alpha: 0.18),
+          color: colors.error.withValues(alpha: 0.14),
           borderRadius: BorderRadius.circular(19),
-          border: Border.all(color: colors.accent.withValues(alpha: 0.6)),
+          border: Border.all(color: colors.error.withValues(alpha: 0.55)),
         ),
-        child: Icon(LucideIcons.cornerDownLeft, color: colors.accent, size: 18),
+        child: Icon(LucideIcons.square600, color: colors.error, size: 18),
       ),
     );
   }
@@ -876,7 +862,7 @@ class _ComposerActionButton extends StatelessWidget {
   final VoidCallback onVoiceTap;
 
   _ComposerMode get _mode {
-    if (streaming) return _ComposerMode.cancel;
+    if (streaming && !hasContent) return _ComposerMode.cancel;
     if (hasContent) return _ComposerMode.sendText;
     return _ComposerMode.sendAudio;
   }

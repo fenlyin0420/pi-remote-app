@@ -133,6 +133,71 @@ void main() {
     s.sync.dispose();
   });
 
+  test(
+    'steer send keeps active working target and sets streaming behavior on wire',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'primary'));
+      await _settle();
+
+      await s.sync.sendMessage(
+        'refine this',
+        streamingBehavior: UserMessageStreamingBehavior.steer,
+      );
+      await _settle();
+
+      final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'refine this',
+      );
+      expect(sent.streamingBehavior, UserMessageStreamingBehavior.steer);
+      expect(s.sync.workingReplyTo, 'u1');
+      expect(s.sync.streaming, isNotNull);
+      expect(s.sync.streaming!.inReplyTo, 'u1');
+      expect(s.sync.isWorking, isTrue);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test('steer echo confirms row without replacing working turn', () async {
+    final s = await setup();
+    s.ch.push(UserInput(id: 'u1', text: 'primary'));
+    await _settle();
+    expect(s.sync.workingReplyTo, 'u1');
+
+    await s.sync.sendMessage(
+      'refine this',
+      streamingBehavior: UserMessageStreamingBehavior.steer,
+    );
+    await _settle();
+    final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+      (m) => m.text == 'refine this',
+    );
+
+    s.ch.push(
+      UserInput(
+        id: sent.id,
+        text: 'refine this',
+        streamingBehavior: UserMessageStreamingBehavior.steer,
+      ),
+    );
+    await _settle();
+
+    expect(s.sync.workingReplyTo, 'u1');
+    expect(s.sync.streaming, isNotNull);
+    expect(s.sync.streaming!.inReplyTo, 'u1');
+    expect(s.sync.isWorking, isTrue);
+    final rows = messages(s.epk);
+    expect(rows, hasLength(2));
+    expect(rows.where((r) => r.id == sent.id).single.pending, isFalse);
+    expect(index(s.epk)?.status, SessionActivity.working);
+    expect(index(s.epk)?.lastMessagePreview, 'refine this');
+
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test('streaming delta does NOT write to the DB (#7)', () async {
     final s = await setup();
     final before = messages(s.epk).length;
@@ -177,26 +242,29 @@ void main() {
     s.sync.dispose();
   });
 
-  test('cancelled stops the turn but preserves confirmed user history', () async {
-    final s = await setup();
-    s.ch.push(UserInput(id: 'u1', text: 'keep this'));
-    await _settle();
-    s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'partial'));
-    s.ch.push(Cancelled(inReplyTo: 'cancel-1', targetId: 'u1'));
-    await _settle();
+  test(
+    'cancelled stops the turn but preserves confirmed user history',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'keep this'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'partial'));
+      s.ch.push(Cancelled(inReplyTo: 'cancel-1', targetId: 'u1'));
+      await _settle();
 
-    final rows = messages(s.epk);
-    expect(
-      rows.where((m) => m.id == 'u1' && m.role == MsgRole.user),
-      hasLength(1),
-    );
-    expect(rows.singleWhere((m) => m.id == 'u1').pending, isFalse);
-    expect(s.sync.streaming, isNull);
-    expect(s.sync.isWorking, isFalse);
-    expect(index(s.epk)?.status, SessionActivity.idle);
-    s.conn.dispose();
-    s.sync.dispose();
-  });
+      final rows = messages(s.epk);
+      expect(
+        rows.where((m) => m.id == 'u1' && m.role == MsgRole.user),
+        hasLength(1),
+      );
+      expect(rows.singleWhere((m) => m.id == 'u1').pending, isFalse);
+      expect(s.sync.streaming, isNull);
+      expect(s.sync.isWorking, isFalse);
+      expect(index(s.epk)?.status, SessionActivity.idle);
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
 
   test('cancelled removes a still-pending optimistic user row', () async {
     final s = await setup();
@@ -223,11 +291,13 @@ void main() {
       s.ch.push(UserInput(id: 'u1', text: 'hi'));
       await _settle();
       s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'partial'));
-      s.ch.push(ErrorMessage(
-        inReplyTo: 'cancel-1',
-        code: 'internal_error',
-        message: 'No active Pi context to abort',
-      ));
+      s.ch.push(
+        ErrorMessage(
+          inReplyTo: 'cancel-1',
+          code: 'internal_error',
+          message: 'No active Pi context to abort',
+        ),
+      );
       await _settle();
 
       expect(s.sync.streaming, isNull);

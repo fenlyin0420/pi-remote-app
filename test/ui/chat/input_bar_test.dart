@@ -120,10 +120,9 @@ void main() {
     expectCollapsed(tester);
   });
 
-  // While the turn is working the composer stays USABLE so the user can queue
-  // the next message (typed text is held and sent when the turn ends). The
-  // main action button is "stop"; a queue button appears once text is typed.
-  testWidgets('streaming keeps the field usable and shows the stop button', (
+  // Plan/43 — `streaming` (the whole working turn, fed by vm.isWorking) keeps
+  // the composer editable for steering while empty input still exposes Stop.
+  testWidgets('streaming with no text shows stop and keeps typing enabled', (
     tester,
   ) async {
     await pumpBar(
@@ -133,20 +132,42 @@ void main() {
       onOpenQuickActions: () {},
     );
     await tester.pumpAndSettle();
-    // Field stays enabled (queueing requires typing while working).
-    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.enabled, isTrue);
+    expect(field.decoration?.hintText, 'Steer current response…');
     // The composer action button uses the heavier `600` weight variants
     // (see _ComposerActionButton._icon) — match those, not the plain glyphs.
     expect(find.byIcon(LucideIcons.square600), findsOneWidget); // stop
     expect(find.byIcon(LucideIcons.send600), findsNothing);
     expect(find.byIcon(LucideIcons.mic600), findsNothing);
-    // No text yet → no queue button.
-    expect(find.byKey(const Key('input-bar-queue')), findsNothing);
-    // Typing reveals the queue button alongside the stop button.
-    await tester.enterText(find.byType(TextField), 'next step');
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('input-bar-queue')), findsOneWidget);
-    expect(find.byIcon(LucideIcons.square600), findsOneWidget); // stop stays
+  });
+
+  testWidgets('streaming + text turns send into steering', (tester) async {
+    String? sent;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: InputBar(
+            disabled: false,
+            streaming: true,
+            onSend: (text) => sent = text,
+            onCancel: () {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), 'quick follow-up');
+    await tester.pump();
+    expect(find.byIcon(LucideIcons.send600), findsOneWidget);
+    expect(
+      find.byKey(const Key('input-bar-inline-stop')),
+      findsOneWidget,
+      reason: 'Stop remains reachable while the main action sends steering',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(sent, 'quick follow-up');
   });
 
   testWidgets('tap fires onOpenQuickActions', (tester) async {
@@ -221,176 +242,25 @@ void main() {
     );
   });
 
-  // While streaming, Enter QUEUES the message on the Pi side: onSend is not
-  // called now, the field clears, and the queued preview appears.
-  testWidgets('Enter while streaming sets queued message', (
+  // While there is no content, hardware Enter does nothing while streaming.
+  testWidgets('hardware Enter does nothing while streaming with empty text', (
     tester,
   ) async {
     final sent = <String>[];
-    final queued = <String>[];
-
-    Widget build(bool streaming) => MaterialApp(
-      home: Scaffold(
-        body: InputBar(
-          disabled: false,
-          streaming: streaming,
-          onSend: sent.add,
-          onSetQueued: queued.add,
-          onCancel: () {},
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: InputBar(
+            disabled: false,
+            streaming: true,
+            onSend: sent.add,
+            onCancel: () {},
+          ),
         ),
       ),
     );
-
-    await tester.pumpWidget(build(true));
-    final field = find.byType(TextField);
-    await tester.enterText(field, 'do this next');
-    await tester.pump();
-
-    // Enter while streaming → queued, NOT sent; field clears and a preview
-    // appears.
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(sent, isEmpty, reason: 'queued, not sent immediately');
-    expect(find.byKey(const Key('input-bar-queued-preview')), findsOneWidget);
-    expect(find.text('do this next'), findsOneWidget);
-    expect(
-      tester.widget<TextField>(field).controller!.text,
-      isEmpty,
-      reason: 'queuing clears the field',
-    );
-
-    expect(queued, ['do this next']);
-    expect(sent, isEmpty, reason: 'queued path uses onSetQueued, not onSend');
-  });
-
-  testWidgets('queue button appends messages with newline into one queued msg', (
-    tester,
-  ) async {
-    final queued = <String>[];
-
-    Widget build(bool streaming) => MaterialApp(
-      home: Scaffold(
-        body: InputBar(
-          disabled: false,
-          streaming: streaming,
-          onSend: (_) {},
-          onSetQueued: queued.add,
-          onCancel: () {},
-        ),
-      ),
-    );
-
-    await tester.pumpWidget(build(true));
-    final field = find.byType(TextField);
-
-    await tester.enterText(field, 'one');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('input-bar-queue')));
-    await tester.pump();
-
-    await tester.enterText(field, 'two');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('input-bar-queue')));
-    await tester.pump();
-
-    expect(find.byKey(const Key('input-bar-queued-preview')), findsOneWidget);
-    expect(find.text('one\ntwo'), findsOneWidget);
-    expect(queued, ['one', 'one\ntwo']);
-  });
-
-  testWidgets('tap queued preview loads it into composer and clears Pi queue', (
-    tester,
-  ) async {
-    final queued = <String>[];
-    var clearCount = 0;
-
-    Widget build(bool streaming) => MaterialApp(
-      home: Scaffold(
-        body: InputBar(
-          disabled: false,
-          streaming: streaming,
-          onSend: (_) {},
-          onSetQueued: queued.add,
-          onClearQueued: () => clearCount++,
-          onCancel: () {},
-        ),
-      ),
-    );
-
-    await tester.pumpWidget(build(true));
-    final field = find.byType(TextField);
-    await tester.enterText(field, 'edit me');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('input-bar-queue')));
-    await tester.pump();
-
-    await tester.tap(find.byKey(const Key('input-bar-queued-preview')));
-    await tester.pump();
-    expect(find.byKey(const Key('input-bar-queued-preview')), findsNothing);
-    expect(tester.widget<TextField>(field).controller!.text, 'edit me');
-    expect(queued, ['edit me']);
-    expect(clearCount, 1, reason: 'tap-to-edit clears queued auto-send');
-  });
-
-  testWidgets('clear queued preview drops queued message', (tester) async {
-    final queued = <String>[];
-    var clearCount = 0;
-
-    Widget build(bool streaming) => MaterialApp(
-      home: Scaffold(
-        body: InputBar(
-          disabled: false,
-          streaming: streaming,
-          onSend: (_) {},
-          onSetQueued: queued.add,
-          onClearQueued: () => clearCount++,
-          onCancel: () {},
-        ),
-      ),
-    );
-
-    await tester.pumpWidget(build(true));
-    final field = find.byType(TextField);
-    await tester.enterText(field, 'drop me');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('input-bar-queue')));
-    await tester.pump();
-
-    await tester.tap(find.byKey(const Key('input-bar-clear-queued')));
-    await tester.pump();
-    expect(find.byKey(const Key('input-bar-queued-preview')), findsNothing);
-    expect(queued, ['drop me']);
-    expect(clearCount, 1);
-  });
-
-  // Draft text the user did NOT commit (no Enter) must stay in the field when
-  // the turn ends — it is never auto-sent.
-  testWidgets('uncommitted draft stays in the field when the turn ends', (
-    tester,
-  ) async {
-    final queued = <String>[];
-
-    Widget build(bool streaming) => MaterialApp(
-      home: Scaffold(
-        body: InputBar(
-          disabled: false,
-          streaming: streaming,
-          onSend: (_) {},
-          onSetQueued: queued.add,
-          onCancel: () {},
-        ),
-      ),
-    );
-
-    await tester.pumpWidget(build(true));
-    final field = find.byType(TextField);
-    await tester.enterText(field, 'still editing');
-    await tester.pump();
-
-    // Turn ends without an Enter → nothing queued, text preserved.
-    await tester.pumpWidget(build(false));
-    await tester.pump();
-    expect(queued, isEmpty);
-    expect(tester.widget<TextField>(field).controller!.text, 'still editing');
+    expect(sent, isEmpty);
   });
 }

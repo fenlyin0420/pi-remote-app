@@ -22,6 +22,7 @@ import 'package:hive/hive.dart';
 class _FakeChannel implements IChannel, IControlLink {
   final _ctrl = StreamController<ServerMessage>.broadcast();
   final _control = StreamController<ControlInbound>.broadcast();
+  final List<ClientMessage> sent = [];
   @override
   Stream<ServerMessage> get serverMessages => _ctrl.stream;
   @override
@@ -29,7 +30,7 @@ class _FakeChannel implements IChannel, IControlLink {
   @override
   void sendControl(Map<String, dynamic> json) {}
   @override
-  Future<void> send(ClientMessage msg) async {}
+  Future<void> send(ClientMessage msg) async => sent.add(msg);
   @override
   Future<void> close() async {
     await _ctrl.close();
@@ -217,6 +218,48 @@ void main() {
   );
 
   test(
+    'working send uses steer behavior and preserves current target',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      ch.push(UserInput(id: 'u1', text: 'primary'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(vm.isWorking, isTrue, reason: 'set up an active turn');
+      final originalTarget = vm.cancelTargetId;
+      expect(originalTarget, 'u1');
+
+      await vm.sendMessage('steer follow-up');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final sent = ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'steer follow-up',
+      );
+      expect(sent.streamingBehavior, UserMessageStreamingBehavior.steer);
+      expect(vm.cancelTargetId, equals(originalTarget));
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
+
+  test(
     'an empty session reaches ChatReady with no messages → the chat shows the '
     'default "Nothing here" placeholder (plan/32)',
     () async {
@@ -255,75 +298,81 @@ void main() {
     },
   );
 
-  test(
-    'working pill follows the relay per-room broadcast (same mechanism as '
-    'Home) and the flip rebuilds the state (plan/32)',
-    () async {
-      final ch = _FakeChannel();
-      final storage = _FakeStorage();
-      final conn = ConnectionManager(
-        factory: (_, _) async => ch,
-        storage: storage,
-        emitDebounce: Duration.zero,
-      );
-      final boxes = LocalBoxes();
-      final sync = SyncService(conn, boxes);
-      final read = SessionReadRepository(boxes);
-      final prefs = Preferences(_FakeSecureStorage());
-      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
-      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+  test('working pill follows the relay per-room broadcast (same mechanism as '
+      'Home) and the flip rebuilds the state (plan/32)', () async {
+    final ch = _FakeChannel();
+    final storage = _FakeStorage();
+    final conn = ConnectionManager(
+      factory: (_, _) async => ch,
+      storage: storage,
+      emitDebounce: Duration.zero,
+    );
+    final boxes = LocalBoxes();
+    final sync = SyncService(conn, boxes);
+    final read = SessionReadRepository(boxes);
+    final prefs = Preferences(_FakeSecureStorage());
+    await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+    await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
 
-      conn.adopt(ch, _peer);
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      final vm = ChatViewModel(read, sync, conn, prefs, storage);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    conn.adopt(ch, _peer);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    final vm = ChatViewModel(read, sync, conn, prefs, storage);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Room comes online idle (no local turn started in THIS chat).
-      ch.pushControl(const RoomAnnounced(
-        peer: 'epk_chat',
-        roomId: 'main',
-        startedAt: 1,
-      ));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(vm.isWorking, isFalse);
+    // Room comes online idle (no local turn started in THIS chat).
+    ch.pushControl(
+      const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(vm.isWorking, isFalse);
 
-      // The relay broadcasts meta.working=true for this room (turn_start) —
-      // no local send/echo, purely the per-room signal that also drives Home.
-      ch.pushControl(const RoomMetaUpdated(
+    // The relay broadcasts meta.working=true for this room (turn_start) —
+    // no local send/echo, purely the per-room signal that also drives Home.
+    ch.pushControl(
+      const RoomMetaUpdated(
         peer: 'epk_chat',
         roomId: 'main',
         working: true,
         hasModel: false,
         hasThinking: false,
-      ));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(vm.isWorking, isTrue, reason: 'relay per-room working drives the pill');
-      expect((vm.state as ChatReady).isWorking, isTrue,
-          reason: 'state carries isWorking so the flip rebuilds the UI');
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(
+      vm.isWorking,
+      isTrue,
+      reason: 'relay per-room working drives the pill',
+    );
+    expect(
+      (vm.state as ChatReady).isWorking,
+      isTrue,
+      reason: 'state carries isWorking so the flip rebuilds the UI',
+    );
 
-      // If the app sees agent_done but the relay's meta.working=false
-      // broadcast is delayed/missed, the active chat must not stay stuck on
-      // the stop button. The local channel observation clears the room flag.
-      ch.push(AgentDone(inReplyTo: 'u1'));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(vm.isWorking, isFalse);
-      expect((vm.state as ChatReady).isWorking, isFalse);
+    // If the app sees agent_done but the relay's meta.working=false
+    // broadcast is delayed/missed, the active chat must not stay stuck on
+    // the stop button. The local channel observation clears the room flag.
+    ch.push(AgentDone(inReplyTo: 'u1'));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(vm.isWorking, isFalse);
+    expect((vm.state as ChatReady).isWorking, isFalse);
 
-      // A later turn_end broadcast remains idempotent.
-      ch.pushControl(const RoomMetaUpdated(
+    // A later turn_end broadcast remains idempotent.
+    ch.pushControl(
+      const RoomMetaUpdated(
         peer: 'epk_chat',
         roomId: 'main',
         working: false,
         hasModel: false,
         hasThinking: false,
-      ));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(vm.isWorking, isFalse);
-      expect((vm.state as ChatReady).isWorking, isFalse);
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(vm.isWorking, isFalse);
+    expect((vm.state as ChatReady).isWorking, isFalse);
 
-      vm.dispose();
-      sync.dispose();
-      conn.dispose();
-    },
-  );
+    vm.dispose();
+    sync.dispose();
+    conn.dispose();
+  });
 }

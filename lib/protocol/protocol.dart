@@ -432,22 +432,51 @@ class WireImage {
   int get hashCode => Object.hash(data, mime);
 }
 
+enum UserMessageStreamingBehavior {
+  steer;
+
+  /// Mirrors the Pi wire shape. Keep permissive parsing for forward-compat.
+  static UserMessageStreamingBehavior? fromWire(String? raw) {
+    return switch (raw) {
+      'steer' => UserMessageStreamingBehavior.steer,
+      _ => null,
+    };
+  }
+
+  String get wireValue {
+    return switch (this) {
+      UserMessageStreamingBehavior.steer => 'steer',
+    };
+  }
+}
+
 class UserMessage extends ClientMessage {
   final String id;
   final String text;
+
+  /// Optional steering behavior for this message. Omitted when null for
+  /// compatibility with older Pi extensions.
+  final UserMessageStreamingBehavior? streamingBehavior;
 
   /// Plan/30 — optional attached images. The feature sends at most one, but
   /// the wire shape is a list to mirror the SDK's `(TextContent|ImageContent)[]`
   /// and stay forward-compatible. Omitted entirely when empty (retro-compat).
   final List<WireImage>? images;
 
-  UserMessage({required this.id, required this.text, this.images});
+  UserMessage({
+    required this.id,
+    required this.text,
+    this.streamingBehavior,
+    this.images,
+  });
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'user_message',
     'id': id,
     'text': text,
+    if (streamingBehavior != null)
+      'streaming_behavior': streamingBehavior!.wireValue,
     if (images != null && images!.isNotEmpty)
       'images': images!.map((i) => i.toJson()).toList(),
   };
@@ -962,14 +991,26 @@ class UserInput extends ServerMessage {
   final String id;
   final String text;
 
+  /// Present when the message was sent with `streaming_behavior` (currently used
+  /// for steering).
+  final UserMessageStreamingBehavior? streamingBehavior;
+
   /// Plan/30 — echoed-back attached image (the Pi rebroadcasts `images`).
   final WireImage? image;
 
-  UserInput({required this.id, required this.text, this.image});
+  UserInput({
+    required this.id,
+    required this.text,
+    this.streamingBehavior,
+    this.image,
+  });
 
   factory UserInput.fromJson(Map<String, dynamic> j) => UserInput(
     id: j['id'] as String,
     text: j['text'] as String,
+    streamingBehavior: UserMessageStreamingBehavior.fromWire(
+      j['streaming_behavior'] as String?,
+    ),
     image: _firstImage(j['images']),
   );
 }
