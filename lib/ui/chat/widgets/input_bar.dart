@@ -796,7 +796,7 @@ class _QuickActionsButtonState extends State<_QuickActionsButton>
     return SizeTransition(
       sizeFactor: _sizeFactor,
       axis: Axis.horizontal,
-      axisAlignment: -1.0,
+      alignment: const AlignmentDirectional(-1.0, -1.0),
       child: FadeTransition(
         opacity: _fade,
         child: Row(
