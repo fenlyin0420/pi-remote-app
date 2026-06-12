@@ -13,6 +13,7 @@ import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/detail_placeholder.dart';
 import 'package:app/ui/home/home_page.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
+import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
 import 'package:app/ui/onboarding/onboarding_page.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
@@ -278,8 +279,15 @@ GoRouter buildRouter(
             routes: [
               GoRoute(
                 path: '/home',
-                builder: (ctx, st) =>
-                    ViewmodelProvider<HomeViewModel>(child: const HomePage()),
+                builder: (ctx, st) => MultiProvider(
+                  providers: [
+                    ViewmodelProvider<HomeViewModel>(),
+                    // Plan 44 — Android-only update notice rendered at the top
+                    // of Home. No-op on iOS / when there's no newer version.
+                    ViewmodelProvider<UpdateBannerViewModel>(),
+                  ],
+                  child: const HomePage(),
+                ),
               ),
             ],
           ),

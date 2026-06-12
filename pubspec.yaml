@@ -81,6 +81,11 @@ dependencies:
   # iOS and Android without bundling a .ttf. See ui/core/themes/app_typography.
   google_fonts: ^6.2.1
 
+  # Plan 44 — read the running app version (CFBundleShortVersionString /
+  # versionName) so the Android-only in-app update notice can compare it
+  # against the release manifest's semver.
+  package_info_plus: ^8.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

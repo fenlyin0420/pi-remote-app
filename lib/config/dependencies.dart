@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:app/config/utils/injector.dart';
 import 'package:app/data/actions/actions_repository.dart';
@@ -15,7 +16,13 @@ import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
+import 'package:app/data/update/secure_dismissed_update_store.dart';
+import 'package:app/data/update/update_checker_impl.dart';
+import 'package:app/data/update/url_launcher_opener.dart';
 import 'package:app/data/voice/speech_service.dart';
+import 'package:app/domain/contracts/dismissed_update_store.dart';
+import 'package:app/domain/contracts/update_checker.dart';
+import 'package:app/domain/contracts/url_opener.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/qr_scanner.dart';
@@ -30,7 +37,9 @@ import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
+import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:remote_pi_identity/remote_pi_identity.dart';
 
@@ -179,6 +188,25 @@ Future<void> setupDependencies() async {
   // Plan/tablet — shell layout state (zero-state collapse). Set by Home so
   // the adaptive shell drops the split when there's nothing to list.
   _injector.addInstance<ShellLayout>(ShellLayout());
+
+  // Plan 44 — Android-only in-app update notice. The running version comes
+  // from package_info; the manifest fetch + gating live in the ViewModel
+  // (silent on iOS via `enabled` and on any fetch failure). Stateless
+  // collaborators → addOther (lazy singleton, no dispose hook).
+  final packageInfo = await PackageInfo.fromPlatform();
+  final appVersion = packageInfo.version;
+  _injector.addOther<UpdateChecker>(() => UpdateCheckerImpl());
+  _injector.addOther<DismissedUpdateStore>(() => SecureDismissedUpdateStore());
+  _injector.addOther<UrlOpener>(() => const UrlLauncherOpener());
+  _injector.addViewModel<UpdateBannerViewModel>(
+    () => UpdateBannerViewModel(
+      _injector.get<UpdateChecker>(),
+      _injector.get<DismissedUpdateStore>(),
+      _injector.get<UrlOpener>(),
+      currentVersion: appVersion,
+      enabled: Platform.isAndroid,
+    ),
+  );
 
   _injector.commit();
 }

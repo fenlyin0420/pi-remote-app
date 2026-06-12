@@ -7,6 +7,7 @@ import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/home/widgets/widgets.dart';
+import 'package:app/ui/update/widgets/update_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -46,6 +47,11 @@ class HomePage extends StatelessWidget {
         child: CustomScrollView(
           slivers: [
             _buildLargeTitleBar(context, vm, state),
+            // Plan 44 — Android-only update notice. Sits at the top of the
+            // scroll content (below the title, above the list); shrinks to
+            // zero height when there's nothing to announce, so it's invisible
+            // on iOS and when no newer version exists.
+            const SliverToBoxAdapter(child: UpdateBanner()),
             switch (state) {
               HomeLoading() => SliverFillRemaining(
                 hasScrollBody: false,
