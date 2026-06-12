@@ -796,7 +796,10 @@ class _QuickActionsButtonState extends State<_QuickActionsButton>
     return SizeTransition(
       sizeFactor: _sizeFactor,
       axis: Axis.horizontal,
-      alignment: const AlignmentDirectional(-1.0, -1.0),
+      // Pin: Flutter 3.41.7 (CI FLUTTER_VERSION) — SizeTransition has no
+      // `alignment`; `axisAlignment` is only deprecated (not removed) on newer
+      // channels. Don't "fix the deprecation" without bumping the Flutter pin.
+      axisAlignment: -1.0,
       child: FadeTransition(
         opacity: _fade,
         child: Row(
