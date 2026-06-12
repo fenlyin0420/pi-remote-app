@@ -81,6 +81,8 @@ PODS:
     - nanopb/encode (= 2.30910.0)
   - nanopb/decode (2.30910.0)
   - nanopb/encode (2.30910.0)
+  - package_info_plus (0.4.5):
+    - Flutter
   - PromisesObjC (2.4.0)
   - remote_pi_identity (0.2.0):
     - Flutter
@@ -104,6 +106,7 @@ DEPENDENCIES:
   - flutter_secure_storage (from `.symlinks/plugins/flutter_secure_storage/ios`)
   - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/ios`)
+  - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - remote_pi_identity (from `.symlinks/plugins/remote_pi_identity/ios`)
   - speech_to_text (from `.symlinks/plugins/speech_to_text/darwin`)
   - url_launcher_ios (from `.symlinks/plugins/url_launcher_ios/ios`)
@@ -142,6 +145,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/image_picker_ios/ios"
   mobile_scanner:
     :path: ".symlinks/plugins/mobile_scanner/ios"
+  package_info_plus:
+    :path: ".symlinks/plugins/package_info_plus/ios"
   remote_pi_identity:
     :path: ".symlinks/plugins/remote_pi_identity/ios"
   speech_to_text:
@@ -171,6 +176,7 @@ SPEC CHECKSUMS:
   MLKitVision: e858c5f125ecc288e4a31127928301eaba9ae0c1
   mobile_scanner: 92e8812bf22a8f84131e2a7f9d0f44dad1a4742b
   nanopb: 438bc412db1928dac798aa6fd75726007be04262
+  package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
   remote_pi_identity: b53742ad2fe568f993888c982bfa524c5e1b647a
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
