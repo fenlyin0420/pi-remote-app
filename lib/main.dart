@@ -81,9 +81,6 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
         ChangeNotifierProvider<Preferences>.value(
           value: injector.get<Preferences>(),
         ),
-        // App-global UI selection — read by the Home list (highlight) and
-        // the tablet detail pane. Lives above the router so every route
-        // (both shell branches) resolves the same instance.
         ChangeNotifierProvider<SessionSelection>.value(
           value: injector.get<SessionSelection>(),
         ),
