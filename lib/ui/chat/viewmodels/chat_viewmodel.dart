@@ -275,7 +275,14 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
 
-  Future<void> clearActiveSession() => _sync.clearActiveSession();
+  Future<void> clearActiveSession() async {
+    _messages = const [];
+    _streaming = null;
+    _working = false;
+    _queuedText = null;
+    _recompute();
+    await _sync.clearActiveSession();
+  }
 
   Future<void> reconnect() async {
     final peer = _activePeer;
