@@ -81,7 +81,7 @@ class ChatPage extends StatelessWidget {
       ),
     );
 
-    // Plan/51 — an interactive extension_ui_request (ask_user via pi-ask)
+    // Plan/57 — an interactive extension_ui_request (ask_user via pi-ask)
     // renders as a full-screen modal layered ABOVE the Scaffold. Purely
     // reactive: the overlay leaves the tree when the pending request clears
     // (completed dismiss) — no route lifecycle to manage. `error` carries a

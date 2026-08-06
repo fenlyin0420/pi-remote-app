@@ -4,7 +4,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/51 — full-screen modal rendering an interactive `extension_ui_request`
+/// Plan/57 — full-screen modal rendering an interactive `extension_ui_request`
 /// (ask_user via pi-ask).
 ///
 /// Drives the rich `ask` envelope when present (single/multi/preview options +
@@ -18,7 +18,7 @@ import 'package:flutter/material.dart';
 class ExtensionUiSheet extends StatefulWidget {
   final ExtensionUiRequest request;
 
-  /// Plan/51 — submit-result rejection message for [request] (null when none /
+  /// Plan/57 — submit-result rejection message for [request] (null when none /
   /// resolved). Surfaced so the user can retry instead of hitting a dead end
   /// when pi-ask rejects an answer.
   final String? error;
@@ -44,7 +44,7 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   String? _singleValue;
   final TextEditingController _textController = TextEditingController();
   bool _submitting = false;
-  // Plan/51 — backstop so a submit/cancel that never gets a `completed`/error
+  // Plan/57 — backstop so a submit/cancel that never gets a `completed`/error
   // (relay drop, pi-ask gone) doesn't strand the user on a spinner forever.
   Timer? _submitTimeout;
   bool _awaitHint = false;
