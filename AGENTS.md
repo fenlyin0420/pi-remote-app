@@ -1,59 +1,56 @@
-# pi-remote-app（Remote Pi 的 Flutter 客户端）
+# pi-remote-app — development notes
 
-2026-10-14 从 monorepo fork `fenlyin0420/remote_pi` 的 `app/` 子目录切出来的**独立仓库**
-（`git subtree split`，完整提交历史保留），仓库根目录就是 Flutter 工程根。
+Flutter/Android client for Remote Pi. The repository root **is** the Flutter project root.
 
-## 构建与测试
+## Build & test
 
 ```bash
 flutter pub get
-flutter test --concurrency=1
+flutter test --concurrency=1     # parallel runs hit a settle race in some widget tests
 flutter analyze
 ```
 
-## 发版
+## CI (`.github/workflows/`)
 
-`.github/workflows/app-release.yml`：tag 就是版本号，且**必须**与 `pubspec.yaml` 的 base 一致
-（versionCode 来自 `+N`，tag 前先 bump 并提交）：
+- `ci.yml` — on push/PR: `flutter test --concurrency=1`, `flutter analyze`, plus the protocol
+  drift check against the plugin repository.
+- `app-release.yml` — on version tags: signed arm64 APK, `SHA256SUMS` and `latest.json` on a
+  GitHub release. `x.y.z-beta.N` → beta flavor + prerelease, plain `x.y.z` → prod flavor +
+  release. The tag must match the base version in `pubspec.yaml`; the version code comes from
+  its `+N` suffix, so bump and commit that before tagging. The job also compares the APK's
+  certificate fingerprint with the keystore's and fails on a silent debug-key fallback.
+
+### Repository configuration
+
+Secrets (Actions → secrets): `ANDROID_KEYSTORE` (base64-encoded `.jks`),
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`.
+Losing the keystore means no further in-place updates are possible, so keep a backup.
+
+Variable (Actions → variables): `REMOTE_PI_HOSTS` — comma/space separated hosts that may be
+reached over cleartext HTTP; `build.gradle.kts` compiles them into the network security config.
+Keep deployment addresses out of the workflow and the source; with the variable unset the build
+simply produces no cleartext exceptions.
+
+## Updates
+
+The app polls the `releases.atom` feed of this repository
+(`lib/data/update/update_checker_impl.dart`) and reads the `latest.json` manifest published with
+each release.
+
+## Protocol
+
+`PROTOCOL.md` is a mirror; the authoritative copy lives in the plugin repository
+(`fenlyin0420/pi-remote`) next to `src/protocol/types.ts`. `lib/protocol/protocol.dart` is a
+hand-written mirror of that file, and `test/protocol*` pins the same wire samples. When the
+protocol changes, update both repositories and run:
 
 ```bash
-git tag v1.5.33-beta.1        # 或 v1.5.33（prod）
-git push origin main v1.5.33-beta.1
+node scripts/check-protocol-drift.mjs \
+  --ts <plugin repo>/src/protocol/types.ts \
+  --dart lib/protocol/protocol.dart \
+  --fixtures .orchestration/contracts/fixtures
 ```
 
-- `-beta.N` → flavor **beta** + prerelease；纯 `x.y.z` → flavor **prod** + 正常 release
-- 产物：`remote-pi-<版本>-arm64-signed.apk` + `SHA256SUMS` + `latest.json`
-- 需要仓库 secrets：`ANDROID_KEYSTORE`(base64) / `ANDROID_KEYSTORE_PASSWORD` /
-  `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS`（**2026-10-14 已填好**；值在本机
-  `~/.pi/remote/android-signing/{remotepi-release.jks,key.properties}`，两份与仓库内那份 md5 相同。
-  secrets 不随代码迁移，换机器/新建仓要重填；换这四样等于换签名身份，**丢了就再也不能原地升级**）
-- job 会对比 APK 证书指纹与 keystore 指纹，防「Gradle 静默回落到 debug key」
-- 平时不用等发版：`.github/workflows/ci.yml` 在 push/PR 上跑 `flutter test --concurrency=1` +
-  `flutter analyze` + 协议漂移检查
-
-## 更新链路（注意 feed 换了仓）
-
-app 轮询 `defaultReleaseFeedUrl`（`lib/data/update/update_checker_impl.dart`）：
-
-```
-https://github.com/fenlyin0420/pi-remote-app/releases.atom
-```
-
-`latest.json` 与 APK 同 release 发布，走 GitHub CDN 下载。**旧 monorepo 仓
-（`fenlyin0420/remote_pi`）的 feed 已停用**：装在手机上的旧版本不会再收到更新，
-手动 sideload 一次本仓的 APK 即可（relay 地址 `relay-host-redacted:3000` 不变）。
-
-## 协议（跨仓契约）
-
-`PROTOCOL.md` 是**镜像**，权威在插件仓 `fenlyin0420/pi-remote`。本仓
-`lib/protocol/protocol.dart` 手工镜像该仓的 `src/protocol/types.ts`（`lib/protocol/*` 与
-`test/protocol/*` 的注释里都标了对应关系）。改 wire 时：
-
-1. 插件仓改 `src/protocol/types.ts` + `PROTOCOL.md`（一起提交）
-2. 本仓改 `lib/protocol/protocol.dart` + `test/protocol/*`
-3. 跑 `node scripts/check-protocol-drift.mjs --ts <插件仓的 types.ts> --dart lib/protocol/protocol.dart`
-   （两边各自的 CI 也会跑同一个脚本，参数指向对端仓）
-
-## 插件在哪
-
-不在本仓：`pi install git:github.com/fenlyin0420/pi-remote`（该仓根目录就是包，dist 已入库）。
+It compares TS field names, TS discriminant literals and the fixtures manifest
+(`scripts/protocol-fixtures.sha256`) against the plugin repository; intentional divergences go
+into `scripts/protocol-drift-allow.txt`.

@@ -105,10 +105,10 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
-      # O relay self-hosted é HTTP claro num IP nu; o APK precisa da
-      # exceção de cleartext pra ele (github.com é TLS e não precisa).
-      # Sem esta variável o app não alcança o relay self-hosted.
-      REMOTE_PI_HOSTS: "relay-host-redacted"
+      # Hosts que o app precisa alcançar por HTTP claro (o relay self-hosted
+      # não tem TLS). Vem da variável de repositório REMOTE_PI_HOSTS — endereços
+      # de deploy não ficam no source. Vazio = sem exceção de cleartext.
+      REMOTE_PI_HOSTS: ${{ vars.REMOTE_PI_HOSTS }}
     steps:
       - name: Resolve release ref
         id: ref
