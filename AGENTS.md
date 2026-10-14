@@ -24,8 +24,12 @@ git push origin main v1.5.33-beta.1
 - `-beta.N` → flavor **beta** + prerelease；纯 `x.y.z` → flavor **prod** + 正常 release
 - 产物：`remote-pi-<版本>-arm64-signed.apk` + `SHA256SUMS` + `latest.json`
 - 需要仓库 secrets：`ANDROID_KEYSTORE`(base64) / `ANDROID_KEYSTORE_PASSWORD` /
-  `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS`（**新仓要重新填一遍**，secrets 不随代码走）
+  `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS`（**2026-10-14 已填好**；值在本机
+  `~/.pi/remote/android-signing/{remotepi-release.jks,key.properties}`，两份与仓库内那份 md5 相同。
+  secrets 不随代码迁移，换机器/新建仓要重填；换这四样等于换签名身份，**丢了就再也不能原地升级**）
 - job 会对比 APK 证书指纹与 keystore 指纹，防「Gradle 静默回落到 debug key」
+- 平时不用等发版：`.github/workflows/ci.yml` 在 push/PR 上跑 `flutter test --concurrency=1` +
+  `flutter analyze` + 协议漂移检查
 
 ## 更新链路（注意 feed 换了仓）
 
