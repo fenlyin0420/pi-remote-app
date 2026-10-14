@@ -16,7 +16,9 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 // InputBar — bottom message composer.
 // - Disabled (grayed) when offline.
-// - During streaming, empty composer shows Stop; typed text sends steering.
+// - During streaming, empty composer shows Stop; typed text sends steering,
+//   and a picked attachment steers too (image / text file ride the same
+//   `user_message` with `streaming_behavior: steer`).
 // - Plan/28 — quick actions (⚙) icon sits to the left of the attach
 //   button and stays visible for the whole turn: only the hold-to-talk
 //   strip covers it.
@@ -63,7 +65,7 @@ class InputBar extends StatefulWidget {
   final AttachmentViewModel? attachment;
 
   /// Plan/30 — open the Camera/Gallery sheet. Null disables the attach
-  /// button (offline/streaming); vision/has-image gating is internal.
+  /// button (no open channel); vision/has-image gating is internal.
   final VoidCallback? onOpenAttach;
 
   /// Command channel — a `/slash` line was submitted. Null falls back to
@@ -480,10 +482,16 @@ class _InputBarState extends State<InputBar> {
     final hasContent = !_empty || attached;
     // Vision never gates the attach button itself: the sheet keeps the file
     // option live and greys out camera/gallery instead.
+    //
+    // A working turn does not gate it either: the pick rides the next send as
+    // a steer, exactly like typed text, so the moment the user wants to hand
+    // the agent a screenshot is the moment the paperclip must be live. The
+    // only hard requirement is an open channel ([onOpenAttach] is null
+    // offline), plus no second attachment (one per message) and no recording
+    // strip covering the row.
     final attachEnabled =
         widget.onOpenAttach != null &&
         canInteract &&
-        !widget.streaming &&
         !showStrip &&
         !attached;
 
@@ -582,10 +590,10 @@ class _InputBarState extends State<InputBar> {
                       decoration: InputDecoration(
                         hintText: widget.disabled
                             ? 'Offline…'
-                            : widget.streaming
-                            ? 'Steer current response…'
                             : attached
                             ? 'Add a caption…'
+                            : widget.streaming
+                            ? 'Steer current response…'
                             : 'Send a message…',
                         hintStyle: TextStyle(
                           color: colors.muted,
@@ -906,8 +914,8 @@ class _InlineStopButton extends StatelessWidget {
 }
 
 /// Plan/30 — the attach (paperclip) button. Always visible; greyed + inert
-/// when [enabled] is false (offline/streaming, a text-only model #9, or an
-/// image is already attached).
+/// when [enabled] is false (offline, a text-only model #9 for image sources,
+/// or an attachment is already picked).
 class _AttachButton extends StatelessWidget {
   const _AttachButton({required this.enabled, required this.onTap});
 

@@ -327,6 +327,48 @@ void main() {
     },
   );
 
+  test('working send with an image steers and carries the attachment', () async {
+    final ch = _FakeChannel();
+    final storage = _FakeStorage();
+    final conn = ConnectionManager(factory: (_, _) async => ch, storage: storage);
+    final boxes = LocalBoxes();
+    final sync = SyncService(conn, boxes);
+    final read = SessionReadRepository(boxes);
+    final prefs = Preferences(_FakeSecureStorage());
+    await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+    await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+    conn.adopt(ch, _peer);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    ch.push(UserInput(id: 'u1', text: 'primary'));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(vm.isWorking, isTrue, reason: 'set up an active turn');
+    final originalTarget = vm.cancelTargetId;
+
+    // An attachment must not divert the send elsewhere: it steers the
+    // running turn like typed text, with the image on the same frame.
+    await vm.sendMessage(
+      '',
+      image: const MessageImage(data: 'aGk=', mime: 'image/jpeg'),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final sent = ch.sent.whereType<UserMessage>().lastWhere(
+      (m) => m.images?.isNotEmpty ?? false,
+    );
+    expect(sent.streamingBehavior, UserMessageStreamingBehavior.steer);
+    expect(sent.text, '');
+    expect(sent.images?.single.data, 'aGk=');
+    expect(vm.cancelTargetId, equals(originalTarget));
+
+    vm.dispose();
+    sync.dispose();
+    conn.dispose();
+  });
+
   test('queued state and commands roundtrip through ChatViewModel', () async {
     final ch = _FakeChannel();
     final storage = _FakeStorage();

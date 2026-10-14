@@ -135,6 +135,90 @@ void main() {
     expect(btn.onPressed, isNull);
   });
 
+  testWidgets('a working turn keeps the attach button live', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: InputBar(
+              onSend: (text) {},
+              streaming: true,
+              attachment: vm,
+              onOpenAttach: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('input-bar-attach')))
+          .onPressed,
+      isNotNull,
+      reason: 'the pick must be reachable mid-turn so it can steer',
+    );
+  });
+
+  testWidgets(
+    'steering an attachment mid-turn sends it instead of cancelling',
+    (tester) async {
+      MessageImage? sentImage;
+      OutgoingFile? sentFile;
+      String? sentText;
+      var cancelled = 0;
+      var opened = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: InputBar(
+                streaming: true,
+                attachment: vm,
+                onOpenAttach: () => opened++,
+                onCancel: () => cancelled++,
+                onSend: (text) {
+                  sentText = text;
+                  sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
+                  sentFile = vm.takeFileForSend();
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Through the paperclip, not straight to the VM: opening the sheet is
+      // exactly what the removed streaming gate used to refuse.
+      await tester.tap(find.byKey(const Key('input-bar-attach')));
+      await tester.pump();
+      expect(opened, 1, reason: 'the paperclip itself must be live mid-turn');
+
+      await vm.pickFromGallery();
+      await tester.pumpAndSettle(); // let the send icon's switcher settle
+      expect(find.byKey(const Key('attach-preview')), findsOneWidget);
+      expect(find.byIcon(LucideIcons.send600), findsOneWidget);
+      expect(
+        find.byKey(const Key('input-bar-inline-stop')),
+        findsOneWidget,
+        reason: 'Stop stays reachable while the pick steers',
+      );
+
+      await tester.tap(find.byIcon(LucideIcons.send600));
+      await tester.pump();
+
+      expect(cancelled, 0);
+      expect(sentText, '');
+      expect(sentImage, isNotNull);
+      expect(sentImage!.mime, 'image/jpeg');
+      expect(sentFile, isNull);
+    },
+  );
+
   testWidgets('picking shows the preview + send icon; X removes it', (
     tester,
   ) async {
@@ -159,48 +243,54 @@ void main() {
     expect(find.byKey(const Key('attach-preview')), findsNothing);
   });
 
-  testWidgets('a picked text file previews as a chip and is dispatchable', (
-    tester,
-  ) async {
-    MessageImage? sentImage;
-    OutgoingFile? sentFile;
-    String? sentText;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Align(
-            alignment: Alignment.bottomCenter,
-            child: InputBar(
-              attachment: vm,
-              onOpenAttach: () {},
-              onSend: (text) {
-                sentText = text;
-                sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
-                sentFile = vm.takeFileForSend();
-              },
+  for (final streaming in [false, true]) {
+    testWidgets(
+      'a picked text file previews as a chip and is dispatchable'
+      '${streaming ? ' mid-turn' : ''}',
+      (tester) async {
+        MessageImage? sentImage;
+        OutgoingFile? sentFile;
+        String? sentText;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.bottomCenter,
+                child: InputBar(
+                  streaming: streaming,
+                  attachment: vm,
+                  onOpenAttach: () {},
+                  onCancel: streaming ? () {} : null,
+                  onSend: (text) {
+                    sentText = text;
+                    sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
+                    sentFile = vm.takeFileForSend();
+                  },
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+        await tester.pump();
+
+        await vm.pickTextFile();
+        await tester.pump();
+
+        expect(find.byKey(const Key('attach-file-preview')), findsOneWidget);
+        expect(find.text('server.log'), findsOneWidget);
+        expect(find.byKey(const Key('attach-preview')), findsNothing);
+
+        await tester.tap(find.byIcon(LucideIcons.send600));
+        await tester.pump();
+
+        expect(sentText, '');
+        expect(sentImage, isNull);
+        expect(sentFile?.name, 'server.log');
+        expect(sentFile?.text, 'line1\n');
+        expect(find.byKey(const Key('attach-file-preview')), findsNothing);
+      },
     );
-    await tester.pump();
-
-    await vm.pickTextFile();
-    await tester.pump();
-
-    expect(find.byKey(const Key('attach-file-preview')), findsOneWidget);
-    expect(find.text('server.log'), findsOneWidget);
-    expect(find.byKey(const Key('attach-preview')), findsNothing);
-
-    await tester.tap(find.byIcon(LucideIcons.send600));
-    await tester.pump();
-
-    expect(sentText, '');
-    expect(sentImage, isNull);
-    expect(sentFile?.name, 'server.log');
-    expect(sentFile?.text, 'line1\n');
-    expect(find.byKey(const Key('attach-file-preview')), findsNothing);
-  });
+  }
 
   testWidgets(
     'send with an attached image + empty caption dispatches the image',
