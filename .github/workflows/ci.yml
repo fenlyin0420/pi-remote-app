@@ -1,0 +1,58 @@
+name: ci
+
+# app-release.yml 只在 tag 上跑；这个 workflow 让每次 push/PR 就过测试与分析，
+# 顺带跑与插件仓的协议漂移检查（不然坏到发版那天才发现）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.47.5"
+
+jobs:
+  ci:
+    name: Testes + analyze + protocolo
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: flutter test (concurrency=1) + analyze
+        run: |
+          flutter pub get
+          flutter test --concurrency=1
+          flutter analyze
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 权威是插件仓的 src/protocol/types.ts；fixtures 两边各存一份，靠清单比对。
+      - name: Protocolo sem drift (vs pi-remote)
+        run: |
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/src/protocol/types.ts \
+            -o /tmp/types.ts
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/scripts/protocol-fixtures.sha256 \
+            -o /tmp/peer-fixtures.sha256
+          node scripts/check-protocol-drift.mjs \
+            --ts /tmp/types.ts \
+            --dart lib/protocol/protocol.dart \
+            --fixtures .orchestration/contracts/fixtures \
+            --peer-manifest /tmp/peer-fixtures.sha256
