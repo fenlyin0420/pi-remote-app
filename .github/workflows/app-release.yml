@@ -79,6 +79,10 @@ jobs:
           flutter test --concurrency=1
           flutter analyze
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # PROTOCOL.md 的权威在插件仓；lib/protocol/protocol.dart 手工镜像其
       # src/protocol/types.ts，这里抓对端的 types.ts 做漂移检查。
       - name: Protocolo sem drift (vs pi-remote)
