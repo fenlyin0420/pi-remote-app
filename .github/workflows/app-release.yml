@@ -90,7 +90,14 @@ jobs:
           curl -fsSL --retry 3 \
             https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/src/protocol/types.ts \
             -o /tmp/types.ts
-          node scripts/check-protocol-drift.mjs --ts /tmp/types.ts --dart lib/protocol/protocol.dart
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/scripts/protocol-fixtures.sha256 \
+            -o /tmp/peer-fixtures.sha256
+          node scripts/check-protocol-drift.mjs \
+            --ts /tmp/types.ts \
+            --dart lib/protocol/protocol.dart \
+            --fixtures .orchestration/contracts/fixtures \
+            --peer-manifest /tmp/peer-fixtures.sha256
 
   release:
     name: APK assinado + GitHub Release
