@@ -52,3 +52,6 @@ android/key.properties
 android/signing/
 *.jks
 *.keystore
+
+# 项目记忆（本机）
+.agents/memory/
