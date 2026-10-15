@@ -406,6 +406,58 @@ void main() {
       },
     );
 
+    test(
+      'storage notifications (delete/rename/meta refresh → saveRooms) do NOT '
+      'reset the selected tab back to Online — regression: after deleting a '
+      'room, or during an active conversation, the All/Offline tab snapped '
+      'back to Online because _load() emitted a fresh HomeList with the '
+      'default filter',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final vm = HomeViewModel(storage, Preferences(_FakeSecureStorage()), conn);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // One live room + one cached/offline room, like after a RoomEnded.
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r2', startedAt: 2),
+        );
+        ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r2', sinceTs: 3));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        vm.setFilter(HomeFilter.offline);
+        expect((vm.state as HomeList).filter, HomeFilter.offline);
+
+        // Any PairingStorage write (saveRooms on delete/rename, savePeer on
+        // open) reaches HomeViewModel via notifyListeners → _load(). The
+        // user's tab choice must survive the reload.
+        storage.notifyListeners();
+        await Future<void>.delayed(Duration.zero);
+        expect((vm.state as HomeList).filter, HomeFilter.offline);
+        expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r2']);
+
+        // A second notification on the All tab must not reset either.
+        vm.setFilter(HomeFilter.all);
+        storage.notifyListeners();
+        await Future<void>.delayed(Duration.zero);
+        expect((vm.state as HomeList).filter, HomeFilter.all);
+        expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1', 'r2']);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
     test('counts / visibleItems are empty-safe outside a HomeList', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());

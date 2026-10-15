@@ -87,11 +87,18 @@ class HomeViewModel extends ViewModel<HomeState> {
     // subscribe also covers rooms (plan 17 — replay block in
     // ConnectionManager sends both presence and rooms subscribes).
     _conn.subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
+    // Preserve the selected tab: storage notifies on EVERY room change
+    // (announce / end / meta refresh / rename / delete — see
+    // ConnectionManager._persistRoomsForPeer), so without this the
+    // storage-driven reload would silently reset the user's All/Offline
+    // tab back to the Online default. Same fix _onStatus already got.
+    final prev = state;
     emit(
       HomeList(
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
+        filter: prev is HomeList ? prev.filter : HomeFilter.online,
       ),
     );
   }
