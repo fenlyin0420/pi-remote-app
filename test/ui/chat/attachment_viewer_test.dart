@@ -150,7 +150,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(target);
 
-    // The zoom eases in (~280 ms) rather than snapping: right after the
+    // The zoom eases in (~320 ms) rather than snapping: right after the
     // second tap it cannot be at the target scale yet, whatever the
     // recognizer's frame delay (an instant zoom would already be 2.5).
     await tester.pump(const Duration(milliseconds: 50));

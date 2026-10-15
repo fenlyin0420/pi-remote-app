@@ -66,10 +66,12 @@ class _AttachmentViewerState extends State<AttachmentViewer>
   final TransformationController _transform = TransformationController();
 
   /// Drives the eased double-tap zoom; the pinch gesture still moves
-  /// [_transform] directly, so the two share one source of truth.
+  /// [_transform] directly, so the two share one source of truth. easeInOut
+  /// over 320 ms: a fast-start ease reads as a jump followed by a slow
+  /// settle, the symmetric curve spreads the motion evenly instead.
   late final AnimationController _zoom = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 280),
+    duration: const Duration(milliseconds: 320),
   );
 
   Uint8List? _bytes;
@@ -129,7 +131,7 @@ class _AttachmentViewerState extends State<AttachmentViewer>
     super.initState();
     // Registered once: re-adding on every toggle would pile up listeners.
     _zoom.addListener(() {
-      final t = Curves.easeOut.transform(_zoom.value);
+      final t = Curves.easeInOut.transform(_zoom.value);
       final s = _lerp(_start[0], _target[0], t);
       _transform.value = Matrix4.identity()
         ..translateByDouble(
