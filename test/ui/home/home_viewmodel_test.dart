@@ -602,5 +602,67 @@ void main() {
       );
       vm.dispose();
     });
+
+    test('a delete never rides the room being deleted', () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'victim',
+          name: 'fenlyin#3',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'daemon',
+          name: 'fenlyin',
+          cwd: '/home/u',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // The sibling that owns the same directory carries the frame, not
+      // the room being deleted (a self-ride would lose the `action_ok` —
+      // the deleted room's own process is the one stopped by the delete).
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          excludeRoomId: 'victim',
+          fallback: 'victim',
+        ),
+        'daemon',
+      );
+      vm.dispose();
+
+      // A lone room still rides the fallback: the Pi answers a
+      // self-delete with an ack sent before the kill, so the reply is
+      // delivered either way.
+      final (lone, loneCh) = await boot();
+      loneCh.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'victim',
+          name: 'fenlyin#3',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(
+        lone.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          excludeRoomId: 'victim',
+          fallback: 'victim',
+        ),
+        'victim',
+      );
+      lone.dispose();
+    });
   });
 }

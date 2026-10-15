@@ -248,9 +248,18 @@ class HomeViewModel extends ViewModel<HomeState> {
     required String epk,
     required String path,
     String? sourceRoomId,
+    String? excludeRoomId,
     required String fallback,
   }) {
-    bool live(String? roomId) => roomId != null && isRoomLive(epk, roomId);
+    // Delete must never ride the room being deleted: the frame's handler is
+    // that room's own Pi process, which the delete stops — a self-ride loses
+    // the `action_ok` (the process dies before it can send it) and the app
+    // rides out a 15 s action timeout (the "timeout" banner after a
+    // successful delete).
+    bool live(String? roomId) =>
+        roomId != null &&
+        roomId != excludeRoomId &&
+        isRoomLive(epk, roomId);
     if (live(sourceRoomId)) return sourceRoomId!;
     for (final r in roomsForPeer(epk)) {
       if (r.cwd == path && live(r.roomId)) return r.roomId;

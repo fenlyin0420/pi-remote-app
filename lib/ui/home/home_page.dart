@@ -878,12 +878,16 @@ class HomePage extends StatelessWidget {
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
-    // Ride the tile's own room (see [_rideRoomFor]) so the frame reaches
-    // the session that announced it.
+    // Ride a SIBLING room, never the tile's own room: the delete frame's
+    // handler is the deleted room's own Pi process, and a self-ride would
+    // lose the `action_ok` (the process is stopped before it can send it).
+    // `rideRoomFor` with the tile excluded picks the same-cwd sibling,
+    // then the active room, then the first live room — any live room of
+    // the peer can serve the delete (the frame carries cwd + name).
     final rideRoom = vm.rideRoomFor(
       epk: epk,
       path: cwd,
-      sourceRoomId: it.room.roomId,
+      excludeRoomId: it.room.roomId,
       fallback: liveRoom,
     );
     conn.switchRoom(rideRoom);
