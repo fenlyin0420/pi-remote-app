@@ -603,6 +603,32 @@ class HomePage extends StatelessWidget {
     );
   }
 
+  /// The name the Pi ACTUALLY announced for the created room — the live,
+  /// non-source room of [cwd] that wasn't live before the create. The
+  /// client's `nextForkName` prediction can lag a deletion (the relay
+  /// still lists the deleted room), and the supervisor's cwd lock has the
+  /// final word on the `#N` suffix, so the toast reads the announcement.
+  Future<String?> _awaitCreatedRoomName(
+    HomeViewModel vm,
+    String epk,
+    String cwd,
+    Set<String> liveBefore,
+    String? sourceName,
+  ) async {
+    for (var i = 0; i < 25; i++) {
+      for (final r in vm.roomsForPeer(epk)) {
+        if (r.cwd != cwd) continue;
+        final rname = r.name;
+        if (rname == null || rname.isEmpty) continue;
+        if (rname == sourceName) continue;
+        if (liveBefore.contains(r.roomId)) continue;
+        if (vm.isRoomLive(epk, r.roomId)) return rname;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return null;
+  }
+
   Future<void> _runRoomCreate(
     BuildContext context,
     HomeViewModel vm,
@@ -610,8 +636,20 @@ class HomePage extends StatelessWidget {
     required ScaffoldMessengerState messenger,
     String? name,
     String createdMessage = 'Room created',
+    Future<String?> Function()? createdName,
     HomeItem? source,
   }) async {
+    // `createdName` (fork flow): prefer the Pi-announced name over the
+    // client's prediction; fall back to [createdMessage] when the
+    // announcement hasn't arrived in time.
+    Future<void> showCreated() async {
+      final actual = await createdName?.call();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(actual == null ? createdMessage : 'Forked as $actual'),
+        ),
+      );
+    }
     final actions = vm.actions;
     final conn = vm.conn;
     final prefs = context.read<Preferences>();
@@ -660,7 +698,7 @@ class HomePage extends StatelessWidget {
     try {
       try {
         await actions.createRoom(path, name: name);
-        messenger.showSnackBar(SnackBar(content: Text(createdMessage)));
+        await showCreated();
       } on ActionFailure catch (e) {
         // Exact error string the Pi sends when the directory is absent
         // and `create_if_missing` is off — offer a create-anyway retry.
@@ -673,7 +711,7 @@ class HomePage extends StatelessWidget {
                 createIfMissing: true,
                 name: name,
               );
-              messenger.showSnackBar(SnackBar(content: Text(createdMessage)));
+              await showCreated();
             } on ActionFailure catch (e2) {
               messenger.showSnackBar(SnackBar(content: Text(e2.message)));
             }
@@ -724,13 +762,20 @@ class HomePage extends StatelessWidget {
     }
     // The source room's cwd is the Pi-announced realpath, so same-cwd
     // rooms match exactly; the source counts as `#1` for its own base.
+    final epk = it.peer.remoteEpk;
+    final roomsInCwd = vm.roomsForPeer(epk).where((r) => r.cwd == cwd).toList();
     final name = nextForkName(
       sourceName: it.room.name,
       cwd: cwd,
-      rooms: vm.roomsForPeer(it.peer.remoteEpk)
-          .where((r) => r.cwd == cwd)
-          .toList(),
+      rooms: roomsInCwd,
     );
+    // Live set BEFORE the create — distinguishes the new fork's room_id
+    // from a stale entry for a room just deleted (same room_id, same
+    // name, but not live).
+    final liveBefore = roomsInCwd
+        .where((r) => vm.isRoomLive(epk, r.roomId))
+        .map((r) => r.roomId)
+        .toSet();
     await _runRoomCreate(
       context,
       vm,
@@ -738,6 +783,13 @@ class HomePage extends StatelessWidget {
       messenger: ScaffoldMessenger.of(context),
       name: name,
       createdMessage: 'Forked as ${name ?? it.room.name}',
+      createdName: () => _awaitCreatedRoomName(
+        vm,
+        epk,
+        cwd,
+        liveBefore,
+        it.room.name,
+      ),
       source: it,
     );
   }
