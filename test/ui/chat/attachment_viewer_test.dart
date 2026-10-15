@@ -131,6 +131,59 @@ void main() {
     expect(find.text('Copy code'), findsNothing);
   });
 
+  testWidgets('double-tap zooms in smoothly around the image center', (tester) async {
+    await _pumpViewer(tester, _card, theme: buildLightTheme(), blobs: {
+      'att_tc-1.bin': _png,
+    });
+
+    final target = find.byType(InteractiveViewer);
+
+    Future<double> scale() async {
+      final transform = tester.widget<Transform>(
+        find.descendant(of: target, matching: find.byType(Transform)),
+      ).transform;
+      return transform[0];
+    }
+
+    // Double tap: two quick taps in the image area.
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(target);
+
+    // The zoom eases in (~280 ms) rather than snapping: right after the
+    // second tap it cannot be at the target scale yet, whatever the
+    // recognizer's frame delay (an instant zoom would already be 2.5).
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(await scale(), lessThan(2.5), reason: 'zoom eases in, no snap');
+
+    await tester.pumpAndSettle();
+    expect(await scale(), closeTo(2.5, 0.01), reason: 'zoomed in 2.5x');
+
+    // And it magnified IN PLACE: the image's center (the viewport center)
+    // maps onto itself — the old origin-anchored scale slid the image down
+    // and left the top of the screen black. The transform lives in the
+    // viewer's LOCAL space, so measure the center relative to its top-left.
+    final center = tester.getCenter(target) - tester.getTopLeft(target);
+    final m = tester.widget<Transform>(
+      find.descendant(of: target, matching: find.byType(Transform)),
+    ).transform;
+    expect(m[0] * center.dx + m[12], closeTo(center.dx, 0.5));
+    expect(m[5] * center.dy + m[13], closeTo(center.dy, 0.5));
+
+    // A second double tap eases back to fit — no snap, by the same token.
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(target);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(await scale(), greaterThan(1.0), reason: 'zooms out eased');
+    await tester.pumpAndSettle();
+
+    final fit = tester.widget<Transform>(
+      find.descendant(of: target, matching: find.byType(Transform)),
+    ).transform;
+    expect(fit[0], closeTo(1.0, 0.01), reason: 'back to fit');
+  });
+
   testWidgets('leaving the viewer leaves the composer unfocused', (tester) async {
     final composer = FocusNode(debugLabel: 'composer');
     addTearDown(composer.dispose);
