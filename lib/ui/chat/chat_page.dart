@@ -631,7 +631,7 @@ class ChatPage extends StatelessWidget {
       case AttachSource.gallery:
         await vm.pickFromGallery();
       case AttachSource.file:
-        await vm.pickTextFile();
+        await vm.pickFile();
     }
     await Future<void>.delayed(Duration.zero); // flush the hint microtask
     await sub.cancel();
@@ -658,11 +658,21 @@ class ChatPage extends StatelessWidget {
             ),
           ),
         );
-      case AttachHint.notTextFile:
+      case AttachHint.fileTooLarge:
         messenger.showSnackBar(
           const SnackBar(
             content: Text(
-              'That file is not text — pick a text file (any name or extension).',
+              'That file is too large — uploads are capped at 250 MB.',
+            ),
+            duration: Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      case AttachHint.uploadFailed:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              "Couldn't upload that file — check the connection and try again.",
             ),
             duration: Duration(seconds: 5),
             behavior: SnackBarBehavior.floating,
@@ -673,6 +683,16 @@ class ChatPage extends StatelessWidget {
           const SnackBar(
             content: Text("Couldn't attach that file."),
             duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      case AttachHint.uploadRejected:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'The Pi is busy with other uploads — try again in a moment.',
+            ),
+            duration: Duration(seconds: 5),
             behavior: SnackBarBehavior.floating,
           ),
         );

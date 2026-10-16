@@ -17,7 +17,9 @@ import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/files/any_file_picker_service.dart';
 import 'package:app/data/files/text_file_picker_service.dart';
+import 'package:app/data/uploads/upload_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
@@ -133,6 +135,15 @@ Future<void> setupDependencies() async {
   // only when its content is text. Stateless.
   _injector.addOther<ITextFilePickerService>(() => TextFilePickerService());
 
+  // Plan/62 — any-file picker (text inline vs binary → chunked upload) and
+  // the upload service that streams big binaries in base64 chunks. The
+  // upload service only reaches the active connection when an upload starts,
+  // so it needs no lifecycle of its own.
+  _injector.addOther<IAnyFilePickerService>(() => AnyFilePickerService());
+  _injector.addOther<IUploadService>(
+    () => UploadService(_injector.get<ConnectionManager>()),
+  );
+
   // Plan 31 — SSOT writer + read-only repos. SyncService is the SINGLE
   // mutator of the message/index/runtime boxes; the read repos only watch.
   _injector.addService<SyncService>(
@@ -209,7 +220,8 @@ Future<void> setupDependencies() async {
   _injector.addViewModel<AttachmentViewModel>(
     () => AttachmentViewModel(
       _injector.get<IImagePickerService>(),
-      _injector.get<ITextFilePickerService>(),
+      _injector.get<IAnyFilePickerService>(),
+      _injector.get<IUploadService>(),
       _injector.get<IActionsRepository>(),
     ),
   );

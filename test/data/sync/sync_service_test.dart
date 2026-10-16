@@ -184,7 +184,7 @@ void main() {
     final s = await setup();
     await s.sync.sendMessage(
       'summarise',
-      file: const OutgoingFile(name: 'notes.md', text: '# hi'),
+      file: OutgoingFile(name: 'notes.md', text: '# hi'),
     );
     await _settle();
 
@@ -207,7 +207,7 @@ void main() {
     final s = await setup();
     await s.sync.sendMessage(
       'summarise',
-      file: const OutgoingFile(name: 'notes.md', text: '# hi'),
+      file: OutgoingFile(name: 'notes.md', text: '# hi'),
     );
     await _settle();
 

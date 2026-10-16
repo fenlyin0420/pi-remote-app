@@ -78,14 +78,18 @@ class MessageFile {
   int get hashCode => Object.hash(name, path);
 }
 
-/// A text file on its way out: the bytes are read on the device and travel
-/// inline once. Never persisted — the Pi's echo replaces it with the landed
-/// [MessageFile] (name + path).
+/// A file on its way out. Text files carry their bytes inline once ([text]);
+/// binary files (Plan/62) carry only a reference to where they already
+/// landed on the Pi ([path]) — the bytes travelled over the chunked upload
+/// channel before the message. Never persisted — the Pi's echo replaces it
+/// with the landed [MessageFile] (name + path).
 class OutgoingFile {
   final String name;
-  final String text;
+  final String? text;
+  final String? path;
 
-  const OutgoingFile({required this.name, required this.text});
+  OutgoingFile({required this.name, this.text, this.path})
+      : assert(text != null || path != null);
 }
 
 /// Android-owned queued follow-up shown above the composer. Protocol-free

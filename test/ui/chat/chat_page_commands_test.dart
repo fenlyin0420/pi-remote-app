@@ -9,7 +9,8 @@ import 'dart:io';
 
 import 'package:app/config/dependencies.dart' show injector;
 import 'package:app/data/actions/actions_repository.dart';
-import 'package:app/data/files/text_file_picker_service.dart';
+import 'package:app/data/files/any_file_picker_service.dart';
+import 'package:app/data/uploads/upload_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/draft_store.dart';
@@ -114,7 +115,12 @@ class _FakePicker implements IImagePickerService {
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
-class _FakeFilePicker implements ITextFilePickerService {
+class _FakeAnyPicker implements IAnyFilePickerService {
+  @override
+  dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
+class _FakeUploads implements IUploadService {
   @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
@@ -253,7 +259,12 @@ void main() {
               value: VoiceInputViewModel(_FakeSpeech()),
             ),
             ChangeNotifierProvider<AttachmentViewModel>.value(
-              value: AttachmentViewModel(_FakePicker(), _FakeFilePicker(), actions),
+              value: AttachmentViewModel(
+                _FakePicker(),
+                _FakeAnyPicker(),
+                _FakeUploads(),
+                actions,
+              ),
             ),
             ChangeNotifierProvider<Preferences>.value(value: prefs),
             ChangeNotifierProvider<SessionSelection>.value(

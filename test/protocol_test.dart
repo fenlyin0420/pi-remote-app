@@ -624,4 +624,21 @@ void main() {
       expect(noVision.vision, isFalse);
     });
   });
+
+  group('UploadComplete (plan 62)', () {
+    test('parses the chunked-upload acknowledgement', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'upload_complete',
+        'in_reply_to': 'a1b2c3d4e5f6a1b2c3d4',
+        'id': 'a1b2c3d4e5f6a1b2c3d4',
+        'name': 'doc.pdf',
+        'path': '/u/room/doc.pdf',
+      });
+      final done = msg as UploadComplete;
+      expect(done.id, 'a1b2c3d4e5f6a1b2c3d4');
+      expect(done.inReplyTo, 'a1b2c3d4e5f6a1b2c3d4');
+      expect(done.name, 'doc.pdf');
+      expect(done.path, '/u/room/doc.pdf');
+    });
+  });
 }

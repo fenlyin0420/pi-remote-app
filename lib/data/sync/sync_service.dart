@@ -435,7 +435,7 @@ class SyncService extends Service {
             : [WireImage(data: image.data, mime: image.mime)],
         files: file == null
             ? null
-            : [WireFile(name: file.name, text: file.text)],
+            : [WireFile(name: file.name, text: file.text, path: file.path)],
       ),
     );
   }
@@ -693,6 +693,10 @@ class SyncService extends Service {
       case Cancelled(:final targetId):
         _pendingSendTimers.remove(targetId)?.cancel();
         _applyCancelled(t, targetId);
+      case UploadComplete():
+        // Consumed by the upload service (its own subscription on this
+        // broadcast stream); the transcript ignores it.
+        break;
       case ErrorMessage():
         _discardStreamingState(t);
         _setWorking(t, false);
@@ -922,6 +926,8 @@ class SyncService extends Service {
         // ignore: discarded_futures
         _applyHistory(msg);
 
+      case UploadComplete():
+        break; // the upload service owns this stream; nothing to store
       case ErrorMessage(:final code, :final message):
         if (code.contains('unknown_peer')) {
           if (!_eventController.isClosed) {

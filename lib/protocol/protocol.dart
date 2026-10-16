@@ -495,7 +495,9 @@ class WireFile {
   /// UTF-8 content. App → Pi only.
   final String? text;
 
-  /// Absolute path on the Pi where the file landed. Pi → app only.
+  /// Absolute path on the Pi where the file landed. Pi → app in echoes and
+  /// history; App → Pi when referencing a file that already landed via the
+  /// Plan/62 chunked upload (`{ name, path }`, no `text`).
   final String? path;
 
   const WireFile({required this.name, this.text, this.path});
@@ -554,8 +556,11 @@ class UserMessage extends ClientMessage {
   /// and stay forward-compatible. Omitted entirely when empty (retro-compat).
   final List<WireImage>? images;
 
-  /// Optional attached text files (one today, sent as a list for the same
-  /// forward-compat reason as [images]). Omitted entirely when empty.
+  /// Optional attached files (one today, sent as a list for the same
+  /// forward-compat reason as [images]). A text file carries `{ name, text }`
+  /// (content inline); a chunked binary upload carries `{ name, path }`
+  /// (Plan/62 — the bytes arrived over the `upload_*` frames). Omitted
+  /// entirely when empty.
   final List<WireFile>? files;
 
   UserMessage({
@@ -577,6 +582,70 @@ class UserMessage extends ClientMessage {
       'images': images!.map((i) => i.toJson()).toList(),
     if (files != null && files!.isNotEmpty)
       'files': files!.map((f) => f.toJson()).toList(),
+  };
+}
+
+// ── Plan/62 — chunked binary upload (app → Pi) ───────────────────────
+//
+// PDF/Office/archives fit neither the 1 MiB text rule nor an image, and a
+// single 4 MiB envelope can't carry them, so the app streams the file as
+// base64 chunks — each chunk's envelope stays under the relay's `ct`
+// ceiling — and the Pi reassembles, verifies (size + sha256) and answers
+// with the landed path (`UploadComplete`). The message that references the
+// file then carries `{ name, path }` only.
+
+/// Session id: client-generated, path-safe ([UploadService] uses a 12-hex
+/// token — it becomes the Pi's part-file name).
+class UploadStart extends ClientMessage {
+  final String id;
+  final String name;
+  final int size;
+
+  UploadStart({required this.id, required this.name, required this.size});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'upload_start',
+    'id': id,
+    'name': name,
+    'size': size,
+  };
+}
+
+class UploadChunk extends ClientMessage {
+  final String id;
+
+  /// 0-based position; the WebSocket already guarantees order — the Pi
+  /// checks it as a second line of defense.
+  final int index;
+
+  /// base64 of up to [UploadService.chunkBytes] file bytes.
+  final String data;
+
+  UploadChunk({required this.id, required this.index, required this.data});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'upload_chunk',
+    'id': id,
+    'index': index,
+    'data': data,
+  };
+}
+
+class UploadDone extends ClientMessage {
+  final String id;
+
+  /// sha256 of the whole file, hex (the Pi verifies before renaming).
+  final String sha256;
+
+  UploadDone({required this.id, required this.sha256});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'upload_done',
+    'id': id,
+    'sha256': sha256,
   };
 }
 
@@ -1081,6 +1150,8 @@ sealed class ServerMessage {
       // `list_commands`; the app renders the entries and greys out the ones
       // this room can't run (`supported == false`).
       'commands_list' => CommandsList.fromJson(json),
+      // Plan/62 — confirms a completed chunked upload with the landed path.
+      'upload_complete' => UploadComplete.fromJson(json),
       // Plan/57 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1177,6 +1248,24 @@ class ErrorMessage extends ServerMessage {
     inReplyTo: j['in_reply_to'] as String?,
     code: j['code'] as String,
     message: j['message'] as String,
+  );
+}
+
+/// Plan/62 — the Pi finished reassembling a chunked upload: where the file
+/// landed (the app then references it in a `user_message` as `{ name, path }`).
+class UploadComplete extends ServerMessage {
+  final String? inReplyTo;
+  final String id;
+  final String name;
+  final String path;
+
+  UploadComplete({this.inReplyTo, required this.id, required this.name, required this.path});
+
+  factory UploadComplete.fromJson(Map<String, dynamic> j) => UploadComplete(
+    inReplyTo: j['in_reply_to'] as String?,
+    id: j['id'] as String,
+    name: j['name'] as String,
+    path: j['path'] as String,
   );
 }
 

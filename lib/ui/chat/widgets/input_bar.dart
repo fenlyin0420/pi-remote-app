@@ -267,6 +267,15 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _submit() {
+    // Plan/62 — hardware Enter sends the composer; a binary still uploading
+    // has nothing to reference yet, so ignore the tap rather than dropping
+    // the attachment.
+    final attach = widget.attachment?.state;
+    if (attach is AttachmentAttached &&
+        attach.binaryFile != null &&
+        !attach.binaryFile!.landed) {
+      return;
+    }
     final text = _controller.text.trim();
     // Plan/30 — an attached image or file makes an empty-caption send valid.
     final hasAttachment = widget.attachment?.hasAttachment ?? false;
@@ -474,11 +483,16 @@ class _InputBarState extends State<InputBar> {
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
 
-    // Plan/30 — attachment (one image or one text file).
+    // Plan/30 — attachment (one image or one text file) + Plan/62 binary.
     final attached = attachState is AttachmentAttached;
     final hasImage = attachState is AttachmentAttached && attachState.image != null;
     final attachedFile = attachState is AttachmentAttached ? attachState.file : null;
     final fileTruncated = attachedFile?.truncated ?? false;
+    final binaryFile =
+        attachState is AttachmentAttached ? attachState.binaryFile : null;
+    // The send stays disabled while the binary upload is still in flight —
+    // a not-yet-landed file has no path the message could reference.
+    final binaryUploading = binaryFile != null && !binaryFile.landed;
     final hasContent = !_empty || attached;
     // Vision never gates the attach button itself: the sheet keeps the file
     // option live and greys out camera/gallery instead.
@@ -536,6 +550,11 @@ class _InputBarState extends State<InputBar> {
                 _FileAttachmentPreview(
                   file: attachedFile,
                   truncated: fileTruncated,
+                  onRemove: widget.attachment!.removeAttachment,
+                ),
+              if (binaryFile != null)
+                _BinaryAttachmentPreview(
+                  file: binaryFile,
                   onRemove: widget.attachment!.removeAttachment,
                 ),
               for (final item in widget.queuedMessages)
@@ -633,7 +652,7 @@ class _InputBarState extends State<InputBar> {
                   _ComposerActionButton(
                     streaming: widget.streaming,
                     hasContent: hasContent,
-                    disabled: widget.disabled,
+                    disabled: widget.disabled || binaryUploading,
                     onSendText: _submit,
                     onCancel: widget.onCancel,
                     onStartAudio: widget.onStartAudio,
@@ -1014,6 +1033,109 @@ class _FileAttachmentPreview extends StatelessWidget {
                 child: Icon(LucideIcons.x, size: 14, color: colors.muted),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The composer binary-file preview (Plan/62): name, size and a progress
+/// bar while the chunked upload is in flight, a "ready" tag once the Pi has
+/// confirmed the file. Same slot as the other previews — one attachment per
+/// message; "X" removes the attachment and stops the stream between chunks
+/// (the Pi reaps the abandoned partial file on its TTL).
+class _BinaryAttachmentPreview extends StatelessWidget {
+  const _BinaryAttachmentPreview({required this.file, required this.onRemove});
+
+  final AttachedBinaryFile file;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final landed = file.landed;
+    final progress = file.progress ?? 0.0;
+    return Padding(
+      key: const Key('attach-binary-preview'),
+      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(LucideIcons.file, size: 16, color: colors.accent),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    file.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 12,
+                      color: colors.text,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _FileAttachmentPreview._size(file.size),
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 11,
+                    color: colors.muted,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                GestureDetector(
+                  key: const Key('attach-remove'),
+                  onTap: onRemove,
+                  behavior: HitTestBehavior.opaque,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(LucideIcons.x, size: 14, color: colors.muted),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (landed)
+              Row(
+                children: [
+                  Icon(
+                    LucideIcons.circleCheck,
+                    size: 12,
+                    color: colors.accent,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'ready — sends with your message',
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 10,
+                      color: colors.muted,
+                    ),
+                  ),
+                ],
+              )
+            else
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 5,
+                  color: colors.accent,
+                  backgroundColor: colors.surface,
+                ),
+              ),
           ],
         ),
       ),

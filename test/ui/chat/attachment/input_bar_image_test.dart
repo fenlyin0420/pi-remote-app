@@ -5,8 +5,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/files/any_file_picker_service.dart';
 import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/uploads/upload_service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
@@ -28,14 +30,18 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> pickFromGallery() async => next;
 }
 
-class _FakeFilePicker implements ITextFilePickerService {
-  PickedTextFile? next = const PickedTextFile(
+class _FakeAnyPicker implements IAnyFilePickerService {
+  PickedFile? next = const TextFilePick(
     name: 'server.log',
-    text: 'line1\n',
-    byteLength: 6,
+    file: PickedTextFile(name: 'server.log', text: 'line1\n', byteLength: 6),
   );
   @override
-  Future<PickedTextFile?> pickTextFile() async => next;
+  Future<PickedFile?> pickFile() async => next;
+}
+
+class _FakeUploads implements IUploadService {
+  @override
+  dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
 class _FakeActions implements IActionsRepository {
@@ -71,7 +77,7 @@ void main() {
   setUp(() {
     picker = _FakePicker();
     actions = _FakeActions();
-    vm = AttachmentViewModel(picker, _FakeFilePicker(), actions);
+    vm = AttachmentViewModel(picker, _FakeAnyPicker(), _FakeUploads(), actions);
   });
 
   tearDown(() => vm.dispose());
@@ -112,7 +118,7 @@ void main() {
       current: _m(false),
     );
     // Recreate after the catalogue is set so the VM resolves vision=false.
-    vm = AttachmentViewModel(picker, _FakeFilePicker(), actions);
+    vm = AttachmentViewModel(picker, _FakeAnyPicker(), _FakeUploads(), actions);
     await pumpBar(tester);
     await tester.pump(); // resolve vision
     final btn = tester.widget<IconButton>(
@@ -273,7 +279,7 @@ void main() {
         );
         await tester.pump();
 
-        await vm.pickTextFile();
+        await vm.pickFile();
         await tester.pump();
 
         expect(find.byKey(const Key('attach-file-preview')), findsOneWidget);
