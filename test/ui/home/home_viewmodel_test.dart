@@ -555,7 +555,8 @@ void main() {
         ),
         'fenlyin',
       );
-      // No room owns the path → fall back to the caller's live room.
+      // No room owns the path and the user's active room is live →
+      // priority 3 (the active room), which here equals the first live.
       expect(
         vm.rideRoomFor(
           epk: 'epk_A',
@@ -625,9 +626,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
-      // The sibling that owns the same directory carries the frame, not
-      // the room being deleted (a self-ride would lose the `action_ok` —
-      // the deleted room's own process is the one stopped by the delete).
+      // The sibling that owns the same directory carries the frame, never
+      // the room being deleted (its own process is stopped by the delete).
       expect(
         vm.rideRoomFor(
           epk: 'epk_A',
@@ -639,9 +639,8 @@ void main() {
       );
       vm.dispose();
 
-      // A lone room still rides the fallback: the Pi answers a
-      // self-delete with an ack sent before the kill, so the reply is
-      // delivered either way.
+      // A lone room still rides the fallback: no sibling exists, so the
+      // self-ride is accepted — the Pi acks a self-delete before the kill.
       final (lone, loneCh) = await boot();
       loneCh.pushControl(
         const RoomAnnounced(
@@ -663,6 +662,115 @@ void main() {
         'victim',
       );
       lone.dispose();
+    });
+
+    test('the excluded fallback yields to any other live room', () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'victim',
+          name: 'fenlyin#3',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'jarvis',
+          name: 'Jarvis',
+          cwd: '/home/u/Jarvis',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // Victim is first → it is the fallback (firstLiveRoom) and the
+      // adopted active room, but a live room in another directory must
+      // beat the self-ride.
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          excludeRoomId: 'victim',
+          fallback: vm.firstLiveRoom('epk_A')!,
+        ),
+        'jarvis',
+      );
+      vm.dispose();
+    });
+
+    test('an offline victim falls through to a live same-cwd sibling',
+        () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'victim',
+          name: 'fenlyin#3',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'daemon',
+          name: 'fenlyin',
+          cwd: '/home/u',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'victim', sinceTs: 3));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          excludeRoomId: 'victim',
+          fallback: 'daemon',
+        ),
+        'daemon',
+      );
+      vm.dispose();
+    });
+
+    test('source == exclude is ignored (the exclusion wins)', () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'victim',
+          name: 'fenlyin#3',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'daemon',
+          name: 'fenlyin',
+          cwd: '/home/u',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          sourceRoomId: 'victim',
+          excludeRoomId: 'victim',
+          fallback: 'daemon',
+        ),
+        'daemon',
+      );
+      vm.dispose();
     });
   });
 }

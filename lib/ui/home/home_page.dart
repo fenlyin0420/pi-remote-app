@@ -687,7 +687,7 @@ class HomePage extends StatelessWidget {
       final rooms = vm.roomsForPeer(targetEpk!).where((r) => r.cwd == path).toList();
       name = nextForkName(sourceName: null, cwd: path, rooms: rooms);
     }
-    // Which room must carry the frame — see [_rideRoomFor].
+    // Which room must carry the frame — see HomeViewModel.rideRoomFor.
     final rideRoom = vm.rideRoomFor(
       epk: targetEpk!,
       path: path,
@@ -878,12 +878,8 @@ class HomePage extends StatelessWidget {
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
-    // Ride a SIBLING room, never the tile's own room: the delete frame's
-    // handler is the deleted room's own Pi process, and a self-ride would
-    // lose the `action_ok` (the process is stopped before it can send it).
-    // `rideRoomFor` with the tile excluded picks the same-cwd sibling,
-    // then the active room, then the first live room — any live room of
-    // the peer can serve the delete (the frame carries cwd + name).
+    // The delete stops this room's own process, so it cannot carry the
+    // frame — ride a sibling (see HomeViewModel.rideRoomFor).
     final rideRoom = vm.rideRoomFor(
       epk: epk,
       path: cwd,
@@ -906,7 +902,13 @@ class HomePage extends StatelessWidget {
         messenger.showSnackBar(SnackBar(content: Text(e.message)));
       }
     } finally {
-      await _restorePeer(conn, previousPeer, previousRoom);
+      // Don't restore the room that was just deleted — it is dead on the
+      // Pi; stay on the room that carried the frame.
+      await _restorePeer(
+        conn,
+        previousPeer,
+        previousRoom == it.room.roomId ? null : previousRoom,
+      );
     }
   }
 

@@ -223,9 +223,8 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// [nextForkName] — rooms in the same cwd decide the next suffix.
   List<RoomInfo> roomsForPeer(String epk) => _conn.roomsFor(epk);
 
-  /// Room management — the first LIVE room of [epk] (the room the
-  /// create/delete frame is sent through), or `null` when the peer has
-  /// none live.
+  /// Room management — the first LIVE room of [epk] (the caller's
+  /// last-resort frame carrier), or `null` when the peer has none live.
   String? firstLiveRoom(String epk) {
     for (final r in _conn.roomsFor(epk)) {
       if (_conn.isRoomLive(epk, r.roomId)) return r.roomId;
@@ -240,10 +239,17 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// the peer (a plain "first live room") hands the request to whichever
   /// session owns it: a different daemon, or an interactive terminal session
   /// still running an older build. Preference order:
-  ///   1. [sourceRoomId] — the acted-on tile (fork / delete);
+  ///   1. [sourceRoomId] — the room a fork is forking;
   ///   2. a live room in [path] — the session that owns that directory;
   ///   3. the room the user is currently in;
   ///   4. [fallback] — the caller's last-resort live room.
+  ///
+  /// [excludeRoomId] is never returned as a carrier: a `room_delete` must
+  /// not ride the room it deletes — that room's own process handles the
+  /// frame and stops with it, so a self-ride can lose the `action_ok`.
+  /// Last-resort exception: when nothing else is live, [fallback] is
+  /// returned even if it is the excluded room (the Pi acks a self-delete
+  /// before the kill).
   String rideRoomFor({
     required String epk,
     required String path,
@@ -251,11 +257,6 @@ class HomeViewModel extends ViewModel<HomeState> {
     String? excludeRoomId,
     required String fallback,
   }) {
-    // Delete must never ride the room being deleted: the frame's handler is
-    // that room's own Pi process, which the delete stops — a self-ride loses
-    // the `action_ok` (the process dies before it can send it) and the app
-    // rides out a 15 s action timeout (the "timeout" banner after a
-    // successful delete).
     bool live(String? roomId) =>
         roomId != null &&
         roomId != excludeRoomId &&
@@ -266,6 +267,13 @@ class HomeViewModel extends ViewModel<HomeState> {
     }
     final active = _conn.activeRoomId;
     if (live(active)) return active;
+    if (fallback != excludeRoomId) return fallback;
+    // The caller's fallback IS the excluded room: any other live room can
+    // carry the frame (it carries cwd + name), so prefer one over a
+    // self-ride; with none, the self-ride is the documented last resort.
+    for (final r in roomsForPeer(epk)) {
+      if (live(r.roomId)) return r.roomId;
+    }
     return fallback;
   }
 
