@@ -49,6 +49,29 @@ class _FakeUploads implements IUploadService {
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
+/// Reports the whole file as written and never answers: every byte is queued in
+/// the socket while the Pi has not confirmed, which is the state that used to
+/// look like a finished (and mysteriously disabled) upload.
+class _PendingUploads implements IUploadService {
+  @override
+  Future<UploadedFile> upload({
+    required String path,
+    required String name,
+    String? room,
+    void Function(int sent, int total)? onProgress,
+    bool Function()? shouldCancel,
+    Duration reconnectTimeout = uploadReconnectTimeout,
+    Duration ackTimeout = uploadAckTimeout,
+    Duration sendTimeout = uploadSendTimeout,
+  }) async {
+    // Mirrors the real service, which writes its start frame (an await) before
+    // the first progress tick — that hop is also what lets the tray exist.
+    await Future<void>.microtask(() {});
+    onProgress?.call(10, 10);
+    return Completer<UploadedFile>().future; // the Pi never answers
+  }
+}
+
 class _FakeActions implements IActionsRepository {
   ModelsCatalogue catalogue = const ModelsCatalogue(models: [], current: null);
   final _ctrl = StreamController<ActiveRoomMeta>.broadcast();
@@ -87,7 +110,11 @@ void main() {
 
   tearDown(() => vm.dispose());
 
-  Future<void> pumpBar(WidgetTester tester, {bool channelOpen = true}) {
+  Future<void> pumpBar(
+    WidgetTester tester, {
+    bool channelOpen = true,
+    AttachmentViewModel? viewModel,
+  }) {
     return tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -95,7 +122,7 @@ void main() {
             alignment: Alignment.bottomCenter,
             child: InputBar(
               onSend: (text) {},
-              attachment: vm,
+              attachment: viewModel ?? vm,
               onOpenAttach: channelOpen ? () {} : null,
             ),
           ),
@@ -228,6 +255,38 @@ void main() {
       expect(sentImage, isNotNull);
       expect(sentImage!.mime, 'image/jpeg');
       expect(sentFile, isNull);
+    },
+  );
+
+  testWidgets(
+    'a binary whose bytes are all sent but unconfirmed says it is waiting, '
+    'instead of showing a full bar that looks finished',
+    (tester) async {
+      final pending = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker()
+          ..next = const BinaryFilePick(
+            name: 'deck.pdf',
+            path: '/sdcard/deck.pdf',
+            size: 4096,
+          ),
+        _PendingUploads(),
+        actions,
+      );
+      addTearDown(pending.dispose);
+      await pumpBar(tester, viewModel: pending);
+      await tester.pump();
+
+      await pending.pickFile();
+      await tester.pump();
+
+      expect(find.byKey(const Key('attach-binary-preview')), findsOneWidget);
+      expect(
+        find.text('sent — waiting for the PC to confirm'),
+        findsOneWidget,
+        reason: 'the transfer is queued, not done',
+      );
+      expect(find.text('ready — sends with your message'), findsNothing);
     },
   );
 

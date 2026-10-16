@@ -49,6 +49,27 @@ class _RoomScopedChannel extends _FakeChannel implements IRoomScopedLink {
   }
 }
 
+/// A fake whose ONLY inbound path is the room-tagged stream: `serverMessages`
+/// stays empty, so an upload that answers itself from that stream alone times
+/// out — which is exactly what a connection whose active room drifted away from
+/// the transfer's room looked like in the wild (the Pi landed every attempt
+/// while the app re-uploaded forever).
+class _RoomFrameOnlyChannel extends _FakeChannel implements IRoomFrameLink {
+  final _frames = StreamController<RoomFrame>.broadcast();
+
+  @override
+  Stream<RoomFrame> get roomFrames => _frames.stream;
+
+  void pushRoom(String room, String innerJson) {
+    _frames.add(
+      RoomFrame(
+        roomId: room,
+        payload: Uint8List.fromList(utf8.encode(innerJson)),
+      ),
+    );
+  }
+}
+
 Future<String> _expectedSha(List<int> bytes) async {
   final sink = const DartSha256().newHashSink();
   sink.add(bytes);
@@ -430,6 +451,40 @@ void main() {
 
       expect((await fut).path, '/uploads/room/flush.bin');
       expect(ch.sent.whereType<UploadChunk>().length, 3);
+    });
+
+    test('the ack is claimed from the room-tagged stream too, so a drifted '
+        'active room cannot turn a landed upload into an endless re-upload',
+        () async {
+      // The Pi answers with an envelope stamped with ITS room. When the
+      // connection's active room has drifted elsewhere (a notification tap, a
+      // second chat page), that answer is classified as foreign and never
+      // reaches the session writer — the transfer then times out and restarts
+      // forever while the Pi keeps landing copies. Session ids are unique per
+      // attempt, so the room-tagged stream is a safe second claim path.
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final ch = _RoomFrameOnlyChannel();
+
+      final fut = UploadService.streamUpload(
+        ch: ch,
+        path: f.path,
+        name: 'drift.bin',
+        ackTimeout: const Duration(seconds: 5),
+      );
+      await _until(() => ch.sent.whereType<UploadDone>().isNotEmpty);
+      final done = ch.sent.whereType<UploadDone>().single;
+      ch.pushRoom(
+        'V1pGb2Tqp6U1',
+        jsonEncode({
+          'type': 'upload_complete',
+          'in_reply_to': done.id,
+          'id': done.id,
+          'name': 'drift.bin',
+          'path': '/uploads/V1pGb2Tqp6U1/drift.bin',
+        }),
+      );
+
+      expect((await fut).path, '/uploads/V1pGb2Tqp6U1/drift.bin');
     });
 
     test('a Pi rejection is never retried', () async {

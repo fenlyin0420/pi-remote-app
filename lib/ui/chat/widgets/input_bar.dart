@@ -1032,10 +1032,17 @@ class _FileAttachmentPreview extends StatelessWidget {
 }
 
 /// The composer binary-file preview (Plan/62): name, size and a progress
-/// bar while the chunked upload is in flight, a "ready" tag once the Pi has
-/// confirmed the file. Same slot as the other previews — one attachment per
+/// bar while the chunked upload is in flight, a "sent — waiting…" tag once
+/// every byte is written but the Pi has not confirmed yet, and a "ready" tag
+/// once it did. Same slot as the other previews — one attachment per
 /// message; "X" removes the attachment and stops the stream between chunks
 /// (the Pi reaps the abandoned partial file on its TTL).
+///
+/// The progress fraction counts bytes HANDED TO THE SOCKET, which is not the
+/// same as bytes the Pi has received: the frames drain at the uplink's pace,
+/// so a full bar followed by nothing visible left users staring at a disabled
+/// send button, unsure whether the transfer had finished. The distinct
+/// "waiting" state names that stretch instead of leaving it ambiguous.
 class _BinaryAttachmentPreview extends StatelessWidget {
   const _BinaryAttachmentPreview({required this.file, required this.onRemove});
 
@@ -1109,6 +1116,24 @@ class _BinaryAttachmentPreview extends StatelessWidget {
                   const SizedBox(width: 4),
                   Text(
                     'ready — sends with your message',
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 10,
+                      color: colors.muted,
+                    ),
+                  ),
+                ],
+              )
+            else if (progress >= 1)
+              // Bytes are all in the socket but the Pi has not answered: the
+              // file is still draining to the PC (and then being hashed). A
+              // full bar would read as "done and broken".
+              Row(
+                children: [
+                  Icon(LucideIcons.hourglass, size: 12, color: colors.muted),
+                  const SizedBox(width: 4),
+                  Text(
+                    'sent — waiting for the PC to confirm',
                     style: TextStyle(
                       fontFamily: kMonoFamily,
                       fontSize: 10,

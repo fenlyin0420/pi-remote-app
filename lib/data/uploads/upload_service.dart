@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/protocol/codec.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/dart.dart';
 
@@ -243,18 +244,44 @@ class UploadService implements IUploadService {
     // async error; the awaited future below still sees it.
     completer.future.ignore();
     StreamSubscription<ServerMessage>? sub;
-    sub = ch.serverMessages.listen((m) {
+    StreamSubscription<RoomFrame>? roomSub;
+    void onInner(ServerMessage m) {
       if (completer.isCompleted) return;
       if (m is UploadComplete && (m.id == id || m.inReplyTo == id)) {
         completer.complete(
           UploadedFile(name: m.name, path: m.path),
         );
         sub?.cancel();
+        roomSub?.cancel();
       } else if (m is ErrorMessage && m.inReplyTo == id) {
         completer.completeError(UploadError(m.code, m.message));
         sub?.cancel();
+        roomSub?.cancel();
       }
-    });
+    }
+
+    sub = ch.serverMessages.listen(onInner);
+    // `serverMessages` only carries frames of the room the connection is
+    // CURRENTLY addressing, and that room can drift away from the one this
+    // transfer is pinned to (a notification tap or another chat page retargets
+    // the connection; the tray's room does not move). The Pi stamps its answer
+    // with ITS room, so a drifted connection classifies our own ack as foreign
+    // and the upload dies of a timeout — on the Pi side it landed fine, so the
+    // app re-uploads forever. `roomFrames` carries every inbound envelope with
+    // its room, so claim the answer by session id from there too; a session id
+    // is unique per attempt, so a frame seen on both paths is handled once
+    // (guarded by `completer.isCompleted`).
+    final link = ch;
+    if (link is IRoomFrameLink) {
+      roomSub = (link as IRoomFrameLink).roomFrames.listen((frame) {
+        if (completer.isCompleted) return;
+        try {
+          onInner(decodeServer(utf8.decode(frame.payload)));
+        } catch (_) {
+          // Not a protocol frame we can read — the chat path owns it.
+        }
+      });
+    }
 
     try {
       await _sendTimed(
@@ -334,6 +361,7 @@ class UploadService implements IUploadService {
       throw UploadError('io_error', 'Could not stream the file: $e');
     } finally {
       await sub.cancel();
+      await roomSub?.cancel();
     }
   }
 
