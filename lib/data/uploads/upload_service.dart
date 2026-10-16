@@ -31,6 +31,13 @@ const int uploadChunkBytes = 2 * 1024 * 1024;
 /// How long to wait for the Pi's `upload_complete` after the final frame.
 const Duration uploadAckTimeout = Duration(seconds: 30);
 
+/// How long one frame send may take before it is treated as a dead
+/// transport. A half-dead socket (peer gone, TCP not closed) swallows
+/// bytes and never completes the send future; without this bound a
+/// mid-stream drop would freeze the progress bar forever instead of
+/// tripping the reconnect-retry.
+const Duration uploadSendTimeout = Duration(seconds: 30);
+
 /// How many times [UploadService.upload] restarts a transfer after a
 /// transient transport failure (channel died mid-stream → `io_error`).
 const int uploadMaxReconnects = 3;
@@ -77,6 +84,8 @@ abstract class IUploadService {
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
+    Duration sendTimeout = uploadSendTimeout,
+    Duration ackTimeout = uploadAckTimeout,
   });
 }
 
@@ -103,6 +112,8 @@ class UploadService implements IUploadService {
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
+    Duration sendTimeout = uploadSendTimeout,
+    Duration ackTimeout = uploadAckTimeout,
   }) async {
     // The in-flight transfer is bound to the channel it started on: a
     // transport drop (ping keepalive → reconnect) kills it with `io_error`.
@@ -134,10 +145,18 @@ class UploadService implements IUploadService {
           name: name,
           onProgress: onProgress,
           shouldCancel: shouldCancel,
+          sendTimeout: sendTimeout,
+          ackTimeout: ackTimeout,
         );
       } on UploadError catch (e) {
+        // `io_error` = the transport died mid-stream; `timeout` = the done
+        // frame was sent but the Pi's answer got lost (or the transport
+        // went down in that last stretch). Both are safe to restart: the
+        // Pi de-duplicates by sha256, so a re-upload of an already-landed
+        // file resolves to the same path.
         final canRetry =
-            e.code == 'io_error' && attempt < uploadMaxReconnects;
+            (e.code == 'io_error' || e.code == 'timeout') &&
+            attempt < uploadMaxReconnects;
         if (!canRetry) rethrow;
         onProgress?.call(0, 0); // the restart re-streams from the beginning
       }
@@ -163,6 +182,8 @@ class UploadService implements IUploadService {
     required String name,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
+    Duration sendTimeout = uploadSendTimeout,
+    Duration ackTimeout = uploadAckTimeout,
   }) async {
     final file = File(path);
     final int total;
@@ -202,7 +223,7 @@ class UploadService implements IUploadService {
     });
 
     try {
-      await ch.send(UploadStart(id: id, name: name, size: total));
+      await _sendTimed(ch, UploadStart(id: id, name: name, size: total), sendTimeout);
       // The whole-file sha256 is folded in from the very chunks we send —
       // the file is read once, and a 250 MiB pick never lands in memory
       // whole.
@@ -227,7 +248,11 @@ class UploadService implements IUploadService {
               : total - offset;
           final bytes = await raf.read(len);
           shaSink.add(bytes);
-          await ch.send(UploadChunk(id: id, index: index, data: base64Encode(bytes)));
+          await _sendTimed(
+            ch,
+            UploadChunk(id: id, index: index, data: base64Encode(bytes)),
+            sendTimeout,
+          );
           index++;
           offset += len;
           onProgress?.call(offset, total);
@@ -240,8 +265,8 @@ class UploadService implements IUploadService {
       final sha256 = digest.bytes
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
-      await ch.send(UploadDone(id: id, sha256: sha256));
-      final timer = Timer(uploadAckTimeout, () {
+      await _sendTimed(ch, UploadDone(id: id, sha256: sha256), sendTimeout);
+      final timer = Timer(ackTimeout, () {
         if (!completer.isCompleted) {
           completer.completeError(
             const UploadError(
@@ -265,6 +290,42 @@ class UploadService implements IUploadService {
     } finally {
       await sub.cancel();
     }
+  }
+
+  /// [ch.send] with a transport-deadline: a half-dead socket swallows the
+  /// frame and never completes the send future, which would otherwise
+  /// freeze the upload (and the retry loop) forever. When the deadline
+  /// passes the frame is treated as a failed transport (`io_error`). The
+  /// original future is drained either way so a late error cannot float
+  /// as an unhandled async error.
+  static Future<void> _sendTimed(IChannel ch, ClientMessage m, Duration t) {
+    final c = Completer<void>();
+    var settled = false;
+    final orig = ch.send(m);
+    orig.then(
+      (_) {
+        if (!settled) {
+          settled = true;
+          c.complete();
+        }
+      },
+      onError: (Object _) {
+        if (!settled) {
+          settled = true;
+          c.completeError(const UploadError('io_error', 'Frame send failed'));
+        }
+      },
+    );
+    Timer(t, () {
+      if (!settled) {
+        settled = true;
+        c.completeError(
+          const UploadError('io_error', 'Frame send timed out — transport dead'),
+        );
+      }
+    });
+    c.future.ignore(); // in case the timer fires before the await attaches
+    return c.future;
   }
 
   /// 12-hex session token — the Pi validates `[A-Za-z0-9_-]{8,64}` and

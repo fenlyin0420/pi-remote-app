@@ -401,6 +401,75 @@ void main() {
       );
       expect(ch.sent.whereType<UploadStart>().length, 1, reason: 'one attempt only');
     });
+
+    test('a half-dead socket (a send that never returns) trips the send '
+        'timeout and the retry lands on the fresh channel', () async {
+      final bytes = List<int>.filled(5 * 1024 * 1024, 7); // 3 chunks
+      final f = await mkFile(bytes);
+      // Start + chunk 0 flush; chunk 1 is swallowed by the dead socket and
+      // the send future never completes — the only way out is the send
+      // timeout feeding the retry loop.
+      final chA = _HungChannel(hungAtIndex: 1);
+      final chB = _FakeChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(
+        path: f.path,
+        name: 'big.bin',
+        sendTimeout: const Duration(milliseconds: 200),
+      );
+      await _until(() => chA.sent.whereType<UploadChunk>().isNotEmpty);
+      current = chB; // the transport reconnected while the send hung
+
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().last;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'big.bin',
+          path: '/uploads/room/big.bin',
+        ),
+      );
+
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/room/big.bin');
+      expect(chB.sent.whereType<UploadStart>().length, 1);
+      expect(chB.sent.whereType<UploadChunk>().length, 3);
+    });
+
+    test('a lost ack (the done frame landed, the answer went out over a '
+        'dead link) retries the whole upload and completes', () async {
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final chA = _FakeChannel(); // receives everything but never answers
+      final chB = _FakeChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(
+        path: f.path,
+        name: 's.bin',
+        ackTimeout: const Duration(milliseconds: 200),
+      );
+      await _until(() => chA.sent.whereType<UploadDone>().isNotEmpty);
+      current = chB; // the Pi's answer crossed the drop; the restart re-uploads
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().single;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 's.bin',
+          path: '/uploads/room/s.bin',
+        ),
+      );
+
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/room/s.bin');
+      expect(chA.sent.whereType<UploadDone>().length, 1, reason: 'first attempt sent its done frame');
+      expect(chB.sent.whereType<UploadChunk>().length, 1);
+    });
   });
 }
 
@@ -461,6 +530,31 @@ class _GatedDyingChannel extends _DyingChannel {
     }
     return super.send(msg);
   }
+}
+
+/// Records sends until [hungAtIndex], where it returns a future that never
+/// completes — a half-dead socket whose send queue swallows frames without
+/// ever flushing.
+class _HungChannel implements IChannel {
+  _HungChannel({required this.hungAtIndex});
+
+  final int hungAtIndex;
+  final sent = <ClientMessage>[];
+
+  @override
+  Stream<ServerMessage> get serverMessages => const Stream<ServerMessage>.empty();
+
+  @override
+  Future<void> send(ClientMessage msg) {
+    if (msg is UploadChunk && msg.index >= hungAtIndex) {
+      return Completer<void>().future; // never completes
+    }
+    sent.add(msg);
+    return Future<void>.value();
+  }
+
+  @override
+  Future<void> close() async {}
 }
 
 class _BrokenChannel implements IChannel {
