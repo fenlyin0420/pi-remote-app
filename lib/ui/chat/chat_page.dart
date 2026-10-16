@@ -514,6 +514,11 @@ class ChatPage extends StatelessWidget {
     final drafts = injector.get<DraftStore>();
     final initialDraft =
         draftEpk == null ? '' : (drafts.read(draftEpk, vm.activeRoomId) ?? '');
+    // Plan/62 — bind the attachment VM to this room (epk arrives a frame
+    // later when the peer record loads; the VM re-hydrates then). A room
+    // switch drops the old on-screen attachment and re-hydrates the new room.
+    final attachmentVm = context.read<AttachmentViewModel>();
+    attachmentVm.updateRoom(draftEpk, vm.activeRoomId);
 
     return InputBar(
       initialDraft: initialDraft,
@@ -545,12 +550,12 @@ class ChatPage extends StatelessWidget {
       // rides along with the (optionally empty) caption. Attach-button gating
       // by vision / already-attached is internal to InputBar; the host only
       // gates by channel availability.
-      attachment: context.read<AttachmentViewModel>(),
+      attachment: attachmentVm,
       onOpenAttach: actionsEnabled
-          ? () => _openAttach(context, context.read<AttachmentViewModel>())
+          ? () => _openAttach(context, attachmentVm)
           : null,
       onSend: (text) {
-        final attachments = context.read<AttachmentViewModel>();
+        final attachments = attachmentVm;
         // Only one of the two is ever set (the attach button is disabled once
         // something is attached).
         vm.sendMessage(

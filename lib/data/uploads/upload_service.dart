@@ -31,6 +31,13 @@ const int uploadChunkBytes = 2 * 1024 * 1024;
 /// How long to wait for the Pi's `upload_complete` after the final frame.
 const Duration uploadAckTimeout = Duration(seconds: 30);
 
+/// How many times [UploadService.upload] restarts a transfer after a
+/// transient transport failure (channel died mid-stream → `io_error`).
+const int uploadMaxReconnects = 3;
+
+/// How long one restart waits for the channel to come back.
+const Duration uploadReconnectTimeout = Duration(minutes: 3);
+
 /// The Pi's answer to a finished upload: where the file landed.
 class UploadedFile {
   final String name;
@@ -60,18 +67,34 @@ abstract class IUploadService {
   ///
   /// [shouldCancel] is polled between chunks — return true to abandon
   /// (the Pi reaps the partial file on its TTL; no cancel frame).
+  ///
+  /// A transient transport failure (channel dead mid-stream) restarts the
+  /// whole upload once the channel is back — [reconnectTimeout] bounds how
+  /// long one restart waits for that (default [uploadReconnectTimeout]).
   Future<UploadedFile> upload({
     required String path,
     required String name,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
+    Duration reconnectTimeout = uploadReconnectTimeout,
   });
 }
 
 class UploadService implements IUploadService {
-  UploadService(this._conn);
+  /// [channel] is re-read on every poll, so a mid-upload reconnect (new
+  /// channel object) is picked up by the retry loop without a restart of
+  /// this service.
+  UploadService(ConnectionManager conn) : _channel = _ofConn(conn);
 
-  final ConnectionManager _conn;
+  /// Test seam: inject the channel provider directly.
+  const UploadService.withChannelProvider(IChannel? Function() channel)
+      : _channel = channel;
+
+  static IChannel? Function() _ofConn(ConnectionManager conn) {
+    return () => conn.channel;
+  }
+
+  final IChannel? Function() _channel;
 
   @override
   Future<UploadedFile> upload({
@@ -79,18 +102,56 @@ class UploadService implements IUploadService {
     required String name,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
+    Duration reconnectTimeout = uploadReconnectTimeout,
   }) async {
-    final ch = _conn.channel;
-    if (ch == null) {
-      throw const UploadError('offline', 'Not connected to the Pi');
+    // The in-flight transfer is bound to the channel it started on: a
+    // transport drop (ping keepalive → reconnect) kills it with `io_error`.
+    // Rather than surfacing that as a failure, restart the whole upload on
+    // the fresh channel (fresh session id; the Pi reaps the old `.part` on
+    // its idle sweep). Only `io_error` qualifies — rejections, size caps,
+    // cancellation and "never connected" are final.
+    for (var attempt = 0; ; attempt++) {
+      if (attempt > 0 && shouldCancel?.call() == true) {
+        throw const UploadError('cancelled', 'Upload cancelled');
+      }
+      final ch = _channel();
+      if (ch == null) {
+        if (attempt == 0) {
+          throw const UploadError('offline', 'Not connected to the Pi');
+        }
+        if (!await _waitChannel(reconnectTimeout)) {
+          throw const UploadError(
+            'timeout',
+            'Lost the connection before it came back',
+          );
+        }
+        continue; // the channel is back — retry on it below
+      }
+      try {
+        return await streamUpload(
+          ch: ch,
+          path: path,
+          name: name,
+          onProgress: onProgress,
+          shouldCancel: shouldCancel,
+        );
+      } on UploadError catch (e) {
+        final canRetry =
+            e.code == 'io_error' && attempt < uploadMaxReconnects;
+        if (!canRetry) rethrow;
+        onProgress?.call(0, 0); // the restart re-streams from the beginning
+      }
     }
-    return streamUpload(
-      ch: ch,
-      path: path,
-      name: name,
-      onProgress: onProgress,
-      shouldCancel: shouldCancel,
-    );
+  }
+
+  /// Polls until the transport has a live channel again or [timeout] elapses.
+  Future<bool> _waitChannel(Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (_channel() != null) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    return _channel() != null;
   }
 
   /// The channel-facing core (testable without a live ConnectionManager):

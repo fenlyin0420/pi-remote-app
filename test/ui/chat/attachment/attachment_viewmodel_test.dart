@@ -4,13 +4,17 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/files/any_file_picker_service.dart';
 import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/local/attachment_store.dart';
+import 'package:app/data/local/boxes.dart';
 import 'package:app/data/uploads/upload_service.dart';
+import 'package:hive/hive.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
@@ -65,6 +69,7 @@ class _FakeUploads implements IUploadService {
     required String name,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
+    Duration reconnectTimeout = uploadReconnectTimeout,
   }) async {
     uploads.add(name);
     if (error != null) throw error!;
@@ -386,5 +391,234 @@ void main() {
     expect(vm.state, isA<AttachmentAttached>());
     expect((vm.state as AttachmentAttached).file?.name, 'notes.md');
     vm.dispose();
+  });
+
+  group('Plan/62 — durable per-room attachment reference', () {
+    late Directory dir;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('rp_v2_attachments_');
+    });
+
+    tearDown(() async {
+      await Hive.close();
+      await dir.delete(recursive: true);
+    });
+
+    AttachmentStore makeStore() => AttachmentStore(LocalBoxes());
+
+    test('a landed reference re-attaches as sendable on re-entry', () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      await store.save(
+        'epkA',
+        'room1',
+        const AttachmentRecord(
+          name: 'deck.pdf',
+          size: 999,
+          phonePath: '/phone/deck.pdf',
+          landedPath: '/uploads/room/deck.pdf',
+        ),
+      );
+
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        _FakeUploads(),
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+
+      final s = vm.state;
+      expect(s, isA<AttachmentAttached>());
+      final binary = (s as AttachmentAttached).binaryFile;
+      expect(binary, isNotNull);
+      expect(binary!.landed, isTrue);
+      expect(binary.landedPath, '/uploads/room/deck.pdf');
+      expect(binary.progress, 1);
+      vm.dispose();
+    });
+
+    test('an unfinished upload restarts from the phone copy on re-entry',
+        () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      final phoneFile = File('${dir.path}/deck.pdf')
+        ..writeAsBytesSync([1, 2, 3]);
+      await store.save(
+        'epkA',
+        'room1',
+        AttachmentRecord(
+          name: 'deck.pdf',
+          size: 3,
+          phonePath: phoneFile.path,
+        ),
+      );
+
+      final uploads = _FakeUploads()
+        ..result = const UploadedFile(
+          name: 'deck.pdf',
+          path: '/uploads/room/deck.pdf',
+        );
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        uploads,
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(uploads.uploads, ['deck.pdf']);
+      final binary = (vm.state as AttachmentAttached).binaryFile;
+      expect(binary!.landed, isTrue);
+      expect(
+        store.read('epkA', 'room1')!.landedPath,
+        '/uploads/room/deck.pdf',
+        reason: 'the store records the landed path',
+      );
+      vm.dispose();
+    });
+
+    test('a missing phone file leaves the room empty (no phantom)', () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      await store.save(
+        'epkA',
+        'room1',
+        AttachmentRecord(
+          name: 'deck.pdf',
+          size: 3,
+          phonePath: '/gone/deck.pdf',
+        ),
+      );
+
+      final uploads = _FakeUploads();
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        uploads,
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(vm.state, isA<AttachmentEmpty>());
+      expect(uploads.uploads, isEmpty);
+      vm.dispose();
+    });
+
+    test('a room switch drops the old attachment, re-hydrates the new',
+        () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      await store.save(
+        'epkA',
+        'room1',
+        const AttachmentRecord(
+          name: 'deck.pdf',
+          size: 9,
+          phonePath: '/p/d.pdf',
+          landedPath: '/u/d.pdf',
+        ),
+      );
+      await store.save(
+        'epkA',
+        'room2',
+        const AttachmentRecord(
+          name: 'plan.pdf',
+          size: 7,
+          phonePath: '/p/p.pdf',
+          landedPath: '/u/p.pdf',
+        ),
+      );
+
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        _FakeUploads(),
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+      expect(
+        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        '/u/d.pdf',
+      );
+
+      vm.updateRoom('epkA', 'room2');
+      expect(
+        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        '/u/p.pdf',
+      );
+
+      vm.updateRoom('epkA', 'room1');
+      expect(
+        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        '/u/d.pdf',
+      );
+      vm.dispose();
+    });
+
+    test('takeFileForSend clears the stored reference', () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      await store.save(
+        'epkA',
+        'room1',
+        const AttachmentRecord(
+          name: 'deck.pdf',
+          size: 9,
+          phonePath: '/p/d.pdf',
+          landedPath: '/u/d.pdf',
+        ),
+      );
+
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        _FakeUploads(),
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+
+      final file = vm.takeFileForSend();
+      expect(file, isNotNull);
+      expect(file!.path, '/u/d.pdf');
+      expect(store.read('epkA', 'room1'), isNull);
+      vm.dispose();
+    });
+
+    test('removeAttachment clears the stored reference', () async {
+      await LocalBoxes.initForTest(dir.path);
+      final store = makeStore();
+      await store.save(
+        'epkA',
+        'room1',
+        const AttachmentRecord(
+          name: 'deck.pdf',
+          size: 9,
+          phonePath: '/p/d.pdf',
+          landedPath: '/u/d.pdf',
+        ),
+      );
+
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker(),
+        _FakeUploads(),
+        _FakeActions(),
+        store,
+      );
+      vm.updateRoom('epkA', 'room1');
+      vm.removeAttachment();
+
+      expect(store.read('epkA', 'room1'), isNull);
+      vm.dispose();
+    });
   });
 }

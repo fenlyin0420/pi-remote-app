@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'dart:io';
+
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/files/any_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/local/attachment_store.dart';
 import 'package:app/data/uploads/upload_service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
@@ -18,9 +21,21 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 /// cached in [IActionsRepository], re-resolved whenever the active model
 /// changes. It gates the camera/gallery entries only — a text file is fine on
 /// any model.
+///
+/// Plan/62 durability: when [AttachmentStore] and a room key are wired in
+/// (see [updateRoom]), the binary attachment survives leaving and re-entering
+/// the room — landed files re-attach as sendable, unfinished uploads restart.
 class AttachmentViewModel extends ViewModel<AttachmentState> {
-  AttachmentViewModel(this._picker, this._anyPicker, this._uploads, this._actions)
-    : super(const AttachmentEmpty()) {
+  /// [store] is optional so tests and non-persistent call sites keep the
+  /// old four-argument form.
+  AttachmentViewModel(
+    this._picker,
+    this._anyPicker,
+    this._uploads,
+    this._actions,
+    [AttachmentStore? store])
+      : _store = store,
+        super(const AttachmentEmpty()) {
     _metaSub = _actions.activeRoomMetaStream.listen((_) => _refreshVision());
     // ignore: discarded_futures
     _refreshVision();
@@ -30,6 +45,12 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   final IAnyFilePickerService _anyPicker;
   final IUploadService _uploads;
   final IActionsRepository _actions;
+  final AttachmentStore? _store;
+
+  /// The room this instance's attachment belongs to; the host calls
+  /// [updateRoom] as the peer/room identity resolves and on room switches.
+  String? _roomEpk;
+  String? _roomId;
 
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _resolvingVision = false;
@@ -88,11 +109,13 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
           payload: AttachedTextFile(picked.file),
           visionSupported: vision,
         ));
+        _clearRecord(); // a text pick replaces any stored binary reference
         return;
       }
       final binary = picked as BinaryFilePick;
       final payload = AttachedBinaryFile(name: binary.name, size: binary.size);
       emit(AttachmentAttached(payload: payload, visionSupported: vision));
+      _saveRecord(payload, binary.path, null);
       // Awaited (not fire-and-forget) so the host page's hint subscription
       // is still alive when an early rejection lands.
       await _uploadBinary(payload, binary);
@@ -140,10 +163,12 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
         ),
         visionSupported: state.visionSupported,
       ));
+      _saveRecord(payload, pick.path, uploaded.path);
     } on UploadError catch (e) {
       if (e.code == 'cancelled') return;
       if (cancelled()) return;
       emit(AttachmentEmpty(visionSupported: state.visionSupported));
+      _clearRecord();
       if (!_hints.isClosed) {
         _hints.add(
           e.code == 'upload_rejected'
@@ -175,11 +200,12 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     emit(AttachmentPicking(visionSupported: vision));
     try {
       final payload = await pick();
-      emit(
-        payload == null
-            ? AttachmentEmpty(visionSupported: vision) // cancelled
-            : AttachmentAttached(payload: payload, visionSupported: vision),
-      );
+      if (payload == null) {
+        emit(AttachmentEmpty(visionSupported: vision)); // cancelled
+      } else {
+        emit(AttachmentAttached(payload: payload, visionSupported: vision));
+        _clearRecord(); // an image pick replaces any stored binary reference
+      }
     } on ImagePermissionDeniedException {
       emit(AttachmentEmpty(visionSupported: vision));
       if (!_hints.isClosed) _hints.add(AttachHint.cameraPermissionDenied);
@@ -191,8 +217,10 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
 
   /// Discard the attached item (the "X" on the preview, #4).
   void removeAttachment() {
-    if (state is! AttachmentAttached) return;
-    emit(AttachmentEmpty(visionSupported: state.visionSupported));
+    final s = state;
+    if (s is! AttachmentAttached) return;
+    if (s.payload is AttachedBinaryFile) _clearRecord();
+    emit(AttachmentEmpty(visionSupported: s.visionSupported));
   }
 
   /// Hand the attached image to the send path as a base64 [MessageImage] and
@@ -220,8 +248,90 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     }
     final binary = s.binaryFile;
     if (binary == null || !binary.landed) return null;
+    _clearRecord(); // the reference rides along in the message now
     emit(AttachmentEmpty(visionSupported: s.visionSupported));
     return OutgoingFile(name: binary.name, path: binary.landedPath);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plan/62 — durable per-room attachment reference
+  // ---------------------------------------------------------------------------
+
+  /// The host calls this with the room's identity as it resolves (the peer
+  /// record loads async, so the epk arrives a frame later) and on room
+  /// switches. A key *change* drops the old room's on-screen attachment (its
+  /// record stays stored) and re-hydrates from [AttachmentStore]: a landed
+  /// file comes back sendable; an unfinished upload restarts from the phone
+  /// copy when that file still exists.
+  void updateRoom(String? epk, String? roomId) {
+    if (epk == null || roomId == null) return;
+    if (epk == _roomEpk && roomId == _roomId) return;
+    final s = state;
+    if (s is AttachmentAttached && s.payload is AttachedBinaryFile) {
+      emit(AttachmentEmpty(visionSupported: s.visionSupported));
+    }
+    _roomEpk = epk;
+    _roomId = roomId;
+    final store = _store;
+    if (store == null) return;
+    final record = store.read(epk, roomId);
+    if (record == null) return;
+    final vision = state.visionSupported;
+    if (record.landed) {
+      emit(AttachmentAttached(
+        payload: AttachedBinaryFile(
+          name: record.name,
+          size: record.size,
+          landedPath: record.landedPath,
+          progress: 1,
+        ),
+        visionSupported: vision,
+      ));
+      return;
+    }
+    // Unfinished upload — resume it only when the phone-side bytes survive.
+    if (!File(record.phonePath).existsSync()) return;
+    final payload = AttachedBinaryFile(name: record.name, size: record.size);
+    final pick = BinaryFilePick(
+      name: record.name,
+      path: record.phonePath,
+      size: record.size,
+    );
+    emit(AttachmentAttached(payload: payload, visionSupported: vision));
+    _saveRecord(payload, record.phonePath, null);
+    // ignore: unawaited_futures
+    _uploadBinary(payload, pick);
+  }
+
+  void _saveRecord(
+    AttachedBinaryFile payload,
+    String phonePath,
+    String? landedPath,
+  ) {
+    final store = _store;
+    final epk = _roomEpk;
+    final roomId = _roomId;
+    if (store == null || epk == null || roomId == null) return;
+    // ignore: unawaited_futures
+    store.save(
+      epk,
+      roomId,
+      AttachmentRecord(
+        name: payload.name,
+        size: payload.size,
+        phonePath: phonePath,
+        landedPath: landedPath,
+      ),
+    );
+  }
+
+  void _clearRecord() {
+    final store = _store;
+    final epk = _roomEpk;
+    final roomId = _roomId;
+    if (store == null || epk == null || roomId == null) return;
+    // ignore: unawaited_futures
+    store.clear(epk, roomId);
   }
 
   // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 
+
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/uploads/upload_service.dart';
 import 'package:app/protocol/protocol.dart';
@@ -287,6 +288,179 @@ void main() {
     expect(ch.sent.whereType<UploadDone>(), isEmpty);
     expect(ch.sent.whereType<UploadChunk>().length, lessThanOrEqualTo(2));
   });
+
+  group('transport drop mid-stream — the retry loop', () {
+    test('restarts the upload on the new channel and completes', () async {
+      final bytes = List<int>.filled(5 * 1024 * 1024, 7); // 3 chunks
+      final f = await mkFile(bytes);
+      // Start + two chunks flow; the third chunk's send holds on the gate
+      // until the test has swapped the provider to the fresh channel, then
+      // the dead channel throws.
+      final chA = _GatedDyingChannel(gateAtIndex: 2, failAfterSends: 3);
+      final chB = _FakeChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(path: f.path, name: 'big.bin');
+      await _until(() => chA.sent.whereType<UploadChunk>().length >= 2);
+      current = chB; // the transport reconnected
+      chA.gate.complete(); // now the dead channel's send fails
+
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().last;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'big.bin',
+          path: '/uploads/room/big.bin',
+        ),
+      );
+
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/room/big.bin');
+      // The restart re-streams the whole file as a fresh session on B.
+      expect(chB.sent.whereType<UploadStart>().length, 1);
+      expect(chB.sent.whereType<UploadChunk>().length, 3);
+      expect(chB.sent.whereType<UploadDone>().length, 1);
+    });
+
+    test('waits out a dead window before the restart lands', () async {
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final chA = _GatedDyingChannel(gateAtIndex: -1, failAfterSends: 0);
+      final chB = _FakeChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(path: f.path, name: 'small.bin');
+      // The start frame holds on the gate while the provider moves through
+      // the reconnect window; then the dead channel's send fails.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      current = null; // transport enters its reconnect window
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      chA.gate.complete(); // the dead channel's start send now fails; the
+      // restart finds no channel and waits in _waitChannel
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      current = chB; // the transport reconnects
+
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().single;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'small.bin',
+          path: '/uploads/room/small.bin',
+        ),
+      );
+      expect((await fut).path, '/uploads/room/small.bin');
+    });
+
+    test('gives up with a timeout error when the channel never comes back',
+        () async {
+      final f = await mkFile(List<int>.filled(300000, 3));
+      // The start frame holds on the gate; while it is held, the provider
+      // moves into the reconnect window (null) and never recovers.
+      final chA = _GatedDyingChannel(gateAtIndex: -1, failAfterSends: 0);
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+      final fut = svc.upload(
+        path: f.path,
+        name: 's.bin',
+        reconnectTimeout: const Duration(milliseconds: 400),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      current = null;
+      chA.gate.complete(); // the first attempt now fails
+      await expectLater(
+        fut,
+        throwsA(
+          isA<UploadError>().having((e) => e.code, 'code', 'timeout'),
+        ),
+      );
+    });
+
+    test('a Pi rejection is never retried', () async {
+      final f = await mkFile(List<int>.filled(300000, 3));
+      final ch = _GatedChannel();
+      final svc = UploadService.withChannelProvider(() => ch);
+      final fut = svc.upload(path: f.path, name: 'rej.bin');
+      await _until(() => ch.sent.whereType<UploadStart>().isNotEmpty);
+      ch.push(
+        ErrorMessage(
+          inReplyTo: ch.sent.whereType<UploadStart>().single.id,
+          code: 'upload_rejected',
+          message: 'busy',
+        ),
+      );
+      await expectLater(
+        fut,
+        throwsA(
+          isA<UploadError>().having((e) => e.code, 'code', 'upload_rejected'),
+        ),
+      );
+      expect(ch.sent.whereType<UploadStart>().length, 1, reason: 'one attempt only');
+    });
+  });
+}
+
+/// Polls [cond] on a short timer until true or [timeout] elapses.
+Future<void> _until(bool Function() cond, {
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!cond()) {
+    if (DateTime.now().isAfter(deadline)) fail('condition not met in time');
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+/// Records sends until [failAfterSends], then throws — simulates the
+/// transport dying mid-stream.
+class _DyingChannel implements IChannel {
+  _DyingChannel({required this.failAfterSends});
+
+  final int failAfterSends;
+  final sent = <ClientMessage>[];
+  int _sends = 0;
+
+  int get attempts => _sends;
+
+  @override
+  Stream<ServerMessage> get serverMessages => const Stream<ServerMessage>.empty();
+
+  @override
+  Future<void> send(ClientMessage msg) async {
+    _sends++;
+    if (_sends > failAfterSends) {
+      throw const SocketException('transport dropped');
+    }
+    sent.add(msg);
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+/// A [_DyingChannel] whose send at chunk index [gateAtIndex] first holds on
+/// [gate] — so tests can swap the provider to a fresh channel while the dead
+/// one is still mid-send, keeping the retry deterministic.
+class _GatedDyingChannel extends _DyingChannel {
+  _GatedDyingChannel({required super.failAfterSends, required this.gateAtIndex});
+
+  /// [gateAtIndex] < 0 gates the start frame as well (every send holds on
+  /// [gate]); >= 0 gates only chunks from that index on.
+  final int gateAtIndex;
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<void> send(ClientMessage msg) async {
+    if ((msg is UploadStart && gateAtIndex < 0) ||
+        (msg is UploadChunk && msg.index >= gateAtIndex)) {
+      await gate.future;
+    }
+    return super.send(msg);
+  }
 }
 
 class _BrokenChannel implements IChannel {
