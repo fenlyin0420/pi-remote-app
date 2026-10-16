@@ -161,11 +161,22 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     AttachedBinaryFile item,
     BinaryFilePick pick,
   ) async {
+    // Every progress tick rebuilds the chip as a FRESH `AttachedBinaryFile`
+    // pushed back into the tray, so the instance captured at pick time is stale
+    // from the first chunk on: `identical(i, item)` then matches nothing. That
+    // stale identity used to (a) make `cancelled()` report true and silently
+    // abort every multi-chunk transfer right after chunk 0 — the Pi saw the
+    // start and one chunk, then nothing, with no retry — and (b) make the
+    // landed flip and the failure removal miss, so the chip stayed "uploading"
+    // forever and the send button stayed grey even for files that HAD landed.
+    // Track the instance that is actually in the tray instead.
+    var live = item;
     bool cancelled() {
       final s = state;
       if (s is! AttachmentAttached) return true;
-      return !s.items.any((i) => identical(i, item));
+      return !s.items.any((i) => identical(i, live));
     }
+
     try {
       final uploaded = await _uploads.upload(
         path: pick.path,
@@ -177,13 +188,13 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
         room: _roomId,
         onProgress: (sent, total) {
           if (cancelled()) return;
-          _setBinaryProgress(item, sent / total);
+          live = _setBinaryProgress(live, sent / total);
         },
         shouldCancel: cancelled,
       );
       if (cancelled()) return; // the item was removed mid-flight
       _replaceItem(
-        item,
+        live,
         AttachedBinaryFile(
           name: item.name,
           size: item.size,
@@ -199,7 +210,7 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
       final s = state;
       if (s is! AttachmentAttached) return;
       _emitTray([
-        for (final i in s.items) if (!identical(i, item)) i,
+        for (final i in s.items) if (!identical(i, live)) i,
       ]);
       _persist();
       if (!_hints.isClosed) {
@@ -212,21 +223,26 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     }
   }
 
-  void _setBinaryProgress(AttachedBinaryFile item, double fraction) {
+  /// Pushes a new progress fraction for [item] and returns the instance that
+  /// replaced it in the tray — the tray is immutable, so callers that keep
+  /// updating the same chip must carry the newest instance forward.
+  AttachedBinaryFile _setBinaryProgress(
+    AttachedBinaryFile item,
+    double fraction,
+  ) {
     final s = state;
-    if (s is! AttachmentAttached) return;
+    if (s is! AttachmentAttached) return item;
+    final updated = AttachedBinaryFile(
+      name: item.name,
+      size: item.size,
+      phonePath: item.phonePath,
+      progress: fraction,
+    );
     _emitTray([
       for (final i in s.items)
-        if (identical(i, item))
-          AttachedBinaryFile(
-            name: (i as AttachedBinaryFile).name,
-            size: i.size,
-            phonePath: i.phonePath,
-            progress: fraction,
-          )
-        else
-          i,
+        if (identical(i, item)) updated else i,
     ]);
+    return updated;
   }
 
   void _replaceItem(AttachmentItem old, AttachmentItem replacement) {

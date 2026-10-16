@@ -85,6 +85,15 @@ class _FakeUploads implements IUploadService {
   final List<String> uploads = [];
   final List<String?> rooms = [];
 
+  /// Fractions reported as "chunks sent", against [progressTotal].
+  ///
+  /// More than one entry also makes the fake poll `shouldCancel` BETWEEN the
+  /// ticks, the way [UploadService] does between chunks — the shell that only
+  /// reported one tick could never catch a chip whose identity the tray had
+  /// already rebuilt.
+  List<int> progressSends = const [5];
+  int progressTotal = 10;
+
   @override
   Future<UploadedFile> upload({
     required String path,
@@ -99,7 +108,19 @@ class _FakeUploads implements IUploadService {
     uploads.add(name);
     rooms.add(room);
     if (error != null) throw error!;
-    onProgress?.call(5, 10);
+    // The real service writes the start frame (an `await`) BEFORE the first
+    // cancel poll, and that hop is also what lets `pickFile` finish emitting the
+    // tray. Without it this fake runs entirely inside `pickFile`, before any
+    // tray exists — which is precisely why the stale-identity bug stayed
+    // invisible here: `_setBinaryProgress` bailed out and never rebuilt the
+    // chip, so `identical` matching kept working by accident.
+    await Future<void>.microtask(() {});
+    for (final sent in progressSends) {
+      if (progressSends.length > 1 && shouldCancel?.call() == true) {
+        throw const UploadError('cancelled', 'Upload cancelled');
+      }
+      onProgress?.call(sent, progressTotal);
+    }
     return result ??
         const UploadedFile(name: 'deck.pdf', path: '/uploads/room/deck.pdf');
   }
@@ -356,6 +377,39 @@ void main() {
     expect(vm.takeForSend().files, isEmpty); // nothing left
     vm.dispose();
   });
+
+  test(
+    'a multi-chunk upload survives its own progress ticks — the tray rebuilds '
+    'the chip on every tick, so the upload must follow the fresh instance '
+    'instead of treating itself as cancelled after chunk 0',
+    () async {
+      final uploads = _FakeUploads()
+        ..progressSends = const [1, 2]
+        ..progressTotal = 2;
+      final vm = AttachmentViewModel(
+        _FakePicker(),
+        _FakeAnyPicker()
+          ..nexts = const [
+            BinaryFilePick(name: 'big.mp3', path: '/sdcard/big.mp3', size: 4300000),
+          ],
+        uploads,
+        _FakeActions(),
+      );
+      await vm.pickFile();
+      await Future<void>.delayed(Duration.zero);
+
+      final landed =
+          ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile);
+      expect(
+        landed.landed,
+        isTrue,
+        reason: 'a chip that reported progress must still flip to landed',
+      );
+      expect(vm.anyUploading, isFalse);
+      expect(uploads.uploads, ['big.mp3']);
+      vm.dispose();
+    },
+  );
 
   test(
     'a binary pick attaches and lands: upload runs on pick, '
