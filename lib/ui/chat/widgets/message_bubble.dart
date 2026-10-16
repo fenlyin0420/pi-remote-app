@@ -14,6 +14,54 @@ class UserBubble extends StatelessWidget {
   final UserMsg message;
   const UserBubble(this.message, {super.key});
 
+  /// Multi-attachment layout: a caption card first (when the message has
+  /// text), then one bubble per image and per file, each 6px below the
+  /// previous one.
+  static List<Widget> _attachmentKids(
+    List<MessageImage> images,
+    List<MessageFile> files,
+    bool hasCaption,
+    String text,
+    AppColors colors,
+    AppTypography typo,
+    bool isFailed,
+  ) {
+    final kids = <Widget>[];
+    var placed = 0;
+    Widget wrap(int i, Widget w) => i > 0
+        ? Padding(padding: const EdgeInsets.only(top: 6), child: w)
+        : w;
+    if (hasCaption) {
+      kids.add(
+        Container(
+          decoration: BoxDecoration(
+            color: colors.userBubble,
+            borderRadius: BorderRadius.circular(12),
+            border:
+                isFailed ? Border.all(color: colors.error, width: 1) : null,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+          // Selectable so the user can copy their own message (the agent
+          // reply is already selectable via AgentMarkdown).
+          child: SelectableText(
+            text,
+            style: typo.sansBody.copyWith(color: colors.text),
+          ),
+        ),
+      );
+      placed++;
+    }
+    for (final image in images) {
+      kids.add(wrap(placed, ImageBubble(image: image, isFailed: isFailed)));
+      placed++;
+    }
+    for (final file in files) {
+      kids.add(wrap(placed, FileBubble(file: file, isFailed: isFailed)));
+      placed++;
+    }
+    return kids;
+  }
+
   @override
   Widget build(BuildContext context) {
     // Plan/24-fix-app-source-of-truth: render the lifecycle stage of
@@ -23,11 +71,13 @@ class UserBubble extends StatelessWidget {
     final isPending = message.status == UserMsgStatus.pending;
     final isFailed = message.status == UserMsgStatus.failed;
     final isSteering = message.steering;
-    // Plan/30 — when an image is attached the bubble becomes an ImageBubble
-    // (thumbnail + caption); an uploaded text file gets a name+path card.
-    // Otherwise the existing text card.
-    final image = message.image;
-    final file = message.file;
+    // Plan/30/63 — attachments render as bubbles: one ImageBubble per image
+    // and one FileBubble per file. A single attachment keeps the legacy look
+    // (the caption reads inside the card); several attachments stack a
+    // caption card (when the message has text) plus one bubble per item.
+    final images = message.images;
+    final files = message.files;
+    final hasCaption = message.text.trim().isNotEmpty;
     final colors = context.colors;
     final typo = context.typo;
     return Align(
@@ -39,37 +89,35 @@ class UserBubble extends StatelessWidget {
           children: [
             Opacity(
               opacity: isPending ? 0.6 : 1.0,
-              child: image != null
-                  ? ImageBubble(
-                      image: image,
-                      caption: message.text,
-                      isFailed: isFailed,
-                    )
-                  : file != null
-                  ? FileBubble(
-                      file: file,
-                      caption: message.text,
-                      isFailed: isFailed,
-                    )
-                  : Container(
-                      decoration: BoxDecoration(
-                        color: colors.userBubble,
-                        borderRadius: BorderRadius.circular(12),
-                        border: isFailed
-                            ? Border.all(color: colors.error, width: 1)
-                            : null,
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 13,
-                        vertical: 10,
-                      ),
-                      // Selectable so the user can copy their own message (the
-                      // agent reply is already selectable via AgentMarkdown).
-                      child: SelectableText(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: images.length == 1 && files.isEmpty
+                    ? [
+                        ImageBubble(
+                          image: images.first,
+                          caption: message.text,
+                          isFailed: isFailed,
+                        ),
+                      ]
+                    : files.length == 1 && images.isEmpty
+                    ? [
+                        FileBubble(
+                          file: files.first,
+                          caption: message.text,
+                          isFailed: isFailed,
+                        ),
+                      ]
+                    : _attachmentKids(
+                        images,
+                        files,
+                        hasCaption,
                         message.text,
-                        style: typo.sansBody.copyWith(color: colors.text),
+                        colors,
+                        typo,
+                        isFailed,
                       ),
-                    ),
+              ),
             ),
             if (isPending || isSteering || isFailed)
               Padding(

@@ -51,6 +51,12 @@ abstract class IAnyFilePickerService {
   /// cancelled; [FileTooLargeException] / [NotTextFileException]-free —
   /// binary is a first-class result, not an error.
   Future<PickedFile?> pickFile();
+
+  /// Pick several files at once (unrestricted) and classify each. Null when
+  /// the user cancelled. An oversized file still throws [FileTooLargeException]
+  /// — the already-picked siblings do not ride along (the caller drops the
+  /// whole batch, the hint explains why).
+  Future<List<PickedFile>?> pickFiles();
 }
 
 class AnyFilePickerService implements IAnyFilePickerService {
@@ -63,7 +69,20 @@ class AnyFilePickerService implements IAnyFilePickerService {
   Future<PickedFile?> pickFile() async {
     final source = await _backend.pick();
     if (source == null) return null; // user cancelled
+    return _classify(source);
+  }
 
+  @override
+  Future<List<PickedFile>?> pickFiles() async {
+    final sources = await _backend.pickMany();
+    if (sources == null) return null; // user cancelled
+    return [
+      for (final source in sources) _classify(source),
+    ];
+  }
+
+  /// Content sniff + classification for one picked source.
+  PickedFile _classify(PickedSource source) {
     // Bounded head for the content sniff — the same rule and cap as the text
     // picker, so a file that would have been attached as text still is.
     final Uint8List head;

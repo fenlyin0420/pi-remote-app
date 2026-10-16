@@ -3,10 +3,10 @@ import 'package:app/data/images/image_picker_service.dart';
 
 /// Composer attachment state.
 ///
-/// Models the one-attachment pick lifecycle (empty → picking → attached) and
-/// carries [visionSupported] so the image entry points can grey out for a
-/// text-only model. `visionSupported` is tri-state: `true`/`false` once the
-/// model catalogue is known, `null` while unknown (don't gate yet).
+/// Models the pick lifecycle (empty → picking → attached) and carries
+/// [visionSupported] so the image entry points can grey out for a text-only
+/// model. `visionSupported` is tri-state: `true`/`false` once the model
+/// catalogue is known, `null` while unknown (don't gate yet).
 ///
 /// Vision never gates a *file*: any model can read a text file.
 sealed class AttachmentState {
@@ -31,26 +31,15 @@ final class AttachmentEmpty extends AttachmentState {
   int get hashCode => visionSupported.hashCode;
 }
 
-/// A pick is in flight (camera/gallery/file sheet → read/compress).
-final class AttachmentPicking extends AttachmentState {
-  const AttachmentPicking({super.visionSupported});
-
-  @override
-  bool operator ==(Object other) =>
-      other is AttachmentPicking && other.visionSupported == visionSupported;
-
-  @override
-  int get hashCode => visionSupported.hashCode;
+/// One attachment in the composer's tray. Multiple items of any mix (image +
+/// text files + binary files, Plan/63) coexist; each chip in the preview row
+/// is one item and can be removed independently.
+sealed class AttachmentItem {
+  const AttachmentItem();
 }
 
-/// What is attached: exactly one of an image, a text file, or a binary
-/// file (Plan/62 — its upload runs on pick and the payload flips to
-/// "ready" when the Pi confirms).
-sealed class AttachmentPayload {
-  const AttachmentPayload();
-}
-
-final class AttachedImage extends AttachmentPayload {
+/// A picked, on-device-compressed image (base64-encodes at send time).
+final class AttachedImage extends AttachmentItem {
   const AttachedImage(this.image);
 
   final PickedImage image;
@@ -63,7 +52,8 @@ final class AttachedImage extends AttachmentPayload {
   int get hashCode => identityHashCode(image);
 }
 
-final class AttachedTextFile extends AttachmentPayload {
+/// A text file whose content rides inline on the message (Plan/30).
+final class AttachedTextFile extends AttachmentItem {
   const AttachedTextFile(this.file);
 
   final PickedTextFile file;
@@ -77,21 +67,27 @@ final class AttachedTextFile extends AttachmentPayload {
 }
 
 /// A non-text file being streamed to the Pi (Plan/62). [landedPath] is null
-/// while the upload is in flight; once set the composer may send — the
+/// while the upload is in flight; once set the item counts as sendable — the
 /// message then references the file by path only. [progress] is 0–1 while
 /// uploading and 1 when landed (null = not started, e.g. a cancelled pick).
-final class AttachedBinaryFile extends AttachmentPayload {
+final class AttachedBinaryFile extends AttachmentItem {
   const AttachedBinaryFile({
     required this.name,
     required this.size,
     this.landedPath,
     this.progress,
+    this.phonePath,
   });
 
   final String name;
   final int size;
   final String? landedPath;
   final double? progress;
+
+  /// Where the bytes live on the phone (the picker's cache path) — kept for
+  /// the durable store so an unfinished upload can restart on re-entry.
+  /// Excluded from equality: progress ticks rebuild the item.
+  final String? phonePath;
 
   /// The Pi confirmed; the send path may reference [landedPath].
   bool get landed => landedPath != null;
@@ -108,33 +104,30 @@ final class AttachedBinaryFile extends AttachmentPayload {
   int get hashCode => Object.hash(name, size, landedPath, progress);
 }
 
-/// One attachment is set and previewed in the composer.
+/// The tray holds at least one item and previews it in the composer, one chip
+/// per item.
 final class AttachmentAttached extends AttachmentState {
-  const AttachmentAttached({required this.payload, super.visionSupported});
+  const AttachmentAttached({required this.items, super.visionSupported});
 
-  final AttachmentPayload payload;
+  final List<AttachmentItem> items;
 
-  /// The attached image, or null when the payload is a file.
-  PickedImage? get image =>
-      payload is AttachedImage ? (payload as AttachedImage).image : null;
-
-  /// The attached text file, or null when the payload is an image.
-  PickedTextFile? get file =>
-      payload is AttachedTextFile ? (payload as AttachedTextFile).file : null;
-
-  /// The attached binary file (Plan/62), or null otherwise.
-  AttachedBinaryFile? get binaryFile => payload is AttachedBinaryFile
-      ? payload as AttachedBinaryFile
-      : null;
+  /// Plan/63 — wait-all send gating: true while any binary upload is still in
+  /// flight. Images and text files are instant (on-device), so only binaries
+  /// hold the send back.
+  bool get anyUploading =>
+      items.any((i) => i is AttachedBinaryFile && !i.landed);
 
   @override
   bool operator ==(Object other) =>
       other is AttachmentAttached &&
-      other.payload == payload &&
+      other.items.length == items.length &&
+      [
+        for (var i = 0; i < items.length; i++) other.items[i] == items[i],
+      ].every((same) => same) &&
       other.visionSupported == visionSupported;
 
   @override
-  int get hashCode => Object.hash(payload, visionSupported);
+  int get hashCode => Object.hashAll(items) ^ visionSupported.hashCode;
 }
 
 /// One-shot hints the composer asks the host page to surface (snackbar /

@@ -545,23 +545,20 @@ class ChatPage extends StatelessWidget {
       // so a read() is enough here.
       voice: context.read<VoiceInputViewModel>(),
       onVoiceHint: (hint) => _handleVoiceHint(context, hint),
-      // Plan/30 — attachments: one image or one text file.
-      // takeImageForSend()/takeFileForSend() read + clear the attachment so it
-      // rides along with the (optionally empty) caption. Attach-button gating
-      // by vision / already-attached is internal to InputBar; the host only
-      // gates by channel availability.
+      // Plan/63 — the attachment tray (any mix of images, files, binaries);
+      // takeForSend() hands over everything and clears the tray. InputBar
+      // gates the send until all binary uploads have landed (wait-all), so a
+      // landed path is guaranteed by the time this runs.
       attachment: attachmentVm,
       onOpenAttach: actionsEnabled
           ? () => _openAttach(context, attachmentVm)
           : null,
       onSend: (text) {
-        final attachments = attachmentVm;
-        // Only one of the two is ever set (the attach button is disabled once
-        // something is attached).
+        final sent = attachmentVm.takeForSend();
         vm.sendMessage(
           text,
-          image: attachments.takeImageForSend(),
-          file: attachments.takeFileForSend(),
+          images: sent.images.isEmpty ? null : sent.images,
+          files: sent.files.isEmpty ? null : sent.files,
         );
       },
       // Command channel. `/slash` and `!shell` go to the Pi instead of the

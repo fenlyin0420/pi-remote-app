@@ -184,7 +184,7 @@ void main() {
     final s = await setup();
     await s.sync.sendMessage(
       'summarise',
-      file: OutgoingFile(name: 'notes.md', text: '# hi'),
+      files: [OutgoingFile(name: 'notes.md', text: '# hi')],
     );
     await _settle();
 
@@ -196,8 +196,8 @@ void main() {
     expect(frame.files!.single.path, isNull, reason: 'the Pi decides the path');
 
     final row = messages(s.epk).single;
-    expect(row.file?.name, 'notes.md');
-    expect(row.file?.path, isNull);
+    expect(row.files.single.name, 'notes.md');
+    expect(row.files.single.path, isNull);
     expect(row.pending, isTrue);
     s.conn.dispose();
     s.sync.dispose();
@@ -207,7 +207,7 @@ void main() {
     final s = await setup();
     await s.sync.sendMessage(
       'summarise',
-      file: OutgoingFile(name: 'notes.md', text: '# hi'),
+      files: [OutgoingFile(name: 'notes.md', text: '# hi')],
     );
     await _settle();
 
@@ -216,10 +216,12 @@ void main() {
       UserInput(
         id: id,
         text: 'summarise',
-        file: const WireFile(
-          name: 'notes.md',
-          path: '/home/p/.pi/remote/uploads/main/notes.md',
-        ),
+        files: const [
+          WireFile(
+            name: 'notes.md',
+            path: '/home/p/.pi/remote/uploads/main/notes.md',
+          ),
+        ],
       ),
     );
     await _settle();
@@ -228,7 +230,7 @@ void main() {
     expect(m, hasLength(1), reason: 'echo dedupes by id');
     expect(m.single.pending, isFalse);
     expect(
-      m.single.file?.path,
+      m.single.files.single.path,
       '/home/p/.pi/remote/uploads/main/notes.md',
       reason: 'the bubble can show where the file went',
     );
@@ -247,10 +249,12 @@ void main() {
             ts: 10,
             id: 'u1',
             text: 'summarise',
-            file: WireFile(
-              name: 'report.csv',
-              path: '/home/p/.pi/remote/uploads/main/report.csv',
-            ),
+            files: [
+              WireFile(
+                name: 'report.csv',
+                path: '/home/p/.pi/remote/uploads/main/report.csv',
+              ),
+            ],
           ),
           AgentMessageEvt(ts: 11, inReplyTo: 'u1', text: 'done'),
         ],
@@ -261,8 +265,8 @@ void main() {
 
     final user = messages(s.epk).firstWhere((m) => m.role == MsgRole.user);
     expect(user.text, 'summarise');
-    expect(user.file?.name, 'report.csv');
-    expect(user.file?.path, '/home/p/.pi/remote/uploads/main/report.csv');
+    expect(user.files.single.name, 'report.csv');
+    expect(user.files.single.path, '/home/p/.pi/remote/uploads/main/report.csv');
     s.conn.dispose();
     s.sync.dispose();
   });

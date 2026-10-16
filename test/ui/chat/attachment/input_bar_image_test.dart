@@ -28,6 +28,8 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> pickFromCamera() async => next;
   @override
   Future<PickedImage?> pickFromGallery() async => next;
+  @override
+  Future<List<PickedImage>?> pickMultipleFromGallery() async => [next];
 }
 
 class _FakeAnyPicker implements IAnyFilePickerService {
@@ -37,6 +39,9 @@ class _FakeAnyPicker implements IAnyFilePickerService {
   );
   @override
   Future<PickedFile?> pickFile() async => next;
+  @override
+  Future<List<PickedFile>?> pickFiles() async =>
+      next == null ? null : [next!];
 }
 
 class _FakeUploads implements IUploadService {
@@ -188,8 +193,9 @@ void main() {
                 onCancel: () => cancelled++,
                 onSend: (text) {
                   sentText = text;
-                  sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
-                  sentFile = vm.takeFileForSend();
+                  final sent = vm.takeForSend(); // mirrors chat_page wiring
+                  sentImage = sent.images.isEmpty ? null : sent.images.first;
+                  sentFile = sent.files.isEmpty ? null : sent.files.first;
                 },
               ),
             ),
@@ -236,12 +242,13 @@ void main() {
 
     expect(find.byKey(const Key('attach-preview')), findsOneWidget);
     expect(find.byIcon(LucideIcons.send600), findsOneWidget); // send-mode (#6)
-    // Attach button greys out while an image is attached (one max, #4).
+    // Plan/63 — the tray holds several items, so the paperclip stays live
+    // even while an image is attached.
     expect(
       tester
           .widget<IconButton>(find.byKey(const Key('input-bar-attach')))
           .onPressed,
-      isNull,
+      isNotNull,
     );
 
     await tester.tap(find.byKey(const Key('attach-remove')));
@@ -269,8 +276,9 @@ void main() {
                   onCancel: streaming ? () {} : null,
                   onSend: (text) {
                     sentText = text;
-                    sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
-                    sentFile = vm.takeFileForSend();
+                    final sent = vm.takeForSend(); // mirrors chat_page wiring
+                    sentImage = sent.images.isEmpty ? null : sent.images.first;
+                    sentFile = sent.files.isEmpty ? null : sent.files.first;
                   },
                 ),
               ),
@@ -313,7 +321,8 @@ void main() {
                 onOpenAttach: () {},
                 onSend: (text) {
                   sentText = text;
-                  sent = vm.takeImageForSend(); // mirrors chat_page wiring
+                  final images = vm.takeForSend().images;
+                  sent = images.isEmpty ? null : images.first;
                 },
               ),
             ),

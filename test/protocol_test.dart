@@ -537,9 +537,9 @@ void main() {
                 ],
               })
               as UserInput;
-      expect(msg.image, isNotNull);
-      expect(msg.image!.data, 'QUJD');
-      expect(msg.image!.mime, 'image/jpeg');
+      expect(msg.images, hasLength(1));
+      expect(msg.images.single.data, 'QUJD');
+      expect(msg.images.single.mime, 'image/jpeg');
     });
 
     test('user_message echo with steer behavior parses on UserInput', () {
@@ -574,7 +574,7 @@ void main() {
                 'text': 'plain',
               })
               as UserInput;
-      expect(msg.image, isNull);
+      expect(msg.images, isEmpty);
     });
 
     test('session_history user_input event carries the image', () {
@@ -598,7 +598,7 @@ void main() {
               })
               as SessionHistory;
       final evt = hist.events.single as UserInputEvt;
-      expect(evt.image?.data, 'QUJD');
+      expect(evt.images.single.data, 'QUJD');
     });
 
     test('WireModel.vision roundtrips and defaults to false', () {

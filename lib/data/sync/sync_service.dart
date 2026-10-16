@@ -364,10 +364,12 @@ class SyncService extends Service {
 
   Future<void> sendMessage(
     String text, {
-    MessageImage? image,
-    OutgoingFile? file,
+    List<MessageImage>? images,
+    List<OutgoingFile>? files,
     UserMessageStreamingBehavior? streamingBehavior,
   }) async {
+    final imgs = images ?? const [];
+    final fls = files ?? const [];
     final epk = _activeEpk;
     final id = _newId();
     final now = DateTime.now();
@@ -383,10 +385,10 @@ class SyncService extends Service {
           seq: seq,
           role: MsgRole.user,
           text: text,
-          image: image,
-          // The Pi's path only arrives with the echo; the pending row shows
-          // the name so the bubble reads correctly while it is in flight.
-          file: file == null ? null : MessageFile(name: file.name),
+          images: imgs,
+          // The Pi's path only arrives with the echo; the pending rows show
+          // the names so the bubbles read correctly while they are in flight.
+          files: fls.map((f) => MessageFile(name: f.name)).toList(),
           ts: now,
           pending: true,
           steering: isSteer,
@@ -396,7 +398,7 @@ class SyncService extends Service {
         _setWorking(
           t!,
           true,
-          preview: _preview(text, image, _filePreview(file)),
+          preview: _preview(text, imgs, fls.map((f) => MessageFile(name: f.name)).toList()),
           replyTo: id,
         );
       }
@@ -424,18 +426,20 @@ class SyncService extends Service {
     if (!isSteer && t != null) {
       _emitStreaming(t, StreamingMessage(inReplyTo: id));
     }
-    debugPrint('[msg-send] id=$id text=${_preview(text, image, _filePreview(file))}');
+    debugPrint('[msg-send] id=$id text=${_preview(text, imgs, fls.map((f) => MessageFile(name: f.name)).toList())}');
     await ch.send(
       UserMessage(
         id: id,
         text: text,
         streamingBehavior: streamingBehavior,
-        images: image == null
+        images: imgs.isEmpty
             ? null
-            : [WireImage(data: image.data, mime: image.mime)],
-        files: file == null
+            : imgs.map((i) => WireImage(data: i.data, mime: i.mime)).toList(),
+        files: fls.isEmpty
             ? null
-            : [WireFile(name: file.name, text: file.text, path: file.path)],
+            : fls.map(
+                (f) => WireFile(name: f.name, text: f.text, path: f.path),
+              ).toList(),
       ),
     );
   }
@@ -667,8 +671,8 @@ class SyncService extends Service {
       case UserInput(
         :final id,
         :final text,
-        :final image,
-        :final file,
+        :final images,
+        :final files,
         :final streamingBehavior,
       ):
         if (t.queuedMessages.any((item) => item.id == id)) {
@@ -683,7 +687,7 @@ class SyncService extends Service {
           _setWorking(
             t,
             true,
-            preview: _preview(text, _messageImage(image), _messageFile(file)),
+            preview: _preview(text, _messageImages(images), _messageFiles(files)),
             replyTo: id,
           );
           if (t.streaming?.inReplyTo != id) {
@@ -791,8 +795,8 @@ class SyncService extends Service {
       case UserInput(
         :final id,
         :final text,
-        :final image,
-        :final file,
+        :final images,
+        :final files,
         :final streamingBehavior,
       ):
         // Echo dedupes against the optimistic row (same id): confirm it
@@ -813,14 +817,14 @@ class SyncService extends Service {
           (seq, existing) => existing != null
               // The echo is where the Pi reports the path it saved an upload
               // to, so merge it in rather than keeping the local name-only row.
-              ? existing.copyWith(pending: false, file: _messageFile(file))
+              ? existing.copyWith(pending: false, files: _messageFiles(files))
               : MessageRecord(
                   id: id,
                   seq: seq,
                   role: MsgRole.user,
                   text: text,
-                  image: _messageImage(image),
-                  file: _messageFile(file),
+                  images: _messageImages(images),
+                  files: _messageFiles(files),
                   ts: DateTime.now(),
                 ),
         );
@@ -1237,15 +1241,15 @@ class SyncService extends Service {
     final toolNameByCallId = <String, String>{};
     for (final e in events) {
       switch (e) {
-        case UserInputEvt(:final id, :final text, :final image, :final file):
+        case UserInputEvt(:final id, :final text, :final images, :final files):
           out.add(
             MessageRecord(
               id: id,
               seq: seq++,
               role: MsgRole.user,
               text: text,
-              image: _messageImage(image),
-              file: _messageFile(file),
+              images: _messageImages(images),
+              files: _messageFiles(files),
               ts: _tsOf(e),
               model: e.model,
             ),
@@ -1854,22 +1858,18 @@ class SyncService extends Service {
   }
 
   /// Echo/history wire shape → the persisted+rendered shape (the content stays
-  /// on the Pi; only the name and the landed path come back).
-  static MessageFile? _messageFile(WireFile? file) =>
-      file == null ? null : MessageFile(name: file.name, path: file.path);
+  /// on the Pi; only the names and the landed paths come back).
+  static List<MessageFile> _messageFiles(List<WireFile> files) => files
+      .map((f) => MessageFile(name: f.name, path: f.path))
+      .toList();
 
-  static MessageImage? _messageImage(WireImage? image) => image == null
-      ? null
-      : MessageImage(data: image.data, mime: image.mime);
+  static List<MessageImage> _messageImages(List<WireImage> images) => images
+      .map((i) => MessageImage(data: i.data, mime: i.mime))
+      .toList();
 
-  /// Send-path projection: the preview only needs the name (the content is
-  /// not something we want to keep a second copy of in memory).
-  static MessageFile? _filePreview(OutgoingFile? file) =>
-      file == null ? null : MessageFile(name: file.name);
-
-  static String _preview(String text, MessageImage? image, MessageFile? file) {
-    if (text.isEmpty && image != null) return '📷 Image';
-    if (text.isEmpty && file != null) return '📄 ${file.name}';
+  static String _preview(String text, List<MessageImage> images, List<MessageFile> files) {
+    if (text.isEmpty && images.isNotEmpty) return '📷 Image';
+    if (text.isEmpty && files.isNotEmpty) return '📄 ${files.first.name}';
     return text.length <= 80 ? text : '${text.substring(0, 80)}…';
   }
 

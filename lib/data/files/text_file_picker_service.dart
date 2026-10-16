@@ -208,6 +208,11 @@ class PickedSource {
 abstract class TextFilePickerBackend {
   /// Pick one file, unrestricted. Returns null when the user cancelled.
   Future<PickedSource?> pick();
+
+  /// Pick several files at once (unrestricted). Returns null when the user
+  /// cancelled; an empty list can't happen — the sheet closes only on a pick
+  /// or a cancel.
+  Future<List<PickedSource>?> pickMany();
 }
 
 class PlatformTextFilePickerBackend implements TextFilePickerBackend {
@@ -230,6 +235,24 @@ class PlatformTextFilePickerBackend implements TextFilePickerBackend {
       // `withData: false` keeps an oversized pick out of memory; the service
       // then reads a bounded slice through `path`.
       return PickedSource(name: picked.name, path: picked.path, bytes: picked.bytes);
+    } on PlatformException {
+      rethrow;
+    }
+  }
+
+  @override
+  Future<List<PickedSource>?> pickMany() async {
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.any,
+        withData: false,
+        allowMultiple: true,
+      );
+      final picked = result?.files;
+      if (picked == null || picked.isEmpty) return null;
+      return picked
+          .map((p) => PickedSource(name: p.name, path: p.path, bytes: p.bytes))
+          .toList();
     } on PlatformException {
       rethrow;
     }

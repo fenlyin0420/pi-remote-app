@@ -23,6 +23,12 @@ class _FakeBackend implements ImagePickerBackend {
   }
 
   @override
+  Future<List<String>?> pickMultiple(ImageSourceKind source) async {
+    if (denied) throw const ImagePermissionDeniedException();
+    return path == null ? null : [path!];
+  }
+
+  @override
   Future<Uint8List> compress(
     String path, {
     required int maxSide,

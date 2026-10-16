@@ -1384,22 +1384,18 @@ class PairOk extends ServerMessage {
 /// RPC). The Pi emits this so the app can show what was sent even though it
 /// did not originate from the app's own [UserMessage] flow.
 /// Parse an optional `images` array (the Pi echoes back whatever the app
-/// sent on `user_message`). Returns the first image — the feature is one
-/// image per message — or null when absent/empty.
-WireImage? _firstImage(dynamic raw) {
-  if (raw is! List || raw.isEmpty) return null;
-  final first = raw.first;
-  if (first is! Map) return null;
-  return WireImage.fromJson(first.cast<String, dynamic>());
+/// sent on `user_message`). Returns the full list — multiple attachments per
+/// message are supported — or an empty list when absent.
+List<WireImage> _imageList(dynamic raw) {
+  if (raw is! List || raw.isEmpty) return const [];
+  return raw.whereType<Map>().map((m) => WireImage.fromJson(m.cast<String, dynamic>())).toList();
 }
 
-/// Parse an optional `files` array. Same one-per-message projection as
-/// [_firstImage].
-WireFile? _firstFile(dynamic raw) {
-  if (raw is! List || raw.isEmpty) return null;
-  final first = raw.first;
-  if (first is! Map) return null;
-  return WireFile.fromJson(first.cast<String, dynamic>());
+/// Parse an optional `files` array. Returns the full list — multiple
+/// attachments per message are supported — or an empty list when absent.
+List<WireFile> _fileList(dynamic raw) {
+  if (raw is! List || raw.isEmpty) return const [];
+  return raw.whereType<Map>().map((m) => WireFile.fromJson(m.cast<String, dynamic>())).toList();
 }
 
 class QueuedMessageItem {
@@ -1478,18 +1474,18 @@ class UserInput extends ServerMessage {
   /// for steering).
   final UserMessageStreamingBehavior? streamingBehavior;
 
-  /// Plan/30 — echoed-back attached image (the Pi rebroadcasts `images`).
-  final WireImage? image;
+  /// Plan/30 — echoed-back attached images (the Pi rebroadcasts `images`).
+  final List<WireImage> images;
 
-  /// Echoed-back uploaded file — name plus where the Pi landed it.
-  final WireFile? file;
+  /// Echoed-back uploaded files — each name plus where the Pi landed it.
+  final List<WireFile> files;
 
   UserInput({
     required this.id,
     required this.text,
     this.streamingBehavior,
-    this.image,
-    this.file,
+    this.images = const [],
+    this.files = const [],
   });
 
   factory UserInput.fromJson(Map<String, dynamic> j) => UserInput(
@@ -1498,8 +1494,8 @@ class UserInput extends ServerMessage {
     streamingBehavior: UserMessageStreamingBehavior.fromWire(
       j['streaming_behavior'] as String?,
     ),
-    image: _firstImage(j['images']),
-    file: _firstFile(j['files']),
+    images: _imageList(j['images']),
+    files: _fileList(j['files']),
   );
 }
 
@@ -1659,8 +1655,8 @@ sealed class SessionHistoryEvent {
         model: model,
         id: j['id'] as String,
         text: j['text'] as String,
-        image: _firstImage(j['images']),
-        file: _firstFile(j['files']),
+        images: _imageList(j['images']),
+        files: _fileList(j['files']),
       ),
       'tool_request' => ToolRequestEvt(
         ts: ts,
@@ -1724,20 +1720,20 @@ class UserInputEvt extends SessionHistoryEvent {
   final String id;
   final String text;
 
-  /// Plan/30 — image replayed from history (decision #8 — bytes always
+  /// Plan/30 — images replayed from history (decision #8 — bytes always
   /// travel, so the bubble reconstructs on cold start / reconnect).
-  final WireImage? image;
+  final List<WireImage> images;
 
-  /// Text file replayed from history — name plus the Pi's path (the content
+  /// Files replayed from history — each name plus the Pi's path (the content
   /// never leaves the Pi, so there is nothing else to replay).
-  final WireFile? file;
+  final List<WireFile> files;
 
   const UserInputEvt({
     required super.ts,
     required this.id,
     required this.text,
-    this.image,
-    this.file,
+    this.images = const [],
+    this.files = const [],
     super.model,
   });
 }

@@ -124,21 +124,22 @@ class UserMsg extends ChatMessage {
   final UserMsgStatus status;
   final bool steering;
 
-  /// Plan/30 — optional attached image (one max). `null` for text-only
-  /// messages, which is every message before this feature.
-  final MessageImage? image;
+  /// Plan/30 — attached images (base64 bytes + mime, replayed on history). Empty
+  /// for text-only messages, which is every message before this feature.
+  /// Multiple images per message are supported.
+  final List<MessageImage> images;
 
-  /// Optional uploaded text file (one max, never alongside an image). Carries
-  /// the name always and the Pi's path once it landed the file.
-  final MessageFile? file;
+  /// Uploaded files. Each carries the name always and the Pi's path once it
+  /// landed the file. Multiple files per message are supported.
+  final List<MessageFile> files;
 
   const UserMsg({
     required super.id,
     required this.text,
     this.status = UserMsgStatus.confirmed,
     this.steering = false,
-    this.image,
-    this.file,
+    this.images = const [],
+    this.files = const [],
     super.ts,
     super.model,
   });
@@ -148,8 +149,8 @@ class UserMsg extends ChatMessage {
     text: text,
     status: status ?? this.status,
     steering: steering ?? this.steering,
-    image: image,
-    file: file,
+    images: images,
+    files: files,
     ts: ts,
     model: model,
   );
@@ -161,11 +162,28 @@ class UserMsg extends ChatMessage {
       other.text == text &&
       other.status == status &&
       other.steering == steering &&
-      other.image == image &&
-      other.file == file;
+      _listEquals(other.images, images) &&
+      _listEquals(other.files, files);
 
   @override
-  int get hashCode => Object.hash(id, text, status, steering, image, file);
+  int get hashCode => Object.hash(
+    id,
+    text,
+    status,
+    steering,
+    Object.hashAll(images),
+    Object.hashAll(files),
+  );
+}
+
+/// [UserMsg] equality without a Flutter import (this file is domain-pure).
+bool _listEquals<E>(List<E> a, List<E> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 class AssistantMsg extends ChatMessage {

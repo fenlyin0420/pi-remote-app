@@ -14,13 +14,14 @@ class MessageRecord {
   final MsgRole role;
   final String text;
 
-  /// Plan/30 — attached image (user messages only).
-  final MessageImage? image;
+  /// Plan/30 — attached images (user messages only): base64 bytes + mime.
+  /// Multiple per message are supported.
+  final List<MessageImage> images;
 
-  /// Uploaded text file (user messages only): the name, plus the path the Pi
+  /// Uploaded files (user messages only): each name, plus the path the Pi
   /// landed it at once the echo (or history) reported it. The content is not
-  /// persisted — it lives on the Pi.
-  final MessageFile? file;
+  /// persisted — it lives on the Pi. Multiple per message are supported.
+  final List<MessageFile> files;
 
   /// Tool request+result collapsed into one row (tool messages only).
   final ToolEventData? tool;
@@ -57,8 +58,8 @@ class MessageRecord {
     required this.seq,
     required this.role,
     this.text = '',
-    this.image,
-    this.file,
+    this.images = const [],
+    this.files = const [],
     this.tool,
     this.ts,
     this.pending = false,
@@ -72,8 +73,8 @@ class MessageRecord {
   MessageRecord copyWith({
     int? seq,
     String? text,
-    MessageImage? image,
-    MessageFile? file,
+    List<MessageImage>? images,
+    List<MessageFile>? files,
     ToolEventData? tool,
     bool? pending,
     bool? steering,
@@ -83,8 +84,8 @@ class MessageRecord {
     seq: seq ?? this.seq,
     role: role,
     text: text ?? this.text,
-    image: image ?? this.image,
-    file: file ?? this.file,
+    images: images ?? this.images,
+    files: files ?? this.files,
     tool: tool ?? this.tool,
     ts: ts,
     pending: pending ?? this.pending,
@@ -100,9 +101,14 @@ class MessageRecord {
     'seq': seq,
     'role': role.name,
     'text': text,
-    if (image != null) 'image': {'data': image!.data, 'mime': image!.mime},
-    if (file != null)
-      'file': {'name': file!.name, if (file!.path != null) 'path': file!.path},
+    if (images.isNotEmpty)
+      'images': images
+          .map((i) => {'data': i.data, 'mime': i.mime})
+          .toList(growable: false),
+    if (files.isNotEmpty)
+      'files': files
+          .map((f) => {'name': f.name, if (f.path != null) 'path': f.path})
+          .toList(growable: false),
     if (tool != null) 'tool': tool!.toJson(),
     if (attachment != null) 'attachment': attachment!.toJson(),
     if (ts != null) 'ts': ts!.millisecondsSinceEpoch,
@@ -114,8 +120,6 @@ class MessageRecord {
   };
 
   factory MessageRecord.fromJson(Map<String, dynamic> j) {
-    final imageRaw = j['image'];
-    final fileRaw = j['file'];
     final toolRaw = j['tool'];
     final attachmentRaw = j['attachment'];
     return MessageRecord(
@@ -126,18 +130,10 @@ class MessageRecord {
         orElse: () => MsgRole.assistant,
       ),
       text: (j['text'] as String?) ?? '',
-      image: imageRaw is Map
-          ? MessageImage(
-              data: imageRaw['data'] as String,
-              mime: imageRaw['mime'] as String,
-            )
-          : null,
-      file: fileRaw is Map
-          ? MessageFile(
-              name: (fileRaw['name'] as String?) ?? '',
-              path: fileRaw['path'] as String?,
-            )
-          : null,
+      // New rows store `images`/`files` arrays; rows persisted by older
+      // builds carry the singular `image`/`file` maps — read both.
+      images: _readImages(j),
+      files: _readFiles(j),
       tool: toolRaw is Map
           ? ToolEventData.fromJson(toolRaw.cast<String, dynamic>())
           : null,
@@ -157,6 +153,34 @@ class MessageRecord {
     );
   }
 
+  static List<MessageImage> _readImages(Map<String, dynamic> j) {
+    final raw = j['images'];
+    if (raw is List) {
+      return raw.whereType<Map>().map(
+        (m) => MessageImage(data: m['data'] as String, mime: m['mime'] as String),
+      ).toList();
+    }
+    final old = j['image'];
+    if (old is Map) {
+      return [MessageImage(data: old['data'] as String, mime: old['mime'] as String)];
+    }
+    return const [];
+  }
+
+  static List<MessageFile> _readFiles(Map<String, dynamic> j) {
+    final raw = j['files'];
+    if (raw is List) {
+      return raw.whereType<Map>().map(
+        (m) => MessageFile(name: (m['name'] as String?) ?? '', path: m['path'] as String?),
+      ).toList();
+    }
+    final old = j['file'];
+    if (old is Map) {
+      return [MessageFile(name: (old['name'] as String?) ?? '', path: old['path'] as String?)];
+    }
+    return const [];
+  }
+
   /// Project to the domain [ChatMessage] the chat widgets render.
   ChatMessage toChatMessage() {
     switch (role) {
@@ -166,8 +190,8 @@ class MessageRecord {
           text: text,
           status: pending ? UserMsgStatus.pending : UserMsgStatus.confirmed,
           steering: steering,
-          image: image,
-          file: file,
+          images: images,
+          files: files,
           ts: ts,
           model: model,
         );

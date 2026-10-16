@@ -352,7 +352,7 @@ void main() {
     // running turn like typed text, with the image on the same frame.
     await vm.sendMessage(
       '',
-      image: const MessageImage(data: 'aGk=', mime: 'image/jpeg'),
+      images: const [MessageImage(data: 'aGk=', mime: 'image/jpeg')],
     );
     await Future<void>.delayed(const Duration(milliseconds: 20));
 

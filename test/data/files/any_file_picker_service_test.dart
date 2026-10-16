@@ -14,6 +14,10 @@ class _FakeBackend implements TextFilePickerBackend {
 
   @override
   Future<PickedSource?> pick() async => next;
+
+  @override
+  Future<List<PickedSource>?> pickMany() async =>
+      next == null ? null : [next!];
 }
 
 void main() {

@@ -18,6 +18,10 @@ abstract class IImagePickerService {
   /// Pick from the gallery (system PHPicker / Photo Picker — no permission).
   /// Returns null if the user cancelled.
   Future<PickedImage?> pickFromGallery();
+
+  /// Pick several gallery images at once. Returns null if the user
+  /// cancelled.
+  Future<List<PickedImage>?> pickMultipleFromGallery();
 }
 
 /// A picked + compressed image ready for preview and sending. Bytes are raw
@@ -64,10 +68,22 @@ class ImagePickerService implements IImagePickerService {
   Future<PickedImage?> pickFromGallery() =>
       _pickAndCompress(ImageSourceKind.gallery);
 
+  @override
+  Future<List<PickedImage>?> pickMultipleFromGallery() async {
+    final paths = await _backend.pickMultiple(ImageSourceKind.gallery);
+    if (paths == null) return null; // user cancelled
+    return [
+      for (final path in paths) await _compressPath(path),
+    ];
+  }
+
   Future<PickedImage?> _pickAndCompress(ImageSourceKind source) async {
     final path = await _backend.pick(source);
     if (path == null) return null; // user cancelled
+    return _compressPath(path);
+  }
 
+  Future<PickedImage> _compressPath(String path) async {
     var side = _maxSide;
     var quality = _quality;
     var bytes = await _backend.compress(path, maxSide: side, quality: quality);
@@ -98,6 +114,10 @@ abstract class ImagePickerBackend {
   /// [ImagePermissionDeniedException] on a denied camera permission.
   Future<String?> pick(ImageSourceKind source);
 
+  /// Pick several files (gallery only — the camera captures one shot);
+  /// returns their paths, or null if cancelled.
+  Future<List<String>?> pickMultiple(ImageSourceKind source);
+
   /// Compress [path] to JPEG bounded by [maxSide]px at [quality].
   Future<Uint8List> compress(
     String path, {
@@ -124,6 +144,23 @@ class PlatformImagePickerBackend implements ImagePickerBackend {
     } on PlatformException catch (e) {
       // image_picker surfaces a denied camera/photo permission as a
       // PlatformException with an `*_access_denied` code.
+      if (e.code.contains('access_denied') || e.code.contains('denied')) {
+        throw const ImagePermissionDeniedException();
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<List<String>?> pickMultiple(ImageSourceKind source) async {
+    try {
+      // pickMultiImage has no source parameter — the system picker (photo
+      // library on iOS, document/gallery picker on Android) always targets
+      // stored media, which is the gallery semantics we want.
+      final files = await _picker.pickMultiImage();
+      if (files.isEmpty) return null;
+      return files.map((f) => f.path).toList();
+    } on PlatformException catch (e) {
       if (e.code.contains('access_denied') || e.code.contains('denied')) {
         throw const ImagePermissionDeniedException();
       }

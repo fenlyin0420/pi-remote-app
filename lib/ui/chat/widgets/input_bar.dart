@@ -267,15 +267,10 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _submit() {
-    // Plan/62 — hardware Enter sends the composer; a binary still uploading
-    // has nothing to reference yet, so ignore the tap rather than dropping
-    // the attachment.
+    // Plan/63 wait-all — a binary still uploading has nothing to reference
+    // yet, so ignore the tap rather than dropping the tray.
     final attach = widget.attachment?.state;
-    if (attach is AttachmentAttached &&
-        attach.binaryFile != null &&
-        !attach.binaryFile!.landed) {
-      return;
-    }
+    if (attach is AttachmentAttached && attach.anyUploading) return;
     final text = _controller.text.trim();
     // Plan/30 — an attached image or file makes an empty-caption send valid.
     final hasAttachment = widget.attachment?.hasAttachment ?? false;
@@ -483,31 +478,19 @@ class _InputBarState extends State<InputBar> {
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
 
-    // Plan/30 — attachment (one image or one text file) + Plan/62 binary.
+    // Plan/63 — the attachment tray: any mix of images, text files, and
+    // binary files, one chip per item. The paperclip stays live the whole
+    // turn (the tray holds more than one item) — vision still greys only
+    // the image entries inside the sheet, and the pick rides the next send
+    // as a steer, exactly like typed text.
     final attached = attachState is AttachmentAttached;
-    final hasImage = attachState is AttachmentAttached && attachState.image != null;
-    final attachedFile = attachState is AttachmentAttached ? attachState.file : null;
-    final fileTruncated = attachedFile?.truncated ?? false;
-    final binaryFile =
-        attachState is AttachmentAttached ? attachState.binaryFile : null;
-    // The send stays disabled while the binary upload is still in flight —
-    // a not-yet-landed file has no path the message could reference.
-    final binaryUploading = binaryFile != null && !binaryFile.landed;
+    final trayItems = attached ? attachState.items : const <AttachmentItem>[];
+    // Plan/63 wait-all — the send stays down while ANY binary upload is in
+    // flight: a not-yet-landed file has no path the message could reference.
+    final anyUploading = attached && attachState.anyUploading;
     final hasContent = !_empty || attached;
-    // Vision never gates the attach button itself: the sheet keeps the file
-    // option live and greys out camera/gallery instead.
-    //
-    // A working turn does not gate it either: the pick rides the next send as
-    // a steer, exactly like typed text, so the moment the user wants to hand
-    // the agent a screenshot is the moment the paperclip must be live. The
-    // only hard requirement is an open channel ([onOpenAttach] is null
-    // offline), plus no second attachment (one per message) and no recording
-    // strip covering the row.
     final attachEnabled =
-        widget.onOpenAttach != null &&
-        canInteract &&
-        !showStrip &&
-        !attached;
+        widget.onOpenAttach != null && canInteract && !showStrip;
 
     // Stay reachable for the whole turn, including while the agent is
     // working. Nothing in the sheet is blocked by an in-flight turn —
@@ -541,21 +524,29 @@ class _InputBarState extends State<InputBar> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (hasImage)
-                _AttachmentPreview(
-                  image: attachState.image!,
-                  onRemove: widget.attachment!.removeAttachment,
-                ),
-              if (attachedFile != null)
-                _FileAttachmentPreview(
-                  file: attachedFile,
-                  truncated: fileTruncated,
-                  onRemove: widget.attachment!.removeAttachment,
-                ),
-              if (binaryFile != null)
-                _BinaryAttachmentPreview(
-                  file: binaryFile,
-                  onRemove: widget.attachment!.removeAttachment,
+              if (trayItems.isNotEmpty)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (var i = 0; i < trayItems.length; i++)
+                      switch (trayItems[i]) {
+                        final AttachedImage image => _AttachmentPreview(
+                          image: image.image,
+                          onRemove: () => widget.attachment!.removeItem(i),
+                        ),
+                        final AttachedTextFile file => _FileAttachmentPreview(
+                          file: file.file,
+                          truncated: file.file.truncated,
+                          onRemove: () => widget.attachment!.removeItem(i),
+                        ),
+                        final AttachedBinaryFile binary =>
+                            _BinaryAttachmentPreview(
+                          file: binary,
+                          onRemove: () => widget.attachment!.removeItem(i),
+                        ),
+                      },
+                  ],
                 ),
               for (final item in widget.queuedMessages)
                 _QueuedMessagePreview(
@@ -652,7 +643,7 @@ class _InputBarState extends State<InputBar> {
                   _ComposerActionButton(
                     streaming: widget.streaming,
                     hasContent: hasContent,
-                    disabled: widget.disabled || binaryUploading,
+                    disabled: widget.disabled || anyUploading,
                     onSendText: _submit,
                     onCancel: widget.onCancel,
                     onStartAudio: widget.onStartAudio,

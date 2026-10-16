@@ -12,8 +12,8 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 
-/// Plan/30 — drives the composer's single attachment (one image or one text
-/// file).
+/// Plan/30+62+63 — drives the composer's attachment tray: any mix of images,
+/// text files, and binary files, one chip per item.
 ///
 /// Owns the picked-attachment preview state and tracks whether the active
 /// model accepts images (`vision`). Vision is resolved from the model
@@ -23,8 +23,16 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 /// any model.
 ///
 /// Plan/62 durability: when [AttachmentStore] and a room key are wired in
-/// (see [updateRoom]), the binary attachment survives leaving and re-entering
+/// (see [updateRoom]), the binary attachments survive leaving and re-entering
 /// the room — landed files re-attach as sendable, unfinished uploads restart.
+/// Images and text files ride the message inline and are not persisted.
+///
+/// Plan/63 — the tray holds several items at once. Each binary item streams
+/// to the Pi in its own upload (concurrent, independent progress, independent
+/// failure: a rejected file drops out of the tray without touching its
+/// siblings). The send path takes the whole tray at once: the send button
+/// stays gated while any binary upload is in flight (wait-all, see
+/// [anyUploading]), then [takeForSend] hands over every landed image and file.
 class AttachmentViewModel extends ViewModel<AttachmentState> {
   /// [store] is optional so tests and non-persistent call sites keep the
   /// old four-argument form.
@@ -47,10 +55,14 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   final IActionsRepository _actions;
   final AttachmentStore? _store;
 
-  /// The room this instance's attachment belongs to; the host calls
-  /// [updateRoom] as the peer/room identity resolves and on room switches.
+  /// The room this instance's tray belongs to; the host calls [updateRoom] as
+  /// the peer/room identity resolves and on room switches.
   String? _roomEpk;
   String? _roomId;
+
+  /// Re-entrancy guard for the (modal) pick sheets — the tray preview stays
+  /// up while the sheet is open, so no "picking" state is emitted.
+  bool _picking = false;
 
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _resolvingVision = false;
@@ -58,18 +70,29 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   final StreamController<AttachHint> _hints =
       StreamController<AttachHint>.broadcast();
 
-  /// One-shot hints (permission denied / pick failed / not a text file) for
+  /// One-shot hints (permission denied / pick failed / oversized file) for
   /// the host page.
   Stream<AttachHint> get hints => _hints.stream;
 
-  /// True while any attachment (image or file) is set.
-  bool get hasAttachment => state is AttachmentAttached;
-
-  /// True while an *image* is set (drives the thumbnail preview + the
-  /// image-specific send rules such as the empty-caption send).
-  bool get hasImage {
+  /// The tray's current items (empty outside [AttachmentAttached]).
+  List<AttachmentItem> get _items {
     final s = state;
-    return s is AttachmentAttached && s.image != null;
+    return s is AttachmentAttached ? s.items : const [];
+  }
+
+  /// True while any attachment (image, text file, or binary) is set.
+  bool get hasAttachment => _items.isNotEmpty;
+
+  /// True while an *image* is set (drives the thumbnail chips + the
+  /// image-specific send rules such as the empty-caption send).
+  bool get hasImage => _items.any((i) => i is AttachedImage);
+
+  /// Plan/63 wait-all gating: true while any binary upload is in flight.
+  /// Images and text files are instant (on-device), so only binaries hold
+  /// the send button back.
+  bool get anyUploading {
+    final s = state;
+    return s is AttachmentAttached && s.anyUploading;
   }
 
   /// True when the active model cannot take images — the host greys out the
@@ -77,71 +100,71 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   bool get imageBlockedByVision => state.imageBlockedByVision;
 
   // ---------------------------------------------------------------------------
-  // Picking
+  // Picking (multi)
   // ---------------------------------------------------------------------------
 
-  Future<void> pickFromCamera() => _pick(() async {
+  Future<void> pickFromCamera() => _pickImages(() async {
     final image = await _picker.pickFromCamera();
-    return image == null ? null : AttachedImage(image);
+    return image == null ? null : [image];
   });
 
-  Future<void> pickFromGallery() => _pick(() async {
-    final image = await _picker.pickFromGallery();
-    return image == null ? null : AttachedImage(image);
-  });
+  /// Plan/63 — the gallery picks several images at once; each lands in the
+  /// tray as its own chip.
+  Future<void> pickFromGallery() => _pickImages(_picker.pickMultipleFromGallery);
 
-  /// Pick any file, classified by content (never by name): text content
-  /// attaches inline as before (Plan/30); anything else starts a Plan/62
-  /// chunked upload **on pick** — the user sees progress while typing the
-  /// caption, and the message later references the landed file by path.
+  /// Pick files (unrestricted, multi), classified by content (never by
+  /// name): text content attaches inline as before (Plan/30); anything else
+  /// starts a Plan/62 chunked upload **on pick** — the user sees progress per
+  /// file while typing the caption, and the message later references the
+  /// landed files by path.
+  ///
+  /// An oversized pick aborts the whole batch (the [AttachHint.fileTooLarge]
+  /// names the offender); the user re-picks the rest.
   Future<void> pickFile() async {
-    if (state is AttachmentPicking) return;
-    final vision = state.visionSupported;
-    emit(AttachmentPicking(visionSupported: vision));
+    if (_picking) return;
+    _picking = true;
     try {
-      final picked = await _anyPicker.pickFile();
-      if (picked == null) {
-        emit(AttachmentEmpty(visionSupported: vision)); // cancelled
-        return;
+      final picked = await _anyPicker.pickFiles();
+      if (picked == null) return; // cancelled — the tray stays as is
+      final items = <AttachmentItem>[..._items];
+      // Explicit `is`-blocks (not an if/else collection): the kernel
+      // compiler only promotes inside plain if-blocks.
+      for (final p in picked) {
+        if (p is BinaryFilePick) {
+          final item = AttachedBinaryFile(
+            name: p.name,
+            size: p.size,
+            phonePath: p.path,
+          );
+          items.add(item);
+          // ignore: unawaited_futures
+          _uploadBinary(item, p);
+        } else if (p is TextFilePick) {
+          items.add(AttachedTextFile(p.file));
+        }
       }
-      if (picked is TextFilePick) {
-        emit(AttachmentAttached(
-          payload: AttachedTextFile(picked.file),
-          visionSupported: vision,
-        ));
-        _clearRecord(); // a text pick replaces any stored binary reference
-        return;
-      }
-      final binary = picked as BinaryFilePick;
-      final payload = AttachedBinaryFile(name: binary.name, size: binary.size);
-      emit(AttachmentAttached(payload: payload, visionSupported: vision));
-      _saveRecord(payload, binary.path, null);
-      // Awaited (not fire-and-forget) so the host page's hint subscription
-      // is still alive when an early rejection lands.
-      await _uploadBinary(payload, binary);
+      _emitTray(items);
+      _persist();
     } on FileTooLargeException {
-      emit(AttachmentEmpty(visionSupported: vision));
       if (!_hints.isClosed) _hints.add(AttachHint.fileTooLarge);
     } catch (_) {
-      emit(AttachmentEmpty(visionSupported: vision));
       if (!_hints.isClosed) _hints.add(AttachHint.pickFailed);
+    } finally {
+      _picking = false;
     }
   }
 
-  /// Streams the picked binary file to the Pi; the payload flips to
-  /// "landed" (sendable) on the Pi's confirmation, or the attachment is
-  /// dropped with an [AttachHint.uploadFailed] on rejection/timeout.
+  /// Streams one binary item to the Pi; the item flips to "landed" (sendable)
+  /// on the Pi's confirmation, or the item is dropped out of the tray with an
+  /// [AttachHint.uploadFailed] on rejection/timeout — siblings are untouched.
   Future<void> _uploadBinary(
-    AttachedBinaryFile payload,
+    AttachedBinaryFile item,
     BinaryFilePick pick,
   ) async {
     bool cancelled() {
       final s = state;
       if (s is! AttachmentAttached) return true;
-      final p = s.payload;
-      return p is! AttachedBinaryFile ||
-          p.name != payload.name ||
-          p.size != payload.size;
+      return !s.items.any((i) => identical(i, item));
     }
     try {
       final uploaded = await _uploads.upload(
@@ -149,26 +172,31 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
         name: pick.name,
         onProgress: (sent, total) {
           if (cancelled()) return;
-          _setBinaryProgress(payload, sent / total);
+          _setBinaryProgress(item, sent / total);
         },
         shouldCancel: cancelled,
       );
-      if (cancelled()) return; // the attachment was removed mid-flight
-      emit(AttachmentAttached(
-        payload: AttachedBinaryFile(
-          name: payload.name,
-          size: payload.size,
+      if (cancelled()) return; // the item was removed mid-flight
+      _replaceItem(
+        item,
+        AttachedBinaryFile(
+          name: item.name,
+          size: item.size,
+          phonePath: item.phonePath,
           landedPath: uploaded.path,
           progress: 1,
         ),
-        visionSupported: state.visionSupported,
-      ));
-      _saveRecord(payload, pick.path, uploaded.path);
+      );
+      _persist();
     } on UploadError catch (e) {
       if (e.code == 'cancelled') return;
       if (cancelled()) return;
-      emit(AttachmentEmpty(visionSupported: state.visionSupported));
-      _clearRecord();
+      final s = state;
+      if (s is! AttachmentAttached) return;
+      _emitTray([
+        for (final i in s.items) if (!identical(i, item)) i,
+      ]);
+      _persist();
       if (!_hints.isClosed) {
         _hints.add(
           e.code == 'upload_rejected'
@@ -179,159 +207,171 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     }
   }
 
-  void _setBinaryProgress(AttachedBinaryFile payload, double fraction) {
-    final s = state;
-    if (s is! AttachmentAttached || s.payload is! AttachedBinaryFile) return;
-    emit(AttachmentAttached(
-      payload: AttachedBinaryFile(
-        name: payload.name,
-        size: payload.size,
-        progress: fraction,
-      ),
-      visionSupported: state.visionSupported,
-    ));
-  }
-
-  /// Shared lifecycle for the image sources: picking → attached, or back to
-  /// empty with a one-shot hint. A null payload means the user cancelled.
-  Future<void> _pick(Future<AttachmentPayload?> Function() pick) async {
-    if (state is AttachmentPicking) return;
-    final vision = state.visionSupported;
-    emit(AttachmentPicking(visionSupported: vision));
-    try {
-      final payload = await pick();
-      if (payload == null) {
-        emit(AttachmentEmpty(visionSupported: vision)); // cancelled
-      } else {
-        emit(AttachmentAttached(payload: payload, visionSupported: vision));
-        _clearRecord(); // an image pick replaces any stored binary reference
-      }
-    } on ImagePermissionDeniedException {
-      emit(AttachmentEmpty(visionSupported: vision));
-      if (!_hints.isClosed) _hints.add(AttachHint.cameraPermissionDenied);
-    } catch (_) {
-      emit(AttachmentEmpty(visionSupported: vision));
-      if (!_hints.isClosed) _hints.add(AttachHint.pickFailed);
-    }
-  }
-
-  /// Discard the attached item (the "X" on the preview, #4).
-  void removeAttachment() {
+  void _setBinaryProgress(AttachedBinaryFile item, double fraction) {
     final s = state;
     if (s is! AttachmentAttached) return;
-    if (s.payload is AttachedBinaryFile) _clearRecord();
-    emit(AttachmentEmpty(visionSupported: s.visionSupported));
+    _emitTray([
+      for (final i in s.items)
+        if (identical(i, item))
+          AttachedBinaryFile(
+            name: (i as AttachedBinaryFile).name,
+            size: i.size,
+            phonePath: i.phonePath,
+            progress: fraction,
+          )
+        else
+          i,
+    ]);
   }
 
-  /// Hand the attached image to the send path as a base64 [MessageImage] and
-  /// reset to empty. Returns null when no image is attached.
-  MessageImage? takeImageForSend() {
+  void _replaceItem(AttachmentItem old, AttachmentItem replacement) {
     final s = state;
-    if (s is! AttachmentAttached) return null;
-    final image = s.image;
-    if (image == null) return null;
-    emit(AttachmentEmpty(visionSupported: s.visionSupported));
-    return MessageImage(data: base64Encode(image.bytes), mime: image.mime);
+    if (s is! AttachmentAttached) return;
+    _emitTray([
+      for (final i in s.items) if (identical(i, old)) replacement else i,
+    ]);
   }
 
-  /// Hand the attached file to the send path and reset to empty. A text
-  /// file's content travels inline; a landed binary file (Plan/62) travels
-  /// as a `{ name, path }` reference. Returns null when no file is attached
-  /// or the binary upload has not been confirmed yet.
-  OutgoingFile? takeFileForSend() {
-    final s = state;
-    if (s is! AttachmentAttached) return null;
-    final file = s.file;
-    if (file != null) {
-      emit(AttachmentEmpty(visionSupported: s.visionSupported));
-      return OutgoingFile(name: file.name, text: file.text);
+  /// Shared lifecycle for the image sources: the picked images land in the
+  /// tray as their own chips. Null means the user cancelled — the tray stays
+  /// as it was.
+  Future<void> _pickImages(Future<List<PickedImage>?> Function() pick) async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      final images = await pick();
+      if (images == null || images.isEmpty) return; // cancelled
+      _emitTray([
+        ..._items,
+        for (final image in images) AttachedImage(image),
+      ]);
+    } on ImagePermissionDeniedException {
+      if (!_hints.isClosed) _hints.add(AttachHint.cameraPermissionDenied);
+    } catch (_) {
+      if (!_hints.isClosed) _hints.add(AttachHint.pickFailed);
+    } finally {
+      _picking = false;
     }
-    final binary = s.binaryFile;
-    if (binary == null || !binary.landed) return null;
-    _clearRecord(); // the reference rides along in the message now
-    emit(AttachmentEmpty(visionSupported: s.visionSupported));
-    return OutgoingFile(name: binary.name, path: binary.landedPath);
+  }
+
+  /// Discard one tray item (the "X" on its chip, #4). A binary item's in-
+  /// flight upload is aborted through its `shouldCancel` closure; the store
+  /// is rewritten without it.
+  void removeItem(int index) {
+    final s = state;
+    if (s is! AttachmentAttached) return;
+    if (index < 0 || index >= s.items.length) return;
+    final removed = s.items[index];
+    _emitTray([
+      for (final i in s.items) if (!identical(i, removed)) i,
+    ]);
+    if (removed is AttachedBinaryFile) _persist();
+  }
+
+  /// Hand the whole tray to the send path: every image as a base64
+  /// [MessageImage], every text file with its content inline, every landed
+  /// binary file (Plan/62) as a `{ name, path }` reference — then reset the
+  /// tray to empty. The caller gates on [anyUploading] (wait-all), so a
+  /// not-yet-landed binary never reaches this point.
+  ({List<MessageImage> images, List<OutgoingFile> files}) takeForSend() {
+    final s = state;
+    if (s is! AttachmentAttached) {
+      return (images: const [], files: const []);
+    }
+    final images = [
+      for (final i in s.items)
+        if (i is AttachedImage)
+          MessageImage(data: base64Encode(i.image.bytes), mime: i.image.mime),
+    ];
+    final files = [
+      for (final i in s.items)
+        if (i is AttachedTextFile)
+          OutgoingFile(name: i.file.name, text: i.file.text)
+        else if (i is AttachedBinaryFile && i.landed)
+          OutgoingFile(name: i.name, path: i.landedPath),
+    ];
+    // Reset the tray FIRST, then persist: _persist reads the tray from the
+    // current state, so it must run after the reset or it would rewrite the
+    // just-sent records instead of clearing them.
+    _emitTray(const []);
+    _persist();
+    return (images: images, files: files);
   }
 
   // ---------------------------------------------------------------------------
-  // Plan/62 — durable per-room attachment reference
+  // Plan/62 — durable per-room binary references
   // ---------------------------------------------------------------------------
 
   /// The host calls this with the room's identity as it resolves (the peer
   /// record loads async, so the epk arrives a frame later) and on room
-  /// switches. A key *change* drops the old room's on-screen attachment (its
-  /// record stays stored) and re-hydrates from [AttachmentStore]: a landed
-  /// file comes back sendable; an unfinished upload restarts from the phone
+  /// switches. A key *change* drops the old room's tray (its records stay
+  /// stored) and re-hydrates the binary items from [AttachmentStore]: landed
+  /// files come back sendable; unfinished uploads restart from the phone
   /// copy when that file still exists.
   void updateRoom(String? epk, String? roomId) {
     if (epk == null || roomId == null) return;
     if (epk == _roomEpk && roomId == _roomId) return;
-    final s = state;
-    if (s is AttachmentAttached && s.payload is AttachedBinaryFile) {
-      emit(AttachmentEmpty(visionSupported: s.visionSupported));
-    }
     _roomEpk = epk;
     _roomId = roomId;
+    _emitTray(const []); // the old room's tray is done
     final store = _store;
     if (store == null) return;
-    final record = store.read(epk, roomId);
-    if (record == null) return;
-    final vision = state.visionSupported;
-    if (record.landed) {
-      emit(AttachmentAttached(
-        payload: AttachedBinaryFile(
-          name: record.name,
-          size: record.size,
-          landedPath: record.landedPath,
-          progress: 1,
-        ),
-        visionSupported: vision,
-      ));
-      return;
+    final items = <AttachmentItem>[];
+    for (final record in store.read(epk, roomId)) {
+      if (record.landed) {
+        items.add(
+          AttachedBinaryFile(
+            name: record.name,
+            size: record.size,
+            phonePath: record.phonePath,
+            landedPath: record.landedPath,
+            progress: 1,
+          ),
+        );
+        continue;
+      }
+      // Unfinished upload — resume it only when the phone-side bytes
+      // survive.
+      if (!File(record.phonePath).existsSync()) continue;
+      final pick = BinaryFilePick(
+        name: record.name,
+        path: record.phonePath,
+        size: record.size,
+      );
+      final item = AttachedBinaryFile(
+        name: record.name,
+        size: record.size,
+        phonePath: record.phonePath,
+      );
+      items.add(item);
+      // ignore: unawaited_futures
+      _uploadBinary(item, pick);
     }
-    // Unfinished upload — resume it only when the phone-side bytes survive.
-    if (!File(record.phonePath).existsSync()) return;
-    final payload = AttachedBinaryFile(name: record.name, size: record.size);
-    final pick = BinaryFilePick(
-      name: record.name,
-      path: record.phonePath,
-      size: record.size,
-    );
-    emit(AttachmentAttached(payload: payload, visionSupported: vision));
-    _saveRecord(payload, record.phonePath, null);
-    // ignore: unawaited_futures
-    _uploadBinary(payload, pick);
+    if (items.isEmpty) return;
+    _emitTray(items);
+    _persist();
   }
 
-  void _saveRecord(
-    AttachedBinaryFile payload,
-    String phonePath,
-    String? landedPath,
-  ) {
+  /// Rewrites the room's durable tray from the current binary items (the
+  /// store keeps binary references only — images and text files ride the
+  /// message).
+  void _persist() {
     final store = _store;
     final epk = _roomEpk;
     final roomId = _roomId;
     if (store == null || epk == null || roomId == null) return;
+    final records = [
+      for (final i in _items)
+        if (i is AttachedBinaryFile)
+          AttachmentRecord(
+            name: i.name,
+            size: i.size,
+            phonePath: i.phonePath ?? '',
+            landedPath: i.landedPath,
+          ),
+    ];
     // ignore: unawaited_futures
-    store.save(
-      epk,
-      roomId,
-      AttachmentRecord(
-        name: payload.name,
-        size: payload.size,
-        phonePath: phonePath,
-        landedPath: landedPath,
-      ),
-    );
-  }
-
-  void _clearRecord() {
-    final store = _store;
-    final epk = _roomEpk;
-    final roomId = _roomId;
-    if (store == null || epk == null || roomId == null) return;
-    // ignore: unawaited_futures
-    store.clear(epk, roomId);
+    store.save(epk, roomId, records);
   }
 
   // ---------------------------------------------------------------------------
@@ -366,13 +406,19 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     return null;
   }
 
+  void _emitTray(List<AttachmentItem> items) {
+    final vision = state.visionSupported;
+    emit(items.isEmpty
+        ? AttachmentEmpty(visionSupported: vision)
+        : AttachmentAttached(items: items, visionSupported: vision));
+  }
+
   void _setVision(bool? vision) {
     if (vision == state.visionSupported) return;
     emit(switch (state) {
       AttachmentEmpty() => AttachmentEmpty(visionSupported: vision),
-      AttachmentPicking() => AttachmentPicking(visionSupported: vision),
-      AttachmentAttached(:final payload) => AttachmentAttached(
-        payload: payload,
+      AttachmentAttached(:final items) => AttachmentAttached(
+        items: items,
         visionSupported: vision,
       ),
     });

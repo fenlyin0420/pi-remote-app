@@ -1,6 +1,6 @@
-// Plan/30 + Plan/62 — AttachmentViewModel: pick / remove / take + vision
-// gating + chunked binary upload, against fake picker + upload + actions
-// repositories.
+// Plan/30 + 62 + 63 — AttachmentViewModel: pick / remove / take + vision
+// gating + chunked binary upload + multi-item tray, against fake picker +
+// upload + actions repositories.
 
 import 'dart:async';
 import 'dart:convert';
@@ -25,6 +25,9 @@ class _FakePicker implements IImagePickerService {
     bytes: Uint8List.fromList([1, 2, 3]),
     mime: 'image/jpeg',
   );
+
+  /// Extra images returned after [next] by the multi pick (plan 63).
+  List<PickedImage> extra = const [];
   bool denyCamera = false;
   bool fail = false;
 
@@ -40,13 +43,23 @@ class _FakePicker implements IImagePickerService {
     if (fail) throw Exception('boom');
     return next;
   }
+
+  @override
+  Future<List<PickedImage>?> pickMultipleFromGallery() async {
+    if (fail) throw Exception('boom');
+    final first = next;
+    if (first == null) return null;
+    return [first, ...extra];
+  }
 }
 
 class _FakeAnyPicker implements IAnyFilePickerService {
-  PickedFile? next = const TextFilePick(
-    name: 'notes.md',
-    file: PickedTextFile(name: 'notes.md', text: '# hi', byteLength: 4),
-  );
+  List<PickedFile>? nexts = const [
+    TextFilePick(
+      name: 'notes.md',
+      file: PickedTextFile(name: 'notes.md', text: '# hi', byteLength: 4),
+    ),
+  ];
   bool tooLarge = false;
 
   @override
@@ -54,7 +67,15 @@ class _FakeAnyPicker implements IAnyFilePickerService {
     if (tooLarge) {
       throw const FileTooLargeException('big.zip', 251 * 1024 * 1024);
     }
-    return next;
+    return nexts?.first;
+  }
+
+  @override
+  Future<List<PickedFile>?> pickFiles() async {
+    if (tooLarge) {
+      throw const FileTooLargeException('big.zip', 251 * 1024 * 1024);
+    }
+    return nexts;
   }
 }
 
@@ -70,6 +91,8 @@ class _FakeUploads implements IUploadService {
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
+    Duration ackTimeout = uploadAckTimeout,
+    Duration sendTimeout = uploadSendTimeout,
   }) async {
     uploads.add(name);
     if (error != null) throw error!;
@@ -119,7 +142,8 @@ WireModel _model({required bool vision, String name = 'M'}) => WireModel(
 );
 
 void main() {
-  test('pickFromGallery attaches an image; removeImage clears it', () async {
+  test('pickFromGallery attaches images; removeItem clears one chip',
+      () async {
     final vm = AttachmentViewModel(
       _FakePicker(),
       _FakeAnyPicker(),
@@ -129,34 +153,78 @@ void main() {
     await vm.pickFromGallery();
     expect(vm.state, isA<AttachmentAttached>());
     expect(vm.hasImage, isTrue);
+    expect((vm.state as AttachmentAttached).items, hasLength(1));
 
-    vm.removeAttachment();
+    vm.removeItem(0);
     expect(vm.state, isA<AttachmentEmpty>());
     expect(vm.hasImage, isFalse);
     vm.dispose();
   });
 
-  test('takeImageForSend returns base64 MessageImage and resets', () async {
+  test('takeForSend returns base64 MessageImages and resets the tray',
+      () async {
     final picker = _FakePicker()
       ..next = PickedImage(
         bytes: Uint8List.fromList([10, 20, 30]),
         mime: 'image/jpeg',
       );
-    final vm = AttachmentViewModel(picker, _FakeAnyPicker(), _FakeUploads(), _FakeActions());
+    final vm = AttachmentViewModel(
+      picker,
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      _FakeActions(),
+    );
     await vm.pickFromGallery();
 
-    final msg = vm.takeImageForSend();
-    expect(msg, isNotNull);
-    expect(msg!.mime, 'image/jpeg');
-    expect(base64Decode(msg.data), [10, 20, 30]);
+    final sent = vm.takeForSend();
+    expect(sent.images, hasLength(1));
+    expect(sent.images.single.mime, 'image/jpeg');
+    expect(base64Decode(sent.images.single.data), [10, 20, 30]);
+    expect(sent.files, isEmpty);
     expect(vm.state, isA<AttachmentEmpty>());
-    expect(vm.takeImageForSend(), isNull); // nothing left
+    final again = vm.takeForSend();
+    expect(again.images, isEmpty); // nothing left
+    expect(again.files, isEmpty);
+    vm.dispose();
+  });
+
+  test('a multi-image pick lands one chip per image (plan 63)', () async {
+    final picker = _FakePicker()
+      ..extra = [
+        PickedImage(
+          bytes: Uint8List.fromList([4, 5]),
+          mime: 'image/png',
+        ),
+      ];
+    final vm = AttachmentViewModel(
+      picker,
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      _FakeActions(),
+    );
+    await vm.pickFromGallery();
+
+    final items = (vm.state as AttachmentAttached).items;
+    expect(items, hasLength(2));
+    expect(items, everyElement(isA<AttachedImage>()));
+
+    // A second pick appends rather than replaces.
+    await vm.pickFromGallery();
+    expect((vm.state as AttachmentAttached).items, hasLength(4));
+
+    final sent = vm.takeForSend();
+    expect(sent.images, hasLength(4));
     vm.dispose();
   });
 
   test('denied camera permission emits a hint and stays empty', () async {
     final picker = _FakePicker()..denyCamera = true;
-    final vm = AttachmentViewModel(picker, _FakeAnyPicker(), _FakeUploads(), _FakeActions());
+    final vm = AttachmentViewModel(
+      picker,
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      _FakeActions(),
+    );
     final hints = <AttachHint>[];
     final sub = vm.hints.listen(hints.add);
 
@@ -175,7 +243,12 @@ void main() {
         models: [_model(vision: false)],
         current: _model(vision: false),
       );
-    final vm = AttachmentViewModel(_FakePicker(), _FakeAnyPicker(), _FakeUploads(), actions);
+    final vm = AttachmentViewModel(
+      _FakePicker(),
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      actions,
+    );
     await Future<void>.delayed(Duration.zero); // let init resolve vision
 
     expect(vm.state.visionSupported, isFalse);
@@ -189,7 +262,12 @@ void main() {
         models: [_model(vision: true)],
         current: _model(vision: true),
       );
-    final vm = AttachmentViewModel(_FakePicker(), _FakeAnyPicker(), _FakeUploads(), actions);
+    final vm = AttachmentViewModel(
+      _FakePicker(),
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      actions,
+    );
     await Future<void>.delayed(Duration.zero);
 
     expect(vm.state.visionSupported, isTrue);
@@ -199,7 +277,12 @@ void main() {
 
   test('offline catalogue leaves vision unknown (does not block)', () async {
     final actions = _FakeActions()..offline = true;
-    final vm = AttachmentViewModel(_FakePicker(), _FakeAnyPicker(), _FakeUploads(), actions);
+    final vm = AttachmentViewModel(
+      _FakePicker(),
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      actions,
+    );
     await Future<void>.delayed(Duration.zero);
 
     expect(vm.state.visionSupported, isNull);
@@ -213,7 +296,12 @@ void main() {
         models: [_model(vision: true)],
         current: _model(vision: true),
       );
-    final vm = AttachmentViewModel(_FakePicker(), _FakeAnyPicker(), _FakeUploads(), actions);
+    final vm = AttachmentViewModel(
+      _FakePicker(),
+      _FakeAnyPicker(),
+      _FakeUploads(),
+      actions,
+    );
     await Future<void>.delayed(Duration.zero);
     expect(vm.state.visionSupported, isTrue);
 
@@ -229,7 +317,8 @@ void main() {
     vm.dispose();
   });
 
-  test('pickFile attaches a text file; the file never counts as an image', () async {
+  test('pickFile attaches a text file; the file never counts as an image',
+      () async {
     final vm = AttachmentViewModel(
       _FakePicker(),
       _FakeAnyPicker(),
@@ -240,11 +329,14 @@ void main() {
     expect(vm.state, isA<AttachmentAttached>());
     expect(vm.hasAttachment, isTrue);
     expect(vm.hasImage, isFalse);
-    expect((vm.state as AttachmentAttached).file?.name, 'notes.md');
+    final item = (vm.state as AttachmentAttached).items.single;
+    expect(item, isA<AttachedTextFile>());
+    expect((item as AttachedTextFile).file.name, 'notes.md');
     vm.dispose();
   });
 
-  test('takeFileForSend returns the outgoing file with its text and resets', () async {
+  test('takeForSend returns the outgoing file with its text and resets',
+      () async {
     final vm = AttachmentViewModel(
       _FakePicker(),
       _FakeAnyPicker(),
@@ -253,93 +345,98 @@ void main() {
     );
     await vm.pickFile();
 
-    final file = vm.takeFileForSend();
-    expect(file, isNotNull);
-    expect(file!.name, 'notes.md');
-    expect(file.text, '# hi');
+    final sent = vm.takeForSend();
+    expect(sent.files, hasLength(1));
+    expect(sent.files.single.name, 'notes.md');
+    expect(sent.files.single.text, '# hi');
     expect(vm.state, isA<AttachmentEmpty>());
-    expect(vm.takeFileForSend(), isNull); // nothing left
+    expect(vm.takeForSend().files, isEmpty); // nothing left
     vm.dispose();
   });
 
   test(
     'a binary pick attaches and lands: upload runs on pick, '
-    'takeFileForSend references the landed path',
+    'takeForSend references the landed path',
     () async {
       final uploads = _FakeUploads();
       final vm = AttachmentViewModel(
         _FakePicker(),
         _FakeAnyPicker()
-          ..next = const BinaryFilePick(
-            name: 'deck.pdf',
-            path: '/sdcard/deck.pdf',
-            size: 4096,
-          ),
+          ..nexts = const [
+            BinaryFilePick(name: 'deck.pdf', path: '/sdcard/deck.pdf', size: 4096),
+          ],
         uploads,
         _FakeActions(),
       );
       await vm.pickFile();
 
       // The preview is up immediately (progress while the upload streams).
-      expect(vm.state, isA<AttachmentAttached>());
-      final binary = (vm.state as AttachmentAttached).binaryFile;
-      expect(binary, isNotNull);
-      expect(binary!.name, 'deck.pdf');
+      final item = (vm.state as AttachmentAttached).items.single;
+      final binary = item as AttachedBinaryFile;
+      expect(binary.name, 'deck.pdf');
       expect(binary.size, 4096);
+      expect(vm.anyUploading, isTrue,
+          reason: 'the send stays gated while the upload is in flight');
 
       await Future<void>.delayed(Duration.zero); // let the fake upload land
 
-      final landed = (vm.state as AttachmentAttached).binaryFile!;
+      final landed =
+          ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile);
       expect(landed.landed, isTrue);
       expect(landed.landedPath, '/uploads/room/deck.pdf');
       expect(uploads.uploads, ['deck.pdf']);
+      expect(vm.anyUploading, isFalse);
 
-      final file = vm.takeFileForSend();
-      expect(file, isNotNull);
-      expect(file!.name, 'deck.pdf');
-      expect(file.text, isNull);
-      expect(file.path, '/uploads/room/deck.pdf');
+      final sent = vm.takeForSend();
+      expect(sent.files, hasLength(1));
+      expect(sent.files.single.name, 'deck.pdf');
+      expect(sent.files.single.text, isNull);
+      expect(sent.files.single.path, '/uploads/room/deck.pdf');
       expect(vm.state, isA<AttachmentEmpty>());
       vm.dispose();
     },
   );
 
   test(
-    'a binary pick while the upload is in flight: takeFileForSend is null '
+    'a binary pick while the upload is in flight: takeForSend has no file '
     'until the Pi confirms',
     () async {
       final vm = AttachmentViewModel(
         _FakePicker(),
         _FakeAnyPicker()
-          ..next = const BinaryFilePick(
-            name: 'deck.pdf',
-            path: '/sdcard/deck.pdf',
-            size: 4096,
-          ),
+          ..nexts = const [
+            BinaryFilePick(name: 'deck.pdf', path: '/sdcard/deck.pdf', size: 4096),
+          ],
         _FakeUploads()..error = const UploadError('timeout', 'slow'),
         _FakeActions(),
       );
       await vm.pickFile();
       // Not landed yet — the fake upload throws, but the first emit
-      // (progress) is already visible.
-      expect(vm.takeFileForSend(), isNull);
+      // (the picked item) is already visible.
+      expect(vm.takeForSend().files, isEmpty);
       await Future<void>.delayed(Duration.zero);
+      expect(vm.state, isA<AttachmentEmpty>(),
+          reason: 'the failed item is dropped out of the tray');
       vm.dispose();
     },
   );
 
-  test('a failed upload drops the attachment with an uploadFailed hint', () async {
+  test('a failed upload drops only that item, with an uploadFailed hint',
+      () async {
+    final uploads = _FakeUploads()
+      ..error = const UploadError('upload_hash_mismatch', 'hash mismatch');
     final vm = AttachmentViewModel(
       _FakePicker(),
       _FakeAnyPicker()
-        ..next = const BinaryFilePick(
-          name: 'deck.pdf',
-          path: '/sdcard/deck.pdf',
-          size: 4096,
-        ),
-      _FakeUploads()
-        ..error = const UploadError('upload_hash_mismatch', 'hash mismatch'),
-      _FakeActions(),
+          ..nexts = const [
+            TextFilePick(
+              name: 'notes.md',
+              file: PickedTextFile(name: 'notes.md', text: '# hi', byteLength: 4),
+            ),
+            BinaryFilePick(name: 'deck.pdf', path: '/sdcard/deck.pdf', size: 4096),
+          ],
+        uploads,
+        _FakeActions(),
     );
     final hints = <AttachHint>[];
     final sub = vm.hints.listen(hints.add);
@@ -347,7 +444,10 @@ void main() {
     await vm.pickFile();
     await Future<void>.delayed(Duration.zero);
 
-    expect(vm.state, isA<AttachmentEmpty>());
+    final items = (vm.state as AttachmentAttached).items;
+    expect(items, hasLength(1),
+        reason: 'the sibling text file survives the binary failure');
+    expect(items.single, isA<AttachedTextFile>());
     expect(hints, [AttachHint.uploadFailed]);
     await sub.cancel();
     vm.dispose();
@@ -372,7 +472,8 @@ void main() {
     vm.dispose();
   });
 
-  test('a text-only model still allows files (vision gates images only)', () async {
+  test('a text-only model still allows files (vision gates images only)',
+      () async {
     final actions = _FakeActions()
       ..catalogue = ModelsCatalogue(
         models: [_model(vision: false)],
@@ -388,12 +489,12 @@ void main() {
 
     expect(vm.imageBlockedByVision, isTrue);
     await vm.pickFile();
-    expect(vm.state, isA<AttachmentAttached>());
-    expect((vm.state as AttachmentAttached).file?.name, 'notes.md');
+    final item = (vm.state as AttachmentAttached).items.single;
+    expect((item as AttachedTextFile).file.name, 'notes.md');
     vm.dispose();
   });
 
-  group('Plan/62 — durable per-room attachment reference', () {
+  group('Plan/62+63 — durable per-room attachment tray', () {
     late Directory dir;
 
     setUp(() {
@@ -413,12 +514,14 @@ void main() {
       await store.save(
         'epkA',
         'room1',
-        const AttachmentRecord(
-          name: 'deck.pdf',
-          size: 999,
-          phonePath: '/phone/deck.pdf',
-          landedPath: '/uploads/room/deck.pdf',
-        ),
+        const [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 999,
+            phonePath: '/phone/deck.pdf',
+            landedPath: '/uploads/room/deck.pdf',
+          ),
+        ],
       );
 
       final vm = AttachmentViewModel(
@@ -432,9 +535,8 @@ void main() {
 
       final s = vm.state;
       expect(s, isA<AttachmentAttached>());
-      final binary = (s as AttachmentAttached).binaryFile;
-      expect(binary, isNotNull);
-      expect(binary!.landed, isTrue);
+      final binary = (s as AttachmentAttached).items.single as AttachedBinaryFile;
+      expect(binary.landed, isTrue);
       expect(binary.landedPath, '/uploads/room/deck.pdf');
       expect(binary.progress, 1);
       vm.dispose();
@@ -449,11 +551,13 @@ void main() {
       await store.save(
         'epkA',
         'room1',
-        AttachmentRecord(
-          name: 'deck.pdf',
-          size: 3,
-          phonePath: phoneFile.path,
-        ),
+        [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 3,
+            phonePath: phoneFile.path,
+          ),
+        ],
       );
 
       final uploads = _FakeUploads()
@@ -472,10 +576,11 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(uploads.uploads, ['deck.pdf']);
-      final binary = (vm.state as AttachmentAttached).binaryFile;
-      expect(binary!.landed, isTrue);
+      final binary =
+          ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile);
+      expect(binary.landed, isTrue);
       expect(
-        store.read('epkA', 'room1')!.landedPath,
+        store.read('epkA', 'room1').single.landedPath,
         '/uploads/room/deck.pdf',
         reason: 'the store records the landed path',
       );
@@ -488,11 +593,13 @@ void main() {
       await store.save(
         'epkA',
         'room1',
-        AttachmentRecord(
-          name: 'deck.pdf',
-          size: 3,
-          phonePath: '/gone/deck.pdf',
-        ),
+        [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 3,
+            phonePath: '/gone/deck.pdf',
+          ),
+        ],
       );
 
       final uploads = _FakeUploads();
@@ -511,29 +618,32 @@ void main() {
       vm.dispose();
     });
 
-    test('a room switch drops the old attachment, re-hydrates the new',
-        () async {
+    test('a room switch drops the old tray, re-hydrates the new', () async {
       await LocalBoxes.initForTest(dir.path);
       final store = makeStore();
       await store.save(
         'epkA',
         'room1',
-        const AttachmentRecord(
-          name: 'deck.pdf',
-          size: 9,
-          phonePath: '/p/d.pdf',
-          landedPath: '/u/d.pdf',
-        ),
+        const [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 9,
+            phonePath: '/p/d.pdf',
+            landedPath: '/u/d.pdf',
+          ),
+        ],
       );
       await store.save(
         'epkA',
         'room2',
-        const AttachmentRecord(
-          name: 'plan.pdf',
-          size: 7,
-          phonePath: '/p/p.pdf',
-          landedPath: '/u/p.pdf',
-        ),
+        const [
+          AttachmentRecord(
+            name: 'plan.pdf',
+            size: 7,
+            phonePath: '/p/p.pdf',
+            landedPath: '/u/p.pdf',
+          ),
+        ],
       );
 
       final vm = AttachmentViewModel(
@@ -545,36 +655,41 @@ void main() {
       );
       vm.updateRoom('epkA', 'room1');
       expect(
-        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile)
+            .landedPath,
         '/u/d.pdf',
       );
 
       vm.updateRoom('epkA', 'room2');
       expect(
-        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile)
+            .landedPath,
         '/u/p.pdf',
       );
 
       vm.updateRoom('epkA', 'room1');
       expect(
-        ((vm.state as AttachmentAttached).binaryFile!).landedPath,
+        ((vm.state as AttachmentAttached).items.single as AttachedBinaryFile)
+            .landedPath,
         '/u/d.pdf',
       );
       vm.dispose();
     });
 
-    test('takeFileForSend clears the stored reference', () async {
+    test('takeForSend clears the stored references', () async {
       await LocalBoxes.initForTest(dir.path);
       final store = makeStore();
       await store.save(
         'epkA',
         'room1',
-        const AttachmentRecord(
-          name: 'deck.pdf',
-          size: 9,
-          phonePath: '/p/d.pdf',
-          landedPath: '/u/d.pdf',
-        ),
+        const [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 9,
+            phonePath: '/p/d.pdf',
+            landedPath: '/u/d.pdf',
+          ),
+        ],
       );
 
       final vm = AttachmentViewModel(
@@ -586,25 +701,27 @@ void main() {
       );
       vm.updateRoom('epkA', 'room1');
 
-      final file = vm.takeFileForSend();
-      expect(file, isNotNull);
-      expect(file!.path, '/u/d.pdf');
-      expect(store.read('epkA', 'room1'), isNull);
+      final sent = vm.takeForSend();
+      expect(sent.files, hasLength(1));
+      expect(sent.files.single.path, '/u/d.pdf');
+      expect(store.read('epkA', 'room1'), isEmpty);
       vm.dispose();
     });
 
-    test('removeAttachment clears the stored reference', () async {
+    test('removeItem clears the stored reference', () async {
       await LocalBoxes.initForTest(dir.path);
       final store = makeStore();
       await store.save(
         'epkA',
         'room1',
-        const AttachmentRecord(
-          name: 'deck.pdf',
-          size: 9,
-          phonePath: '/p/d.pdf',
-          landedPath: '/u/d.pdf',
-        ),
+        const [
+          AttachmentRecord(
+            name: 'deck.pdf',
+            size: 9,
+            phonePath: '/p/d.pdf',
+            landedPath: '/u/d.pdf',
+          ),
+        ],
       );
 
       final vm = AttachmentViewModel(
@@ -615,9 +732,9 @@ void main() {
         store,
       );
       vm.updateRoom('epkA', 'room1');
-      vm.removeAttachment();
+      vm.removeItem(0);
 
-      expect(store.read('epkA', 'room1'), isNull);
+      expect(store.read('epkA', 'room1'), isEmpty);
       vm.dispose();
     });
   });

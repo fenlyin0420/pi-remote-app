@@ -12,13 +12,17 @@ import 'package:hive/hive.dart';
 
 void main() {
   group('record roundtrips', () {
-    test('MessageRecord (user + image) survives toJson/fromJson', () {
+    test('MessageRecord (user + images + file) survives toJson/fromJson', () {
       final r = MessageRecord(
         id: 'u1',
         seq: 3,
         role: MsgRole.user,
         text: 'hello',
-        image: const MessageImage(data: 'QUJD', mime: 'image/jpeg'),
+        images: const [
+          MessageImage(data: 'QUJD', mime: 'image/jpeg'),
+          MessageImage(data: 'REVG', mime: 'image/png'),
+        ],
+        files: const [MessageFile(name: 'deck.pdf', path: '/u/deck.pdf')],
         ts: DateTime.fromMillisecondsSinceEpoch(1700),
         pending: true,
         steering: true,
@@ -28,14 +32,56 @@ void main() {
       expect(back.seq, 3);
       expect(back.role, MsgRole.user);
       expect(back.text, 'hello');
-      expect(back.image?.data, 'QUJD');
+      expect(back.images, hasLength(2));
+      expect(back.images[0].data, 'QUJD');
+      expect(back.images[1].data, 'REVG');
+      expect(back.files, hasLength(1));
+      expect(back.files.single.name, 'deck.pdf');
+      expect(back.files.single.path, '/u/deck.pdf');
       expect(back.pending, isTrue);
       expect(back.steering, isTrue);
       // Projects to the domain UserMsg the UI renders.
       final msg = back.toChatMessage() as UserMsg;
       expect(msg.status, UserMsgStatus.pending);
       expect(msg.steering, isTrue);
-      expect(msg.image, isNotNull);
+      expect(msg.images, hasLength(2));
+      expect(msg.files, hasLength(1));
+    });
+
+    test('MessageRecord (user) with no attachments roundtrips empty lists', () {
+      final r = MessageRecord(
+        id: 'u2',
+        seq: 4,
+        role: MsgRole.user,
+        text: 'hi',
+        ts: DateTime.fromMillisecondsSinceEpoch(1700),
+      );
+      final back = MessageRecord.fromJson(r.toJson());
+      expect(back.images, isEmpty);
+      expect(back.files, isEmpty);
+    });
+
+    test('a Plan/62-era row (singular image/file keys) reads as a list', () {
+      final json = MessageRecord(
+        id: 'u3',
+        seq: 5,
+        role: MsgRole.user,
+        text: 'legacy',
+        images: const [MessageImage(data: 'QUJD', mime: 'image/jpeg')],
+        files: const [MessageFile(name: 'deck.pdf', path: '/u/deck.pdf')],
+        ts: DateTime.fromMillisecondsSinceEpoch(1700),
+      ).toJson();
+      // Rewrite the row in the legacy singular-key shape.
+      json['image'] = {'data': 'QUJD', 'mime': 'image/jpeg'};
+      json.remove('images');
+      json['file'] = {'name': 'deck.pdf', 'path': '/u/deck.pdf'};
+      json.remove('files');
+      final back = MessageRecord.fromJson(json);
+      expect(back.images, hasLength(1));
+      expect(back.images.single.data, 'QUJD');
+      expect(back.files, hasLength(1));
+      expect(back.files.single.name, 'deck.pdf');
+      expect(back.files.single.path, '/u/deck.pdf');
     });
 
     test('MessageRecord (tool) survives roundtrip', () {

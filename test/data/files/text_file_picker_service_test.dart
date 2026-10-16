@@ -13,6 +13,10 @@ class _FakeBackend implements TextFilePickerBackend {
 
   @override
   Future<PickedSource?> pick() async => next;
+
+  @override
+  Future<List<PickedSource>?> pickMany() async =>
+      next == null ? null : [next!];
 }
 
 Uint8List _bytes(String s) => Uint8List.fromList(utf8.encode(s));

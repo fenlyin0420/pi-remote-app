@@ -477,12 +477,12 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> sendMessage(
     String text, {
-    MessageImage? image,
-    OutgoingFile? file,
+    List<MessageImage>? images,
+    List<OutgoingFile>? files,
   }) => _sync.sendMessage(
     text,
-    image: image,
-    file: file,
+    images: images,
+    files: files,
     streamingBehavior: isWorking
         ? UserMessageStreamingBehavior.steer
         : null,
