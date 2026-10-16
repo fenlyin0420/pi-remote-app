@@ -399,6 +399,39 @@ void main() {
       );
     });
 
+    test('waits past ackTimeout for the queued bytes to reach the Pi', () async {
+      // The frames are queued in the socket when the last one is written, and
+      // the Pi answers only after every byte arrived: on a slow uplink a
+      // multi-MiB upload needs far longer than the base ack window. The wait is
+      // extended by the flush estimate, so an answer inside that allowance is
+      // still accepted instead of failing a transfer that is merely slow.
+      final bytes = List<int>.filled(uploadChunkBytes * 2 + 100, 9); // 3 chunks
+      final f = await mkFile(bytes);
+      final ch = _FakeChannel();
+      final fut = UploadService.streamUpload(
+        ch: ch,
+        path: f.path,
+        name: 'flush.bin',
+        ackTimeout: const Duration(milliseconds: 50),
+      );
+      await _until(() => ch.sent.whereType<UploadDone>().isNotEmpty);
+      // Well past the bare ackTimeout, far inside the flush allowance
+      // (~40 s for this total at the documented throughput floor).
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final done = ch.sent.whereType<UploadDone>().single;
+      ch.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'flush.bin',
+          path: '/uploads/room/flush.bin',
+        ),
+      );
+
+      expect((await fut).path, '/uploads/room/flush.bin');
+      expect(ch.sent.whereType<UploadChunk>().length, 3);
+    });
+
     test('a Pi rejection is never retried', () async {
       final f = await mkFile(List<int>.filled(300000, 3));
       final ch = _GatedChannel();

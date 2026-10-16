@@ -1198,8 +1198,12 @@ class ConnectionManager extends Service {
       // `room_already_open` and the app sat permanently offline.
       // [ORCH:19-heartbeat-investigate] reported this.
       //
-      // After: the WS↔relay keep-alive is now exclusively handled
-      // by RFC 6455 Ping/Pong (IOWebSocketChannel.pingInterval).
+      // After: the WS↔relay TCP is kept warm by the RELAY's own 25 s
+      // RFC 6455 Ping (dart:io answers with a Pong automatically), and a
+      // dropped socket surfaces via onError/onDone. The client deliberately
+      // sets NO WS-level pingInterval — dart:io closes the socket when its own
+      // ping is stuck behind a multi-MiB upload flush (see ws_transport.dart).
+      //
       // Protocol Ping/Pong here is a Pi-LIVENESS probe — when it
       // fails, we mark the active room as offline locally so Home /
       // chat reflect it; the WS stays online for presence updates

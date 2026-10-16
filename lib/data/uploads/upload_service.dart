@@ -29,7 +29,23 @@ const int uploadMaxBytes = 250 * 1024 * 1024;
 const int uploadChunkBytes = 2 * 1024 * 1024;
 
 /// How long to wait for the Pi's `upload_complete` after the final frame.
+///
+/// This is the FLOOR, not the whole budget: the frames sit in the socket's
+/// send queue when the last one is written and drain at the uplink's pace, and
+/// the Pi only answers once every byte arrived and the hash checked out. See
+/// [uploadFlushBytesPerSecondFloor] — without that allowance a multi-MiB send
+/// on a slow uplink is reported as failed long before it could have finished.
 const Duration uploadAckTimeout = Duration(seconds: 30);
+
+/// Pessimistic floor for how fast queued upload bytes leave the phone, used to
+/// extend the ack wait by the flush time of the whole file.
+///
+/// The socket API exposes no drain signal (`sink.add` only queues), so the
+/// flush time is estimated rather than measured. 100 KB/s is deliberately
+/// below any usable mobile uplink: the estimate only has to keep a slow-but-
+/// working transfer alive, and an over-long wait costs nothing while the bytes
+/// are still moving — it is a bound for a transfer that has already stopped.
+const int uploadFlushBytesPerSecondFloor = 100 * 1024;
 
 /// How long one frame send may take before it is treated as a dead
 /// transport. A half-dead socket (peer gone, TCP not closed) swallows
@@ -295,7 +311,7 @@ class UploadService implements IUploadService {
         sendTimeout,
         room: room,
       );
-      final timer = Timer(ackTimeout, () {
+      final timer = Timer(_ackWait(total, ackTimeout), () {
         if (!completer.isCompleted) {
           completer.completeError(
             const UploadError(
@@ -319,6 +335,13 @@ class UploadService implements IUploadService {
     } finally {
       await sub.cancel();
     }
+  }
+
+  /// How long to wait for the Pi's answer on a [total]-byte upload: the base
+  /// [ackTimeout] plus the time the queued bytes need to leave the phone.
+  static Duration _ackWait(int total, Duration ackTimeout) {
+    final flushMs = (total * 1000) ~/ uploadFlushBytesPerSecondFloor;
+    return ackTimeout + Duration(milliseconds: flushMs);
   }
 
   /// [ch.send] with a transport-deadline: a half-dead socket swallows the

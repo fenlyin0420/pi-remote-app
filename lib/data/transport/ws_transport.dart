@@ -71,18 +71,32 @@ class WsTransport implements PeerTransport, IControlLink, IRoomFrameLink, IRoomT
     required String peerPubkey, // base64 standard or url — destination peer
     required SimpleKeyPair ed25519Key, // this device's Ed25519 long-term key
   }) async {
-    // Plan-18 follow-up — set a WS-level pingInterval (RFC 6455
-    // control frames). This keeps the TCP connection alive through
-    // NAT / corporate proxies that aggressively close idle sockets,
-    // and surfaces a dead WS as `onDone` / `onError` instead of
-    // letting it silently linger until the next user action. The
-    // protocol-level Ping/Pong handled by ConnectionManager covers
-    // app↔Pi liveness; this one covers app↔relay TCP liveness.
+    // NO WS-level `pingInterval` here, deliberately.
+    //
+    // dart:io's ping is a self-destruct timer, not a keepalive: every
+    // `pingInterval` it appends a Ping to the SAME outbound queue as the data
+    // frames and arms a deadline of the same length; a pong that does not come
+    // back inside that window makes the CLIENT close its own socket
+    // (`_close(goingAway)` in `dart:io`'s `websocket_impl.dart`).
+    //
+    // A chunked upload appends multi-MiB messages back to back (2 MiB chunk →
+    // ~3.7 MiB on the wire), so on a slow uplink the queue holds tens of MiB for
+    // tens of seconds: the Ping — and therefore its pong — is stuck behind that
+    // backlog and the client tears the connection down mid-transfer. That is
+    // exactly the failure signature observed in the wild: single-chunk files
+    // always land, while every multi-chunk upload dies right after its first
+    // chunk, on every retry.
+    //
+    // Liveness without it: the relay pings this socket every 25 s (RFC 6455
+    // Ping/Pong is answered by dart:io automatically), which keeps NAT open, and
+    // ConnectionManager's protocol-level Ping/Pong against the Pi (25 s cadence,
+    // two misses → reconnect) is what actually detects a dead link. A socket the
+    // relay drops still surfaces through `onDone`/`onError`.
+    //
     // Accept http(s) URLs in the user-facing form but always speak
     // ws(s) on the wire — IOWebSocketChannel rejects http schemes.
     final WebSocketChannel ws = IOWebSocketChannel.connect(
       Uri.parse(toWsRelayUrl(relayUrl)),
-      pingInterval: const Duration(seconds: 20),
     );
     final transport = WsTransport._(ws);
 
