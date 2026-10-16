@@ -470,6 +470,47 @@ void main() {
       expect(chA.sent.whereType<UploadDone>().length, 1, reason: 'first attempt sent its done frame');
       expect(chB.sent.whereType<UploadChunk>().length, 1);
     });
+
+    test('a lost session (start frame swallowed by a dead socket) retries '
+        'and completes', () async {
+      // The relay-side socket to the Pi half-died: the start frame was
+      // swallowed, the chunk arrived at a Pi that never saw the start, so
+      // the Pi answers `upload_session_lost`. The app must treat that as
+      // transient and restart on the fresh channel.
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final chA = _FakeChannel(); // start + chunk land, session was lost
+      final chB = _FakeChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(path: f.path, name: 'lost.bin');
+      await _until(() => chA.sent.whereType<UploadChunk>().isNotEmpty);
+      final start = chA.sent.whereType<UploadStart>().single;
+      chA.push(
+        ErrorMessage(
+          inReplyTo: start.id,
+          code: 'upload_session_lost',
+          message: 'upload_chunk: unknown session',
+        ),
+      );
+      current = chB; // the Pi is back on a fresh connection
+
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().single;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'lost.bin',
+          path: '/uploads/room/lost.bin',
+        ),
+      );
+
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/room/lost.bin');
+      expect(chB.sent.whereType<UploadStart>().length, 1, reason: 'restart re-streams the whole file as a fresh session');
+      expect(chB.sent.whereType<UploadChunk>().length, 1);
+    });
   });
 }
 

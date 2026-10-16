@@ -151,11 +151,16 @@ class UploadService implements IUploadService {
       } on UploadError catch (e) {
         // `io_error` = the transport died mid-stream; `timeout` = the done
         // frame was sent but the Pi's answer got lost (or the transport
-        // went down in that last stretch). Both are safe to restart: the
-        // Pi de-duplicates by sha256, so a re-upload of an already-landed
-        // file resolves to the same path.
-        final canRetry =
-            (e.code == 'io_error' || e.code == 'timeout') &&
+        // went down in that last stretch); `upload_session_lost` = the Pi
+        // lost the session to ITS OWN relay transport drop — the start
+        // frame was swallowed by a dead socket, so only the chunks arrive
+        // and the Pi rejects them. All three are safe to restart: a fresh
+        // attempt (new id + start) on the reconnected channel lands
+        // cleanly, and the Pi de-duplicates by sha256, so a re-upload of
+        // an already-landed file resolves to the same path.
+        final canRetry = (e.code == 'io_error' ||
+                e.code == 'timeout' ||
+                e.code == 'upload_session_lost') &&
             attempt < uploadMaxReconnects;
         if (!canRetry) rethrow;
         onProgress?.call(0, 0); // the restart re-streams from the beginning
