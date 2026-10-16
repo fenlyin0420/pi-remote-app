@@ -56,7 +56,7 @@ class WsTransportError implements Exception {
   forSession: senderRoom == null || senderRoom == activeRoom,
 );
 
-class WsTransport implements PeerTransport, IControlLink, IRoomFrameLink {
+class WsTransport implements PeerTransport, IControlLink, IRoomFrameLink, IRoomTargetedTransport {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController =
@@ -232,6 +232,19 @@ class WsTransport implements PeerTransport, IControlLink, IRoomFrameLink {
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'room': _activeRoom,
+      'ct': base64.encode(data),
+    }));
+  }
+
+  /// IRoomTargetedTransport — one frame addressed at [room], leaving
+  /// [_activeRoom] (the UI's live selection) untouched. Long transfers pin
+  /// their room this way: the relay drops a frame whose room the destination
+  /// Pi is not registered under, silently on both ends.
+  @override
+  Future<void> sendAtRoom(String room, Uint8List data) async {
+    _ws.sink.add(jsonEncode({
+      'peer': _peerPubkey,
+      'room': room,
       'ct': base64.encode(data),
     }));
   }

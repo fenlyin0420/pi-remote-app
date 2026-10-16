@@ -75,12 +75,19 @@ abstract class IUploadService {
   /// [shouldCancel] is polled between chunks — return true to abandon
   /// (the Pi reaps the partial file on its TTL; no cancel frame).
   ///
+  /// [room] pins every frame of this transfer to that Pi room instead of the
+  /// connection's live active room. The active room is a single mutable field
+  /// several chat pages re-assert, so it can move mid-transfer; a frame sent
+  /// to a room the Pi is not registered under is dropped by the relay with no
+  /// error on either end. Pass the room the attachment belongs to.
+  ///
   /// A transient transport failure (channel dead mid-stream) restarts the
   /// whole upload once the channel is back — [reconnectTimeout] bounds how
   /// long one restart waits for that (default [uploadReconnectTimeout]).
   Future<UploadedFile> upload({
     required String path,
     required String name,
+    String? room,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
@@ -109,6 +116,7 @@ class UploadService implements IUploadService {
   Future<UploadedFile> upload({
     required String path,
     required String name,
+    String? room,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
@@ -143,6 +151,7 @@ class UploadService implements IUploadService {
           ch: ch,
           path: path,
           name: name,
+          room: room,
           onProgress: onProgress,
           shouldCancel: shouldCancel,
           sendTimeout: sendTimeout,
@@ -181,10 +190,14 @@ class UploadService implements IUploadService {
   /// The channel-facing core (testable without a live ConnectionManager):
   /// streams [path] over [ch] and resolves when the Pi confirms. Pre-checks:
   /// empty file → [UploadError]('empty'), > [uploadMaxBytes] → 'too_large'.
+  ///
+  /// [room] (when set and supported by the channel) pins every frame —
+  /// including each retry's start — at that room.
   static Future<UploadedFile> streamUpload({
     required IChannel ch,
     required String path,
     required String name,
+    String? room,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration sendTimeout = uploadSendTimeout,
@@ -228,7 +241,12 @@ class UploadService implements IUploadService {
     });
 
     try {
-      await _sendTimed(ch, UploadStart(id: id, name: name, size: total), sendTimeout);
+      await _sendTimed(
+        ch,
+        UploadStart(id: id, name: name, size: total),
+        sendTimeout,
+        room: room,
+      );
       // The whole-file sha256 is folded in from the very chunks we send —
       // the file is read once, and a 250 MiB pick never lands in memory
       // whole.
@@ -257,6 +275,7 @@ class UploadService implements IUploadService {
             ch,
             UploadChunk(id: id, index: index, data: base64Encode(bytes)),
             sendTimeout,
+            room: room,
           );
           index++;
           offset += len;
@@ -270,7 +289,12 @@ class UploadService implements IUploadService {
       final sha256 = digest.bytes
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
-      await _sendTimed(ch, UploadDone(id: id, sha256: sha256), sendTimeout);
+      await _sendTimed(
+        ch,
+        UploadDone(id: id, sha256: sha256),
+        sendTimeout,
+        room: room,
+      );
       final timer = Timer(ackTimeout, () {
         if (!completer.isCompleted) {
           completer.completeError(
@@ -303,10 +327,20 @@ class UploadService implements IUploadService {
   /// passes the frame is treated as a failed transport (`io_error`). The
   /// original future is drained either way so a late error cannot float
   /// as an unhandled async error.
-  static Future<void> _sendTimed(IChannel ch, ClientMessage m, Duration t) {
+  ///
+  /// [room] addresses this frame at an explicit room (long transfers pin it);
+  /// channels without the capability fall back to the plain send.
+  static Future<void> _sendTimed(
+    IChannel ch,
+    ClientMessage m,
+    Duration t, {
+    String? room,
+  }) {
     final c = Completer<void>();
     var settled = false;
-    final orig = ch.send(m);
+    final orig = (room != null && ch is IRoomScopedLink)
+        ? (ch as IRoomScopedLink).sendInRoom(room, m)
+        : ch.send(m);
     orig.then(
       (_) {
         if (!settled) {

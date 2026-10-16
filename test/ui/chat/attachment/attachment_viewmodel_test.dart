@@ -83,11 +83,13 @@ class _FakeUploads implements IUploadService {
   UploadedFile? result;
   UploadError? error;
   final List<String> uploads = [];
+  final List<String?> rooms = [];
 
   @override
   Future<UploadedFile> upload({
     required String path,
     required String name,
+    String? room,
     void Function(int sent, int total)? onProgress,
     bool Function()? shouldCancel,
     Duration reconnectTimeout = uploadReconnectTimeout,
@@ -95,6 +97,7 @@ class _FakeUploads implements IUploadService {
     Duration sendTimeout = uploadSendTimeout,
   }) async {
     uploads.add(name);
+    rooms.add(room);
     if (error != null) throw error!;
     onProgress?.call(5, 10);
     return result ??

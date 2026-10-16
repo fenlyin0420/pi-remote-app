@@ -527,8 +527,12 @@ class ConnectionManager extends Service {
       // canonical room. Assigning the implicit `main` here would make
       // `_maybeAdoptLegacyRoom` treat it as already bound.
       _activePeer = peer;
-      final boundRoom = peer.roomId ?? 'main';
-      if (boundRoom != _activeRoomId) {
+      // A peer with no stored room must NOT downgrade the live selection to
+      // the implicit `main` room: no Pi daemon is registered under it, so the
+      // relay drops every outbound frame with no error anywhere. Keeping the
+      // current room preserves whatever a `room_announced` already taught us.
+      final boundRoom = peer.roomId;
+      if (boundRoom != null && boundRoom.isNotEmpty && boundRoom != _activeRoomId) {
         _activeRoomId = boundRoom;
       }
     }

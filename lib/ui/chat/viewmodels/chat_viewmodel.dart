@@ -213,7 +213,12 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> _bootstrap() async {
     final epk = _prefs.selectedPeerEpk;
-    final roomId = _prefs.selectedRoomId ?? 'main';
+    // `selectedRoomId` is only set once a real room was picked or announced.
+    // When it is absent, trust the live binding (room discovery may already
+    // have bound the connection) instead of forcing the implicit `main` room:
+    // no Pi daemon is registered under `main`, so the relay drops every frame
+    // sent there while the app still looks online.
+    final roomId = _prefs.selectedRoomId ?? _conn.activeRoomId;
     if (epk == null) {
       _bootstrapping = false;
       emit(const ChatNoPeer());

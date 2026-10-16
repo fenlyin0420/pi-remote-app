@@ -18,6 +18,20 @@ abstract class IControlLink {
   void sendControl(Map<String, dynamic> json);
 }
 
+/// Optional capability: send one inner message addressed to an explicit Pi
+/// room instead of the connection's current active room.
+///
+/// The active room is a single mutable field ([ConnectionManager.switchRoom],
+/// driven by chat pages, notification taps and session rides), and more than
+/// one chat page can re-assert it, so it OSCILLATES. A frame sent to the room
+/// the destination Pi is not registered under is dropped by the relay —
+/// `dest (peer, room) not found` — with no error to the sender and no log on
+/// the Pi, which is indistinguishable from a dead transport. Multi-second
+/// transfers (chunked uploads) must therefore pin the room they started in.
+abstract class IRoomScopedLink {
+  Future<void> sendInRoom(String room, ClientMessage msg);
+}
+
 /// One inbound frame tagged with the Pi-side room that produced it.
 ///
 /// The relay stamps every delivered envelope with the **sender's** room id, so

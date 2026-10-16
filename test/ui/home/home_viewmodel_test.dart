@@ -105,6 +105,13 @@ const _peerB = PeerRecord(
   relayUrl: 'ws://localhost',
   pairedAt: '2026-01-02T00:00:00Z',
 );
+const _peerWithRoom = PeerRecord(
+  remoteEpk: 'epk_R',
+  sessionName: 'Pi R',
+  relayUrl: 'ws://localhost',
+  pairedAt: '2026-01-03T00:00:00Z',
+  roomId: 'room-known',
+);
 
 class _NoopTransport implements PeerTransport {
   @override
@@ -326,6 +333,62 @@ void main() {
         expect(prefs.selectedRoomId, 'room-target');
 
         vm.dispose();
+      },
+    );
+
+    test(
+      'openSession without a roomId never downgrades the live room to the '
+      'implicit main — the relay drops frames addressed to a room the Pi is '
+      'not registered under, with no error on either end',
+      () async {
+        final storage = _FakeStorage([_peerA, _peerB]);
+        final prefs = Preferences(_FakeSecureStorage());
+        final conn = _conn(storage: storage);
+        final vm = HomeViewModel(storage, prefs, conn);
+        await Future<void>.delayed(Duration.zero);
+
+        // The live connection is bound to a real room (learned from
+        // room_announced, or a session the user opened earlier).
+        conn.switchRoom('V1pGb2Tqp6U1');
+
+        // A payload with no room: an older notification tap, or a peer
+        // record that was never room-bound.
+        await vm.openSession('epk_A');
+
+        expect(
+          conn.activeRoomId,
+          'V1pGb2Tqp6U1',
+          reason: 'an unknown room must not rebind the live connection',
+        );
+        expect(prefs.selectedPeerEpk, 'epk_A');
+        expect(
+          prefs.selectedRoomId,
+          isNull,
+          reason: 'no room in the payload means no room to persist — binding '
+              'one implicitly (main) is what silently kills the session',
+        );
+
+        vm.dispose();
+        conn.dispose();
+      },
+    );
+
+    test(
+      'openSession without a roomId keeps the room already stored on the peer',
+      () async {
+        final storage = _FakeStorage([_peerWithRoom]);
+        final prefs = Preferences(_FakeSecureStorage());
+        final conn = _conn(storage: storage);
+        final vm = HomeViewModel(storage, prefs, conn);
+        await Future<void>.delayed(Duration.zero);
+
+        await vm.openSession('epk_R');
+
+        expect(conn.activeRoomId, 'room-known');
+        expect(prefs.selectedRoomId, 'room-known');
+
+        vm.dispose();
+        conn.dispose();
       },
     );
   });

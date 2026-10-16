@@ -27,7 +27,25 @@ Future<void> retargetSession({
   final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
   if (match.isEmpty) return;
   final peer = match.first!;
-  final effectiveRoom = (roomId == null || roomId.isEmpty) ? 'main' : roomId;
+  // A payload without a room (older notification payloads, a session that
+  // was never room-bound) must NOT fall back to the literal `main`: no Pi
+  // daemon is registered under that room, so the relay drops every outbound
+  // frame — `dest (peer, room) not found` — while the app still shows
+  // "online". Persisting it is worse: `_connect` then re-binds the peer to
+  // `main` on every reconnect and the session stays dead until the user
+  // picks a room by hand. Keep whatever room the peer already knows; when it
+  // knows none, leave the live selection alone and let room discovery bind
+  // it (`ConnectionManager._maybeAdoptLegacyRoom`).
+  final requested = (roomId == null || roomId.isEmpty) ? null : roomId;
+  final effectiveRoom = requested ?? peer.roomId;
+  if (effectiveRoom == null || effectiveRoom.isEmpty) {
+    // No room to bind: still select the peer (that is what "open this
+    // session" means here), but leave the routing room untouched — the peer
+    // record keeps its own value and the live connection keeps addressing
+    // whatever real room discovery already bound it to.
+    await prefs.setSelectedRoom(epk: epk);
+    return;
+  }
   await prefs.setSelectedRoom(epk: epk, roomId: effectiveRoom);
   if (peer.roomId != effectiveRoom) {
     // ignore: unawaited_futures

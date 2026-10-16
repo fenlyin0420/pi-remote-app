@@ -170,6 +170,11 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
       final uploaded = await _uploads.upload(
         path: pick.path,
         name: pick.name,
+        // Pin every frame to the room this tray belongs to: the connection's
+        // active room can move while the transfer runs (another chat page or
+        // a notification tap re-asserts it), and the relay drops frames sent
+        // to a room the Pi is not registered under — silently, on both ends.
+        room: _roomId,
         onProgress: (sent, total) {
           if (cancelled()) return;
           _setBinaryProgress(item, sent / total);

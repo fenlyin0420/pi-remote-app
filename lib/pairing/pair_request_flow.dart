@@ -28,6 +28,14 @@ abstract class PeerTransport {
   Future<void> close();
 }
 
+/// Optional transport capability: send one frame addressed at an explicit room
+/// while the transport's active room is left untouched. Implemented by the WS
+/// transport (the only one that puts a room on the wire); the channel layer
+/// falls back to a plain [PeerTransport.send] elsewhere.
+abstract class IRoomTargetedTransport {
+  Future<void> sendAtRoom(String room, Uint8List data);
+}
+
 // ---------------------------------------------------------------------------
 // PairingError
 // ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ class PeerChannelError implements Exception {
   String toString() => 'PeerChannelError: $message';
 }
 
-class PlainPeerChannel implements IChannel, IControlLink, IRoomFrameLink {
+class PlainPeerChannel implements IChannel, IControlLink, IRoomFrameLink, IRoomScopedLink {
   final PeerTransport _transport;
 
   final _controller = StreamController<ServerMessage>.broadcast();
@@ -84,6 +84,22 @@ class PlainPeerChannel implements IChannel, IControlLink, IRoomFrameLink {
   @override
   Future<void> send(ClientMessage msg) async {
     final bytes = Uint8List.fromList(utf8.encode(encodeClient(msg).trimRight()));
+    await _transport.send(bytes);
+  }
+
+  /// IRoomScopedLink — addresses THIS frame at `room` while the connection's
+  /// active room stays whatever the UI last set. Used by long transfers
+  /// (chunked uploads) so an active-room switch mid-transfer cannot reroute
+  /// the remaining frames into a room the Pi is not registered under.
+  @override
+  Future<void> sendInRoom(String room, ClientMessage msg) async {
+    final bytes = Uint8List.fromList(utf8.encode(encodeClient(msg).trimRight()));
+    final t = _transport;
+    if (t is IRoomTargetedTransport) {
+      return (t as IRoomTargetedTransport).sendAtRoom(room, bytes);
+    }
+    // Transport without room awareness (in-memory test fakes): fall back to
+    // the plain send — the room never reaches the wire there anyway.
     await _transport.send(bytes);
   }
 

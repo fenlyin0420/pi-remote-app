@@ -30,6 +30,25 @@ class _FakeChannel implements IChannel {
   Future<void> close() async {}
 }
 
+/// A fake that reports the room-pinning capability, recording the room each
+/// frame was addressed to. `rooms` holds one entry per frame, in send order
+/// ('' = a frame that went out on the unpinned/plain path).
+class _RoomScopedChannel extends _FakeChannel implements IRoomScopedLink {
+  final rooms = <String>[];
+
+  @override
+  Future<void> send(ClientMessage msg) async {
+    rooms.add('');
+    return super.send(msg);
+  }
+
+  @override
+  Future<void> sendInRoom(String room, ClientMessage msg) async {
+    rooms.add(room);
+    return super.send(msg);
+  }
+}
+
 Future<String> _expectedSha(List<int> bytes) async {
   final sink = const DartSha256().newHashSink();
   sink.add(bytes);
@@ -510,6 +529,97 @@ void main() {
       expect(uploaded.path, '/uploads/room/lost.bin');
       expect(chB.sent.whereType<UploadStart>().length, 1, reason: 'restart re-streams the whole file as a fresh session');
       expect(chB.sent.whereType<UploadChunk>().length, 1);
+    });
+  });
+
+  group('room pinning — a mid-transfer room switch cannot reroute frames', () {
+    test('every frame carries the pinned room, not the live one', () async {
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final ch = _RoomScopedChannel();
+      final fut = UploadService.streamUpload(
+        ch: ch,
+        path: f.path,
+        name: 'pinned.bin',
+        room: 'V1pGb2Tqp6U1',
+      );
+      await _until(() => ch.sent.whereType<UploadDone>().isNotEmpty);
+      final done = ch.sent.whereType<UploadDone>().single;
+      ch.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'pinned.bin',
+          path: '/uploads/V1pGb2Tqp6U1/pinned.bin',
+        ),
+      );
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/V1pGb2Tqp6U1/pinned.bin');
+      expect(
+        ch.sent.map((m) => m.runtimeType.toString()).toList(),
+        ['UploadStart', 'UploadChunk', 'UploadDone'],
+      );
+      expect(ch.rooms, ['V1pGb2Tqp6U1', 'V1pGb2Tqp6U1', 'V1pGb2Tqp6U1']);
+    });
+
+    test('no room keeps the plain send path', () async {
+      final f = await mkFile(List<int>.filled(300000, 3));
+      final ch = _RoomScopedChannel();
+      final fut = UploadService.streamUpload(
+        ch: ch,
+        path: f.path,
+        name: 'plain.bin',
+      );
+      await _until(() => ch.sent.whereType<UploadDone>().isNotEmpty);
+      final done = ch.sent.whereType<UploadDone>().single;
+      ch.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'plain.bin',
+          path: '/x/plain.bin',
+        ),
+      );
+      await fut;
+      expect(ch.rooms, ['', '', '']);
+    });
+
+    test('a retry re-pins the room on the fresh channel too', () async {
+      final f = await mkFile(List<int>.filled(300000, 3)); // 1 chunk
+      final chA = _RoomScopedChannel();
+      final chB = _RoomScopedChannel();
+      IChannel? current = chA;
+      final svc = UploadService.withChannelProvider(() => current);
+
+      final fut = svc.upload(
+        path: f.path,
+        name: 'retry.bin',
+        room: 'DJvMhbgzRlv6',
+      );
+      await _until(() => chA.sent.whereType<UploadChunk>().isNotEmpty);
+      final start = chA.sent.whereType<UploadStart>().single;
+      chA.push(
+        ErrorMessage(
+          inReplyTo: start.id,
+          code: 'upload_session_lost',
+          message: 'upload_chunk: unknown session',
+        ),
+      );
+      current = chB;
+      await _until(() => chB.sent.whereType<UploadDone>().isNotEmpty);
+      final done = chB.sent.whereType<UploadDone>().single;
+      chB.push(
+        UploadComplete(
+          inReplyTo: done.id,
+          id: done.id,
+          name: 'retry.bin',
+          path: '/uploads/DJvMhbgzRlv6/retry.bin',
+        ),
+      );
+
+      final uploaded = await fut;
+      expect(uploaded.path, '/uploads/DJvMhbgzRlv6/retry.bin');
+      expect(chA.rooms.toSet(), {'DJvMhbgzRlv6'});
+      expect(chB.rooms.toSet(), {'DJvMhbgzRlv6'});
     });
   });
 }
