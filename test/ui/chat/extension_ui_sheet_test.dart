@@ -82,6 +82,62 @@ void main() {
     );
   });
 
+  testWidgets('optional note rides along with the rich submit', (tester) async {
+    final sent = <ExtensionUiResponse>[];
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onRespond: (r) async => sent.add(r),
+    );
+
+    await tester.tap(find.text('Beta'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextField).last,
+      '  also update the changelog  ',
+    );
+    await tester.pump();
+    await tester.tap(submitButton());
+    await tester.pump();
+
+    expect(sent, hasLength(1));
+    expect(sent.single.ask!.note, 'also update the changelog');
+  });
+
+  testWidgets('a note alone does not enable Submit (it is not an answer)', (
+    tester,
+  ) async {
+    await pumpSheet(tester, request: _richRequest());
+    expect(submitEnabled(tester), isFalse);
+
+    await tester.enterText(find.byType(TextField).last, 'just a comment');
+    await tester.pump();
+
+    expect(submitEnabled(tester), isFalse);
+  });
+
+  testWidgets('an empty optional note is omitted from the response', (
+    tester,
+  ) async {
+    final sent = <ExtensionUiResponse>[];
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onRespond: (r) async => sent.add(r),
+    );
+
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).last, '   ');
+    await tester.pump();
+    await tester.tap(submitButton());
+    await tester.pump();
+
+    expect(sent, hasLength(1));
+    expect(sent.single.ask!.note, isNull);
+    expect(sent.single.ask!.toJson().containsKey('note'), isFalse);
+  });
+
   testWidgets('typing enables Submit on the degraded input method', (
     tester,
   ) async {

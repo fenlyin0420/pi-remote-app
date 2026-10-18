@@ -40,6 +40,8 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   final Map<String, Set<String>> _selected = {};
   // Rich: question id → custom text controller (lazily created, disposed).
   final Map<String, TextEditingController> _custom = {};
+  // Rich: optional whole-ask note (pi-ask `details.note`); may stay empty.
+  final TextEditingController _note = TextEditingController();
   // Degraded (no ask envelope) state.
   String? _singleValue;
   final TextEditingController _textController = TextEditingController();
@@ -91,6 +93,7 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     for (final c in _custom.values) {
       c.dispose();
     }
+    _note.dispose();
     _textController.dispose();
     super.dispose();
   }
@@ -172,12 +175,14 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
         if (values.isEmpty && customText == null) continue;
         answers[q.id] = AskAnswerWire(values: values, customText: customText);
       }
+      final noteText = _note.text.trim();
       return ExtensionUiResponse(
         id: id,
         ask: AskResponseEnrichmentWire(
           flowId: ask.flowId,
           mode: 'submit',
           answers: answers,
+          note: noteText.isEmpty ? null : noteText,
         ),
       );
     }
@@ -255,9 +260,47 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   Widget _buildRich(BuildContext context, AskEnrichmentWire ask) {
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      itemCount: ask.questions.length,
+      itemCount: ask.questions.length + 1,
       separatorBuilder: (_, _) => const SizedBox(height: 24),
-      itemBuilder: (context, i) => _buildQuestion(context, ask.questions[i]),
+      itemBuilder: (context, i) => i < ask.questions.length
+          ? _buildQuestion(context, ask.questions[i])
+          : _buildOptionalNote(context),
+    );
+  }
+
+  /// Plan/57 — one free-form note for the whole ask, rendered after every
+  /// question. Mirrors pi-ask's review-tab optional note: it can stay empty and
+  /// never counts as an answer, so it does not enable Submit on its own.
+  Widget _buildOptionalNote(BuildContext context) {
+    final colors = context.colors;
+    final text = Theme.of(context).textTheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Optional note', style: text.titleMedium),
+        const SizedBox(height: 2),
+        Text(
+          'Anything else for the whole ask? It can stay empty.',
+          style: text.labelSmall?.copyWith(color: colors.muted),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _note,
+          enabled: !_submitting,
+          minLines: 1,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: 'Optional — leave empty to skip',
+            isDense: true,
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
