@@ -161,6 +161,31 @@ void main() {
     expect(find.byIcon(LucideIcons.mic600), findsNothing);
   });
 
+  // The hint is laid out even while text is present, so its wrap count used to
+  // size the box: typing the first character mid-turn makes the inline Stop
+  // appear, the field narrows, a wrapping hint gains a line — and the composer
+  // grew to two lines with a single character in it. A one-line hint decouples
+  // the height from the width.
+  testWidgets('typing the first character mid-turn keeps the box one line', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(393 * 3, 852 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    await pumpBar(
+      tester,
+      disabled: false,
+      streaming: true,
+      onOpenQuickActions: () {},
+    );
+    await tester.pumpAndSettle();
+    final field = find.byType(TextField);
+    final empty = tester.getSize(field).height;
+    await tester.enterText(field, 'a');
+    await tester.pumpAndSettle();
+    expect(tester.getSize(field).height, empty);
+  });
+
   testWidgets('streaming + text uses existing send button for steer', (
     tester,
   ) async {

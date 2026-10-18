@@ -598,6 +598,12 @@ class _InputBarState extends State<InputBar> {
                       ),
                       cursorColor: colors.accent,
                       decoration: InputDecoration(
+                        // One line, always: the hint is laid out even while
+                        // text is present, so a wrapping hint would size the
+                        // box — and the inline Stop button shrinking the field
+                        // mid-turn would then add a line the moment the first
+                        // character is typed.
+                        hintMaxLines: 1,
                         hintText: widget.disabled
                             ? 'Offline…'
                             : attached
