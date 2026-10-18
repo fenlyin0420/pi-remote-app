@@ -505,6 +505,10 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<Uint8List?> attachmentBytes(String blobName) =>
       _sync.attachmentBytes(blobName);
 
+  /// The archived bytes of a picture the user sent, or null when this phone has
+  /// no copy — the row itself only carries the archive name.
+  Future<Uint8List?> sentImageBytes(String blob) => _sync.sentImageBytes(blob);
+
   /// Pull the bytes for a card that has none — the user tapped it. The Pi
   /// answers with a `file_offer` for the same card id, which flows back
   /// through the normal writer path.

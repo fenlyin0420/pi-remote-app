@@ -41,6 +41,7 @@ class MessageList extends StatefulWidget {
     required this.loadAttachmentBytes,
     required this.onLoadAttachment,
     required this.onSaveAttachment,
+    this.loadSentImageBytes,
     this.showMeta = true,
     this.hideThinking = false,
   });
@@ -60,6 +61,10 @@ class MessageList extends StatefulWidget {
 
   /// Reads a cached attachment blob (null when the card has none yet).
   final Future<Uint8List?> Function(String blobName) loadAttachmentBytes;
+
+  /// Reads a picture the user SENT from the phone's own archive. A row carries
+  /// only a content hash, so this is where the bytes come back from.
+  final Future<Uint8List?> Function(String blob)? loadSentImageBytes;
 
   /// Asks the Pi for the bytes behind an attachment card that has none.
   final Future<void> Function(String attachmentId, String path) onLoadAttachment;
@@ -341,7 +346,10 @@ class MessageListState extends State<MessageList> {
                 }
                 final msg = rows[i];
                 final row = switch (msg) {
-                  UserMsg() => UserBubble(msg),
+                  UserMsg() => UserBubble(
+                    msg,
+                    loadImageBytes: widget.loadSentImageBytes,
+                  ),
                   AssistantMsg() => AssistantBubble(msg),
                   ThinkingMsg() => ThinkingBubble(msg),
                   ToolEvent() => ToolRequestCard(

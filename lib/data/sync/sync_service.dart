@@ -27,15 +27,18 @@ import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
+import 'package:app/data/local/sent_image_store.dart';
 import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/value_objects/image_size.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 import 'package:flutter/foundation.dart';
+import 'package:hive/hive.dart';
 
 /// Per-room in-memory turn state (the "live" half of a session, never
 /// persisted): the two streaming segment buffers, the reasoning-block start
@@ -153,6 +156,11 @@ class SyncService extends Service {
   // that never send a file never touch the filesystem.
   AttachmentStore? _attachments;
 
+  /// The phone's own archive of the pictures the user sent (`sent_images/`),
+  /// resolved the same lazy way. Rows reference it by content hash, so a
+  /// history replay can never delete a picture from the transcript.
+  SentImageStore? _sentImages;
+
   /// The one tool the app renders as something other than a tool card.
   static const String _sendToPhoneTool = 'send_to_phone';
 
@@ -169,8 +177,10 @@ class SyncService extends Service {
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
     AttachmentStore? attachmentStore,
+    SentImageStore? sentImageStore,
     MediaSaver? mediaSaver,
   }) : _attachments = attachmentStore,
+       _sentImages = sentImageStore,
        _mediaSaver = mediaSaver {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -224,6 +234,14 @@ class SyncService extends Service {
     return store.get(blobName);
   }
 
+  /// The archived bytes of a picture the user sent, or null when this phone has
+  /// no copy (pruned, or a row written before the archive existed).
+  Future<Uint8List?> sentImageBytes(String blob) async {
+    final store = _sentImageStore();
+    if (store == null) return null;
+    return store.get(blob);
+  }
+
   /// The absolute path of a cached blob, for handing it to the platform.
   Future<String?> attachmentPath(String blobName) async {
     final store = _attachmentStore();
@@ -272,6 +290,74 @@ class SyncService extends Service {
     final path = box?.path;
     if (path == null) return null;
     return _attachments = AttachmentStore.forBox(path);
+  }
+
+  /// The sent-picture archive, resolved from [msgsBox] when the caller already
+  /// holds the box it is writing (a history replay may land after a room switch,
+  /// so the active room is not good enough there).
+  SentImageStore? _sentImageStore({Box<dynamic>? msgsBox}) {
+    final existing = _sentImages;
+    if (existing != null) return existing;
+    var path = msgsBox?.path;
+    if (path == null) {
+      final epk = _activeEpk;
+      if (epk == null) return null;
+      path = _boxes.isMsgsBoxOpen(epk, _activeRoomId)
+          ? _boxes.openMsgsBox(epk, _activeRoomId).path
+          : null;
+    }
+    if (path == null) return null;
+    return _sentImages = SentImageStore.forBox(path);
+  }
+
+  /// Moves a row's inline image bytes into the phone's archive and returns the
+  /// same list with `blob` + pixel size instead of `data`.
+  ///
+  /// Runs on EVERY write path that can carry a picture — the optimistic send,
+  /// the Pi's echo, the replayed history — because the row is the only thing a
+  /// replay can rewrite. The write is content addressed and skipped when the
+  /// blob already exists, so a re-sync replaying bytes this phone already holds
+  /// costs one hash and no I/O.
+  Future<List<MessageImage>> _archiveImages(
+    List<MessageImage> images, {
+    Box<dynamic>? msgsBox,
+  }) async {
+    if (images.isEmpty) return images;
+    final store = _sentImageStore(msgsBox: msgsBox);
+    // No data dir (a test, or a box that was never opened): keep the bytes in
+    // the row rather than dropping them.
+    if (store == null) return images;
+    var changed = false;
+    final out = <MessageImage>[];
+    for (final img in images) {
+      if (img.archived || img.data.isEmpty) {
+        out.add(img);
+        continue;
+      }
+      Uint8List bytes;
+      try {
+        bytes = base64Decode(img.data);
+      } catch (_) {
+        out.add(img);
+        continue;
+      }
+      final blob = await store.put(bytes);
+      if (blob == null) {
+        out.add(img);
+        continue;
+      }
+      final size = probeImageSize(bytes);
+      out.add(
+        MessageImage(
+          mime: img.mime,
+          blob: blob,
+          width: size?.width,
+          height: size?.height,
+        ),
+      );
+      changed = true;
+    }
+    return changed ? out : images;
   }
 
   /// Plan/57 — stream of interactive extension_ui_request prompts (ask_user
@@ -1161,8 +1247,12 @@ class SyncService extends Service {
       // cached blob name over — otherwise every re-sync would turn a room full
       // of already-seen screenshots back into "tap to load".
       final blobs = <String, String>{};
-      for (final v in box.values) {
-        final r = MessageRecord.fromJson(_coerce(v));
+      // The rows currently on disk, by box position: the picture restore below
+      // and the `desired` diff both need the OLD row, not just its value.
+      final current = <int, MessageRecord>{};
+      for (final entry in box.toMap().entries) {
+        final r = MessageRecord.fromJson(_coerce(entry.value));
+        current[(entry.key as num).toInt()] = r;
         if (r.role == MsgRole.attachment) {
           final blob = r.attachment?.blobName;
           if (blob != null) blobs[r.id] = blob;
@@ -1191,6 +1281,33 @@ class SyncService extends Service {
             ),
           );
         }
+      }
+      // Pictures the user sent outlive the Pi's copy of them: the bytes are in
+      // the phone's archive, and this replay is the only thing that could erase
+      // them from the transcript.
+      //
+      //  * a replay that comes back WITHOUT the image payload (the Pi's session
+      //    file was cleaned/compacted, or the payload fell out of the replay's
+      //    byte budget) keeps the picture for the row that still holds this
+      //    position and this id — the same message, now byte-less;
+      //  * a replay that DOES carry bytes gets them archived, so the row stops
+      //    carrying a megabyte of base64 into Hive.
+      for (var i = 0; i < rows.length; i++) {
+        final row = rows[i];
+        if (row.role != MsgRole.user) continue;
+        var images = row.images;
+        if (images.isEmpty) {
+          final old = current[i];
+          if (old != null &&
+              old.role == MsgRole.user &&
+              old.id == row.id &&
+              old.text == row.text &&
+              old.images.isNotEmpty) {
+            images = old.images;
+          }
+        }
+        if (images.isEmpty) continue;
+        rows[i] = row.copyWith(images: await _archiveImages(images, msgsBox: box));
       }
       // Desired ordered state: history (seq = index) then preserved pending.
       final desired = <MessageRecord>[
@@ -1460,13 +1577,32 @@ class SyncService extends Service {
       final existingSeq = _idToSeq[mapKey];
       if (existingSeq != null) {
         final existing = MessageRecord.fromJson(_coerce(box.get(existingSeq)));
-        await box.put(existingSeq, build(existingSeq, existing).toJson());
+        await box.put(
+          existingSeq,
+          (await _archiveRecord(build(existingSeq, existing), box)).toJson(),
+        );
       } else {
         final seq = _nextSeq++;
-        await box.put(seq, build(seq, null).toJson());
+        await box.put(
+          seq,
+          (await _archiveRecord(build(seq, null), box)).toJson(),
+        );
         _idToSeq[mapKey] = seq;
       }
     });
+  }
+
+  /// [record] with its pictures moved into the phone's archive. Identity when
+  /// the row carries no inline bytes (the usual case).
+  Future<MessageRecord> _archiveRecord(
+    MessageRecord record,
+    Box<dynamic> box,
+  ) async {
+    if (record.images.isEmpty) return record;
+    final archived = await _archiveImages(record.images, msgsBox: box);
+    return identical(archived, record.images)
+        ? record
+        : record.copyWith(images: archived);
   }
 
   Future<void> _removeById(String id) {

@@ -71,6 +71,10 @@ dependencies:
   # Plan 30 — image attachments. image_picker uses the system camera +
   # PHPicker/Photo Picker (no gallery permission); flutter_image_compress
   # shrinks to JPEG (≤1568px / q80) on-device before it goes inline.
+  #
+  # `crypto` is here for one job: content-addressing the phone's archive of the
+  # pictures the user sent (see `data/local/sent_image_store.dart`).
+  crypto: ^3.0.7
   image_picker: ^1.1.0
   flutter_image_compress: ^2.3.0
 

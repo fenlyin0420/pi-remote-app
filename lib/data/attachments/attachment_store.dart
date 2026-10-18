@@ -40,11 +40,21 @@ class AttachmentStore {
 
   AttachmentStore(this.root, {this.maxTotalBytes = AttachmentStore.defaultMaxBytes});
 
-  /// Where [box] lives, with `dirName` under it. Hive's box path is
+  /// Where [box] lives, with [dirName] under it. Hive's box path is
   /// `<dataDir>/<name>.hive`, so the parent is the app's data dir.
-  factory AttachmentStore.forBox(String boxPath) {
+  ///
+  /// [dirName] exists for the sibling caches that want the same file
+  /// mechanics with their own budget (see `local/sent_image_store.dart`).
+  factory AttachmentStore.forBox(
+    String boxPath, {
+    String dirName = AttachmentStore.dirName,
+    int maxTotalBytes = AttachmentStore.defaultMaxBytes,
+  }) {
     final parent = File(boxPath).parent;
-    return AttachmentStore(Directory('${parent.path}/$dirName'));
+    return AttachmentStore(
+      Directory('${parent.path}/$dirName'),
+      maxTotalBytes: maxTotalBytes,
+    );
   }
 
   Directory get _dir => root;
@@ -55,7 +65,7 @@ class AttachmentStore {
   /// throwing, because the card is still worth showing (name, size, path) even
   /// when the bytes could not be cached.
   Future<String?> put(String attachmentId, Uint8List bytes) async {
-    final name = _blobName(attachmentId);
+    final name = blobName(attachmentId);
     try {
       await _dir.create(recursive: true);
       // Write to a per-write temp name and rename, so a crash mid-write can
@@ -160,12 +170,15 @@ class AttachmentStore {
     }
   }
 
-  /// Blob name for an attachment id: `att_<safe id>`. The id comes off the
-  /// wire, so it is reduced to a single safe path segment.
-  static String _blobName(String attachmentId) {
-    final safe = attachmentId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+  /// Blob name for [id]: `<safe id>.bin`. The id comes off the wire (or is a
+  /// content hash), so it is reduced to a single safe path segment.
+  static String blobName(String id) =>
+      '${_safeStem(id)}.bin';
+
+  static String _safeStem(String id) {
+    final safe = id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
     final stem = safe.isEmpty ? 'file' : safe;
-    return '${stem.length > 80 ? stem.substring(0, 80) : stem}.bin';
+    return stem.length > 80 ? stem.substring(0, 80) : stem;
   }
 
   /// Text preview of a text file, capped so a 1 MB file can't be handed to a

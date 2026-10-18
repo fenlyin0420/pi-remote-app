@@ -11,16 +11,21 @@ Future<void> _pump(
   ImageSize? size, {
   double available = 300,
   double maxHeight = 220,
+  bool keepRatio = false,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
         body: Center(
-          child: SizedBox(
-            width: available,
+          // A LOOSE width — the row a card spans. `keepRatio` call sites must
+          // not hand the frame a tight width, or the hugging box is stretched
+          // back to the row.
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: available),
             child: ImageFrame(
               size: size,
               maxHeight: maxHeight,
+              keepRatio: keepRatio,
               builder: (context, cacheWidth) => ColoredBox(color: Colors.red),
             ),
           ),
@@ -96,6 +101,77 @@ void main() {
       (300 * tester.view.devicePixelRatio).round(),
       reason: 'a 1568 px photo does not need a 1568 px bitmap in a 300 pt row',
     );
+  });
+
+  group('keepRatio', () {
+    testWidgets('a square stays square at the height cap', (tester) async {
+      await _pump(
+        tester,
+        const ImageSize(1568, 1568),
+        keepRatio: true,
+      );
+      final box = tester.getSize(find.byType(ImageFrame));
+      expect(box.width, closeTo(220, 0.01));
+      expect(box.height, closeTo(220, 0.01));
+    });
+
+    testWidgets('a portrait picture is a strip of its own ratio', (
+      tester,
+    ) async {
+      // 700×1568 against a 220 px cap: 98.21 × 220 — the picture is scaled
+      // down to fit, never cropped to the row's width.
+      await _pump(tester, const ImageSize(700, 1568), keepRatio: true);
+      final box = tester.getSize(find.byType(ImageFrame));
+      expect(box.height, closeTo(220, 0.01));
+      expect(box.width, closeTo(700 * 220 / 1568, 0.01));
+    });
+
+    testWidgets('a landscape picture fills the width', (tester) async {
+      await _pump(tester, const ImageSize(400, 100), keepRatio: true);
+      expect(tester.getSize(find.byType(ImageFrame)), const Size(300, 75));
+    });
+
+    testWidgets('a small picture is not magnified past its own pixels', (
+      tester,
+    ) async {
+      await _pump(tester, const ImageSize(40, 30), keepRatio: true);
+      expect(tester.getSize(find.byType(ImageFrame)), const Size(40, 30));
+    });
+
+    testWidgets('an unreadable header still reserves a fixed box', (
+      tester,
+    ) async {
+      await _pump(tester, null, keepRatio: true);
+      expect(tester.getSize(find.byType(ImageFrame)), const Size(220, 220));
+    });
+
+    testWidgets('the decode hint follows the hugging box', (tester) async {
+      int? asked;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 300,
+                child: ImageFrame(
+                  size: const ImageSize(1568, 1568),
+                  keepRatio: true,
+                  builder: (context, cacheWidth) {
+                    asked = cacheWidth;
+                    return const SizedBox.expand();
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(
+        asked,
+        (220 * tester.view.devicePixelRatio).round(),
+        reason: 'a 220 pt box never needs a 1568 px bitmap',
+      );
+    });
   });
 
   group('ImageSizeCache', () {

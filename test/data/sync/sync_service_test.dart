@@ -70,6 +70,11 @@ class _FakeStorage extends PairingStorage {
   Future<List<PeerRecord>> listPeers() async => const [];
 }
 
+// A real 200×200 PNG (1-bit), so `probeImageSize` can read its header.
+const _squarePng =
+    'iVBORw0KGgoAAAANSUhEUgAAAMgAAADIAQAAAACFI5MzAAAAKElEQVR42u3JoQEAAAgDoOn/'
+    'P2u1+AFUavLoGGOMMcYYY4wxxhhjzLUvnQKPTWDWfAAAAABJRU5ErkJggg==';
+
 int _counter = 0;
 
 late Directory _dir;
@@ -1733,5 +1738,136 @@ void main() {
         s.sync.dispose();
       },
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sent pictures: the phone's own archive
+  // ---------------------------------------------------------------------------
+  //
+  // A sent picture used to live in the row itself, and `session_history` is a
+  // WHOLESALE substitute for the room — so a Pi-side cleanup (or the replay's
+  // byte budget dropping the payload) silently erased the picture from the
+  // transcript. The bytes now live in `sent_images/`, content addressed, and the
+  // row keeps only the name: a replay can rewrite the row and the picture stays.
+
+  group('sent picture archive', () {
+    Directory blobs() => Directory('${_dir.path}/sent_images');
+
+    test('the row keeps only the archive name; the bytes go to disk', () async {
+      final s = await setup();
+      await s.sync.sendMessage(
+        'look',
+        images: [MessageImage(data: _squarePng, mime: 'image/png')],
+      );
+      await _settle();
+
+      // The wire is unchanged: the Pi still receives the bytes inline.
+      final frame = s.ch.sent.whereType<UserMessage>().single;
+      expect(frame.images?.single.data, _squarePng);
+
+      final image = messages(s.epk).single.images.single;
+      expect(image.blob, isNotNull, reason: 'archived, not inline');
+      expect(image.data, isEmpty, reason: 'a megabyte of base64 stays out of Hive');
+      expect(image.width, 200, reason: 'the header size rides along for layout');
+      expect(image.height, 200);
+
+      final bytes = await s.sync.sentImageBytes(image.blob!);
+      expect(bytes, isNotNull, reason: 'the phone can read its own copy');
+      expect(bytes, base64Decode(_squarePng));
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a replay that lost the picture keeps the phone copy', () async {
+      final s = await setup();
+      // First replay: the Pi still has the bytes (same id + text as any later
+      // replay of the same session file — the id is `sync_<ts>` on the Pi).
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [
+            UserInputEvt(
+              ts: 10,
+              id: 'sync_10',
+              text: 'look',
+              images: [WireImage(data: _squarePng, mime: 'image/png')],
+            ),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      final archived = messages(s.epk).single.images.single;
+      expect(archived.blob, isNotNull);
+
+      // The Pi's session file was cleaned: the row comes back, the bytes do not.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync2',
+          sessionStartedAt: 0,
+          events: const [
+            UserInputEvt(ts: 10, id: 'sync_10', text: 'look'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+
+      final row = messages(s.epk).single;
+      expect(row.images, hasLength(1), reason: 'the picture is not the Pi to take');
+      expect(row.images.single.blob, archived.blob);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('replays do not pile up copies of the same picture', () async {
+      final s = await setup();
+      Future<void> replay(String replyTo) async {
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: replyTo,
+            sessionStartedAt: 0,
+            events: const [
+              UserInputEvt(
+                ts: 20,
+                id: 'sync_20',
+                text: 'look',
+                images: [WireImage(data: _squarePng, mime: 'image/png')],
+              ),
+            ],
+            eos: true,
+          ),
+        );
+        await _settle();
+      }
+
+      await replay('sync1');
+      final afterFirst = blobs().listSync().length;
+      await replay('sync2');
+      expect(
+        blobs().listSync().length,
+        afterFirst,
+        reason: 'content addressed: the same bytes are one file, forever',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a row that never had a picture stays picture-less', () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [UserInputEvt(ts: 30, id: 'sync_30', text: 'hello')],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(messages(s.epk).single.images, isEmpty);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
   });
 }

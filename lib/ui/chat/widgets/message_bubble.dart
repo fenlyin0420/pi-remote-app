@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/file_bubble.dart';
@@ -12,7 +14,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class UserBubble extends StatelessWidget {
   final UserMsg message;
-  const UserBubble(this.message, {super.key});
+
+  /// Reads a picture's bytes from the phone's archive (see [ImageBubble]);
+  /// null where there is no archive to read (tests, a row with inline bytes).
+  final Future<Uint8List?> Function(String blob)? loadImageBytes;
+
+  const UserBubble(this.message, {super.key, this.loadImageBytes});
 
   /// Multi-attachment layout: a caption card first (when the message has
   /// text), then one bubble per image and per file, each 6px below the
@@ -25,6 +32,7 @@ class UserBubble extends StatelessWidget {
     AppColors colors,
     AppTypography typo,
     bool isFailed,
+    Future<Uint8List?> Function(String blob)? loadImageBytes,
   ) {
     final kids = <Widget>[];
     var placed = 0;
@@ -52,7 +60,16 @@ class UserBubble extends StatelessWidget {
       placed++;
     }
     for (final image in images) {
-      kids.add(wrap(placed, ImageBubble(image: image, isFailed: isFailed)));
+      kids.add(
+        wrap(
+          placed,
+          ImageBubble(
+            image: image,
+            isFailed: isFailed,
+            loadBytes: loadImageBytes,
+          ),
+        ),
+      );
       placed++;
     }
     for (final file in files) {
@@ -98,6 +115,7 @@ class UserBubble extends StatelessWidget {
                           image: images.first,
                           caption: message.text,
                           isFailed: isFailed,
+                          loadBytes: loadImageBytes,
                         ),
                       ]
                     : files.length == 1 && images.isEmpty
@@ -116,6 +134,7 @@ class UserBubble extends StatelessWidget {
                         colors,
                         typo,
                         isFailed,
+                        loadImageBytes,
                       ),
               ),
             ),

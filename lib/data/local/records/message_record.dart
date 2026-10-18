@@ -14,8 +14,9 @@ class MessageRecord {
   final MsgRole role;
   final String text;
 
-  /// Plan/30 — attached images (user messages only): base64 bytes + mime.
-  /// Multiple per message are supported.
+  /// Plan/30 — attached images (user messages only): the phone's archived copy
+  /// (`blob`) plus mime and pixel size, or the inline bytes for a row written
+  /// before the archive existed. Multiple per message are supported.
   final List<MessageImage> images;
 
   /// Uploaded files (user messages only): each name, plus the path the Pi
@@ -103,7 +104,17 @@ class MessageRecord {
     'text': text,
     if (images.isNotEmpty)
       'images': images
-          .map((i) => {'data': i.data, 'mime': i.mime})
+          .map(
+            (i) => {
+              // A row carries ONE byte source: the archive name, or inline
+              // bytes from a build before the archive existed.
+              if (i.blob != null) 'blob': i.blob,
+              if (i.data.isNotEmpty) 'data': i.data,
+              'mime': i.mime,
+              if (i.width != null) 'w': i.width,
+              if (i.height != null) 'h': i.height,
+            },
+          )
           .toList(growable: false),
     if (files.isNotEmpty)
       'files': files
@@ -156,15 +167,32 @@ class MessageRecord {
   static List<MessageImage> _readImages(Map<String, dynamic> j) {
     final raw = j['images'];
     if (raw is List) {
-      return raw.whereType<Map>().map(
-        (m) => MessageImage(data: m['data'] as String, mime: m['mime'] as String),
-      ).toList();
+      return [
+        for (final entry in raw.whereType<Map>()) ?_image(entry),
+      ];
     }
     final old = j['image'];
     if (old is Map) {
-      return [MessageImage(data: old['data'] as String, mime: old['mime'] as String)];
+      final image = _image(old);
+      return image == null ? const [] : [image];
     }
     return const [];
+  }
+
+  /// One stored image, in either shape (archived `blob` or inline `data`). Null
+  /// when the entry has neither — a row with no byte source renders nothing
+  /// rather than an empty bubble.
+  static MessageImage? _image(Map<dynamic, dynamic> m) {
+    final data = m['data'];
+    final blob = m['blob'];
+    if (data is! String && blob is! String) return null;
+    return MessageImage(
+      data: data is String ? data : '',
+      mime: (m['mime'] as String?) ?? 'image/jpeg',
+      blob: blob is String && blob.isNotEmpty ? blob : null,
+      width: (m['w'] as num?)?.toInt(),
+      height: (m['h'] as num?)?.toInt(),
+    );
   }
 
   static List<MessageFile> _readFiles(Map<String, dynamic> j) {

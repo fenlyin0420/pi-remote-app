@@ -22,18 +22,26 @@ import 'package:flutter/material.dart';
 /// hands us, and it is then a plain `SizedBox` — nothing about it can change
 /// when the decode lands.
 ///
-/// The arithmetic is `RenderImage`'s own, reproduced: both call sites give the
-/// image a *tight* width (the bubble's stretched column, the card's stretched
-/// column), so the box is `available × min(maxHeight, height the picture would
-/// take at that width)`. Keeping it identical is the point — the reserved box
-/// is the box the picture was always going to get, so nothing moves and nothing
-/// crops differently than before.
+/// The arithmetic is `RenderImage`'s own, reproduced for a *tight* width: a
+/// card spans its row, so the box is
+/// `available × min(maxHeight, height the picture would take at that width)`.
+/// Keeping it identical is the point — the reserved box is the box the picture
+/// was always going to get, so nothing moves and nothing crops differently than
+/// before.
+///
+/// [keepRatio] is the other shape of the same idea, for the places where the
+/// picture stands on its own and must not be cropped OR stretched: the width
+/// follows the picture too, so a square stays square and a rectangle stays a
+/// rectangle — just smaller. The box then sits inside the row rather than
+/// spanning it, which is why those call sites must not hand the frame a tight
+/// width.
 class ImageFrame extends StatelessWidget {
   const ImageFrame({
     super.key,
     required this.size,
     required this.builder,
     this.maxHeight = 220,
+    this.keepRatio = false,
   }) : assert(maxHeight > 0);
 
   /// Pixel size of the encoded image, or null when its header could not be read
@@ -44,32 +52,58 @@ class ImageFrame extends StatelessWidget {
   /// Ceiling for the reserved height.
   final double maxHeight;
 
+  /// Size the box from the picture's own ratio on both axes instead of
+  /// stretching it to the available width. The picture is never cropped and
+  /// never magnified past its own pixels — a small one is shown at its own
+  /// size, a big one is scaled down until it fits.
+  final bool keepRatio;
+
   /// Builds the content of the reserved box. [cacheWidth] is the decoded-width
   /// hint for the image, so the bitmap is never decoded larger than it is
   /// painted.
   final Widget Function(BuildContext context, int cacheWidth) builder;
 
+  /// The box [size] gets inside [available]: [RenderImage]'s arithmetic under a
+  /// tight width, or — with [keepRatio] — the largest box of the same ratio
+  /// that fits `available × maxHeight` without overflowing the picture's own
+  /// pixels.
+  Size _box(double available) {
+    final known = size;
+    final unknown = known == null || known.width <= 0 || known.height <= 0;
+    if (unknown) {
+      // Nothing to derive the ratio from: a fixed box, square when hugging.
+      return keepRatio
+          ? Size(math.min(available, maxHeight), maxHeight)
+          : Size(available, maxHeight);
+    }
+    if (!keepRatio) {
+      final height = math.min(
+        maxHeight,
+        known.width <= available
+            ? known.height.toDouble()
+            : available * known.height / known.width,
+      );
+      return Size(available, height);
+    }
+    final scale = math.min(
+      1.0,
+      math.min(available / known.width, maxHeight / known.height),
+    );
+    return Size(known.width * scale, known.height * scale);
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final known = size;
         final available = constraints.maxWidth.isFinite
             ? constraints.maxWidth
             : maxHeight;
-        final height = known == null || known.height <= 0
-            ? maxHeight
-            : math.min(
-                maxHeight,
-                known.width <= available
-                    ? known.height.toDouble()
-                    : available * known.height / known.width,
-              );
+        final box = _box(available);
         final dpr = MediaQuery.devicePixelRatioOf(context);
-        return SizedBox(
-          width: available,
-          height: height,
-          child: builder(context, math.max(1, (available * dpr).round())),
+        return SizedBox.fromSize(
+          size: box,
+          child: builder(context, math.max(1, (box.width * dpr).round())),
         );
       },
     );

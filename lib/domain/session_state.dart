@@ -37,23 +37,56 @@ enum UserMsgStatus { pending, confirmed, failed }
 
 /// Plan/30 — an image attached to a user message. Carries the JPEG bytes
 /// base64-encoded plus its mime type, mirroring the SDK's `ImageContent`.
-/// Bytes always travel inline (decision #8: history replays the image too),
-/// so the bubble can render straight from [data] with no extra round-trip.
+/// Bytes always travel inline on the wire (decision #8: history replays the
+/// image too).
+///
+/// A row PERSISTED by this build carries no bytes: the write path archives them
+/// in the phone's own store (`data/local/sent_image_store.dart`) and the row
+/// keeps [blob] plus the pixel size. That is what makes a picture survive the Pi
+/// cleaning up its side: a `session_history` replay rewrites rows, and a row that
+/// no longer carries bytes cannot take the archived picture with it. [data] stays
+/// for the wire and for rows written before the archive existed.
 class MessageImage {
-  /// Base64-encoded image bytes (no data-URI prefix).
+  /// Base64-encoded image bytes (no data-URI prefix). Empty for an archived
+  /// row — the byte source is [blob] then.
   final String data;
 
   /// Mime type, e.g. `image/jpeg`.
   final String mime;
 
-  const MessageImage({required this.data, required this.mime});
+  /// Name of this picture in the phone's archive
+  /// (`data/local/sent_image_store.dart`), or null while the bytes are still
+  /// inline.
+  final String? blob;
+
+  /// Pixel width/height, recorded when the picture was archived so the bubble
+  /// can reserve its exact box before anything is read from the disk. Null for
+  /// an inline row (its header is probed on the spot).
+  final int? width;
+  final int? height;
+
+  const MessageImage({
+    this.data = '',
+    required this.mime,
+    this.blob,
+    this.width,
+    this.height,
+  });
+
+  /// True when the bytes live in the phone's archive rather than in [data].
+  bool get archived => blob != null;
 
   @override
   bool operator ==(Object other) =>
-      other is MessageImage && other.data == data && other.mime == mime;
+      other is MessageImage &&
+      other.data == data &&
+      other.mime == mime &&
+      other.blob == blob &&
+      other.width == width &&
+      other.height == height;
 
   @override
-  int get hashCode => Object.hash(data, mime);
+  int get hashCode => Object.hash(data, mime, blob, width, height);
 }
 
 /// A text file a user message was sent with.

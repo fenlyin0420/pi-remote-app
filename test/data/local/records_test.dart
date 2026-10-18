@@ -84,6 +84,54 @@ void main() {
       expect(back.files.single.path, '/u/deck.pdf');
     });
 
+    test('an archived picture roundtrips as {blob, mime, w, h}', () {
+      // The row a build with the sent-picture archive writes: no bytes, just
+      // the archive name and the header size the bubble reserves its box from.
+      final r = MessageRecord(
+        id: 'u4',
+        seq: 6,
+        role: MsgRole.user,
+        text: 'look',
+        images: const [
+          MessageImage(
+            mime: 'image/png',
+            blob: 'img_abc.bin',
+            width: 200,
+            height: 150,
+          ),
+        ],
+      );
+      final json = r.toJson();
+      final entry = (json['images'] as List).single as Map;
+      expect(entry.containsKey('data'), isFalse, reason: 'bytes are not in the row');
+
+      final back = MessageRecord.fromJson(json);
+      final image = back.images.single;
+      expect(image.blob, 'img_abc.bin');
+      expect(image.archived, isTrue);
+      expect(image.data, isEmpty);
+      expect(image.mime, 'image/png');
+      expect(image.width, 200);
+      expect(image.height, 150);
+    });
+
+    test('an image entry with no byte source is dropped, not rendered blank', () {
+      final json = MessageRecord(
+        id: 'u5',
+        seq: 7,
+        role: MsgRole.user,
+        text: 'look',
+        images: const [MessageImage(data: 'QUJD', mime: 'image/jpeg')],
+      ).toJson();
+      json['images'] = [
+        {'mime': 'image/jpeg'},
+        {'data': 'QUJD', 'mime': 'image/jpeg'},
+      ];
+      final back = MessageRecord.fromJson(json);
+      expect(back.images, hasLength(1));
+      expect(back.images.single.data, 'QUJD');
+    });
+
     test('MessageRecord (tool) survives roundtrip', () {
       final r = MessageRecord(
         id: 'tc1',
