@@ -1,5 +1,6 @@
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 
 /// Points the app at a session: `(peer, room)`.
@@ -24,9 +25,18 @@ Future<void> retargetSession({
   String? roomId,
 }) async {
   final peers = await storage.listPeers();
-  final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
+  // The handle in a notification payload comes off the wire, where the pairing
+  // QR's base64url spelling is also in play; storage is keyed by base64
+  // standard (see `epk_encoding.dart`). Compare canonically, then keep the
+  // STORED handle as the selected peer — everything downstream loads the peer
+  // by that spelling.
+  final canonical = toStandardB64(epk);
+  final match = peers
+      .where((p) => toStandardB64(p.remoteEpk) == canonical)
+      .cast<PeerRecord?>();
   if (match.isEmpty) return;
   final peer = match.first!;
+  final storedEpk = peer.remoteEpk;
   // A payload without a room (older notification payloads, a session that
   // was never room-bound) must NOT fall back to the literal `main`: no Pi
   // daemon is registered under that room, so the relay drops every outbound
@@ -43,10 +53,10 @@ Future<void> retargetSession({
     // session" means here), but leave the routing room untouched — the peer
     // record keeps its own value and the live connection keeps addressing
     // whatever real room discovery already bound it to.
-    await prefs.setSelectedRoom(epk: epk);
+    await prefs.setSelectedRoom(epk: storedEpk);
     return;
   }
-  await prefs.setSelectedRoom(epk: epk, roomId: effectiveRoom);
+  await prefs.setSelectedRoom(epk: storedEpk, roomId: effectiveRoom);
   if (peer.roomId != effectiveRoom) {
     // ignore: unawaited_futures
     storage.savePeer(peer.copyWith(roomId: effectiveRoom));
