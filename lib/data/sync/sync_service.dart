@@ -1,23 +1,22 @@
 // Plan/31 — SyncService: the SINGLE writer of the local SSOT.
 //
-// Consumes the channel (ConnectionManager status + PeerChannel
-// serverMessages) and writes row-granular records to Hive (v2 boxes). The UI
-// never touches this stream — it reads the DB via the read repositories.
+// Consumes the channel (ConnectionManager status + the room-tagged inbound
+// stream) and writes row-granular records to Hive (v2 boxes). The UI never
+// touches this stream — it reads the DB via the read repositories.
 //
 // Streaming is the ONE exception to SSOT (#7): AgentChunk deltas are coalesced
 // into an in-memory Stream<StreamingMessage?> and NEVER written to the DB; only
 // the finalized message lands in the box on `agent_done`.
 //
 // Turn state (streaming buffers, whole-turn working flag, queued list) is
-// PER-ROOM, not global: rooms of one peer share a single WS and the transport
-// only routes the ACTIVE room's frames to the session writer (`serverMessages`).
-// Non-active rooms keep streaming through `ConnectionManager.roomFrames`
-// (every inbound envelope, tagged with its sender room) → `roomMessages`. This
-// service folds those frames into each room's own in-memory turn state WITHOUT
-// DB writes (a background room's finalized rows are recovered by the history
-// re-sync when the user returns to it). That is what keeps a turn in flight
-// when the user switches rooms and comes back: the buffer AND the
-// reasoning-block start time survive in the room's own slot.
+// PER-ROOM, not global: rooms of one peer share a single WS, so every inbound
+// envelope arrives tagged with the room that produced it
+// (`ConnectionManager.roomMessages`). The frame's OWN room picks the writer:
+// this chat's frames become DB rows, every other room's frames only feed that
+// room's in-memory turn state (no DB writes — a background room's finalized
+// rows are recovered by the history re-sync when the user returns to it). That
+// is what keeps a turn in flight when the user switches rooms and comes back:
+// the buffer AND the reasoning-block start time survive in the room's own slot.
 
 import 'dart:async';
 import 'dart:convert';
@@ -94,6 +93,8 @@ class SyncService extends Service {
   final LocalBoxes _boxes;
 
   StreamSubscription<ConnectionStatus>? _connSub;
+  // Fallback only: channels that cannot tag their inbound frames get their
+  // `serverMessages` treated as the bound room's (see [_onStatus]).
   StreamSubscription<ServerMessage>? _msgSub;
   StreamSubscription<RoomMessage>? _roomMsgSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
@@ -359,6 +360,14 @@ class SyncService extends Service {
       }
     }
     await _loadIndex();
+    // The room just bound may have finished its turn while the app was
+    // elsewhere (backgrounded, or the `agent_done` frame lost): the relay's meta
+    // is the authority on whether it is still working, so reconcile here —
+    // otherwise the chat opens with a working pill and a thinking counter that
+    // keep ticking while Home shows the room as idle. A no-op unless the relay
+    // confirmed this turn working earlier. AFTER [_loadIndex]: closing a stale
+    // segment persists it, and writing needs THIS room's seq index.
+    _syncTurnStateFromRoomMeta();
     _writeRuntime();
   }
 
@@ -629,37 +638,48 @@ class SyncService extends Service {
     _msgSub?.cancel();
     _msgSub = null;
     if (s is StatusOnline) {
-      // Plan/32f — bind this stream's writes to the PEER that owns the
-      // channel RIGHT NOW. After a `switchTo`, a late frame from the OLD
-      // peer's channel must not land in the NEW session's box: `_activeEpk`
-      // has already moved (the chat calls `activate()` before `switchTo`), so
-      // a straggler chat-1 frame would otherwise be written to chat-2's box
-      // and bleed across until chat-2's history re-applied. We capture the
-      // origin epk here and drop frames whose origin is no longer active.
-      //
-      // We gate on epk only — NOT room: rooms of the same peer share one
-      // channel and `_onStatus` doesn't re-fire on a same-peer room switch
-      // (the transport already demuxes by room), so a room gate would wrongly
-      // drop everything after switching cwds on the same Mac.
+      // Plan/32f — bind these writes to the PEER that owns the channel RIGHT
+      // NOW. After a `switchTo`, a late frame from the OLD peer's channel must
+      // not land in the NEW session's box: `_activeEpk` has already moved (the
+      // chat calls `activate()` before `switchTo`), so a straggler chat-1 frame
+      // would otherwise be written to chat-2's box and bleed across until
+      // chat-2's history re-applied.
       final originEpk = _conn.activePeer?.remoteEpk;
-      _msgSub = s.channel.serverMessages.listen(
-        (msg) => _onServerMessage(msg, originEpk),
-        onError: (Object _, StackTrace _) {},
-      );
+      // A channel that tags its frames (production WS, via [IRoomFrameLink])
+      // is consumed through `roomMessages` ONLY — decoding the same envelope
+      // twice would append every streamed delta twice. `serverMessages` is the
+      // fallback for channels with no room attribution (in-memory transports,
+      // test fakes): there every frame necessarily belongs to the bound room.
+      if (s.channel is! IRoomFrameLink) {
+        _msgSub = s.channel.serverMessages.listen(
+          (msg) => _onServerMessage(msg, originEpk),
+          onError: (Object _, StackTrace _) {},
+        );
+      }
       // ignore: discarded_futures
       _onlineActivated();
     }
     _writeRuntime();
   }
 
-  /// Background path — every room's inbound frames (raw material that also
-  /// feeds background notifications). Active-room frames are skipped here
-  /// (the writer path owns them, DB writes included); non-active rooms only
-  /// get their IN-MEMORY turn state updated, so a streaming room the user is
-  /// not viewing keeps filling its own slot. Its finalized rows come back
-  /// via the history re-sync when the user re-enters it.
+  /// One inbound frame, tagged with the room that produced it — the single feed
+  /// for both the session writer and every room's in-memory turn state.
+  ///
+  /// The room comes from the FRAME, never from the connection's addressed room:
+  /// `ConnectionManager.switchRoom` is one mutable field that chat pages,
+  /// notification taps and room rides all re-assert, so it drifts away from the
+  /// chat on screen. Trusting it wrote another session's frames into the open
+  /// transcript while the open chat's own frames were skipped as "background" —
+  /// a room Home showed as idle displayed a stranger's reasoning, with the
+  /// working pill and thinking counter (`startedAt`) carried over from it.
   void _onRoomMessage(RoomMessage m) {
-    if (m.epk == _activeEpk && m.roomId == _activeRoomId) return;
+    if (m.epk == _activeEpk && m.roomId == _activeRoomId) {
+      // The chat on screen: the session writer owns it, DB rows included.
+      _onServerMessage(m.message, m.epk);
+      return;
+    }
+    // Some other room — in-memory turn state only, so a streaming room the
+    // user is not viewing keeps filling its own slot.
     final t = _turn(m.epk, m.roomId);
     switch (m.message) {
       case AgentChunk(:final inReplyTo, :final delta):

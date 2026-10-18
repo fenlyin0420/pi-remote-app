@@ -145,8 +145,8 @@ void main() {
     return (conn: conn, ch: ch, sync: sync, epk: epk);
   }
 
-  List<MessageRecord> messages(String epk) {
-    final box = LocalBoxes().openMsgsBox(epk, 'main');
+  List<MessageRecord> messages(String epk, [String room = 'main']) {
+    final box = LocalBoxes().openMsgsBox(epk, room);
     final out = [
       for (final v in box.values)
         MessageRecord.fromJson((v as Map).cast<String, dynamic>()),
@@ -682,11 +682,22 @@ void main() {
     'while away and the bubble restores on return',
     () async {
       final s = await setupWithRooms();
-      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      // Every frame says which room produced it; the app must pick the writer
+      // from that tag alone.
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'user_input', 'id': 'u1', 'text': 'hi'},
+      );
       await _settle();
-      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'Hel'));
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_chunk', 'in_reply_to': 'u1', 'delta': 'Hel'},
+      );
       await _settle();
-      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'lo'));
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_chunk', 'in_reply_to': 'u1', 'delta': 'lo'},
+      );
       await _settle();
       expect(s.sync.streaming!.buffer, 'Hello');
 
@@ -728,7 +739,7 @@ void main() {
       expect(live.inReplyTo, 'u1');
 
       // The turn finishes in main: the finalized row carries ALL the text.
-      s.ch.push(AgentDone(inReplyTo: 'u1'));
+      s.ch.pushRoomFrame('main', {'type': 'agent_done', 'in_reply_to': 'u1'});
       await _settle();
       final rows = messages(s.epk);
       final assistant = rows.singleWhere((m) => m.role == MsgRole.assistant);
@@ -741,11 +752,60 @@ void main() {
   );
 
   test(
+    'a drifted addressed room never mixes transcripts: the FRAME\'s room '
+    'picks the writer, not the room the connection happens to address',
+    () async {
+      final s = await setupWithRooms();
+      // The user is reading roomB. Then the connection gets re-addressed to
+      // `main` by somebody else — a room ride, a notification tap, or a stale
+      // chat page re-asserting its own room on a reconnect edge. `switchRoom`
+      // is one mutable field, so this drift is normal and must never reach the
+      // transcript: it used to send main's frames into roomB's rows/slot and
+      // drop roomB's own frames as if they were background traffic.
+      await s.sync.activate(s.epk, 'roomB');
+      await _settle();
+      s.conn.switchRoom('main');
+      await _settle();
+
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_thinking', 'in_reply_to': 'r1', 'delta': 'stranger'},
+      );
+      await _settle();
+      expect(
+        s.sync.streaming,
+        isNull,
+        reason: "another room's reasoning must not paint the open chat",
+      );
+      expect(s.sync.isWorking, isFalse);
+      expect(messages(s.epk, 'roomB'), isEmpty);
+
+      // RoomB's OWN frames still land in its transcript.
+      s.ch.pushRoomFrame(
+        'roomB',
+        {'type': 'user_input', 'id': 'u2', 'text': 'hello'},
+      );
+      await _settle();
+      expect(messages(s.epk, 'roomB').single.text, 'hello');
+      expect(
+        messages(s.epk),
+        isEmpty,
+        reason: 'the drifted room keeps its own traffic',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
     'the thinking counter does NOT reset to zero on a room switch: the '
     'reasoning start time survives away-and-back',
     () async {
       final s = await setupWithRooms();
-      s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'mulling'));
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_thinking', 'in_reply_to': 'r1', 'delta': 'mulling'},
+      );
       await _settle();
       final started = s.sync.streaming!.startedAt;
       expect(started, isNotNull, reason: 'reasoning block is clocked');

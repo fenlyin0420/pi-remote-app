@@ -50,18 +50,18 @@ class RoomFrame {
 /// A decoded inbound message plus the session it belongs to. Emitted by
 /// [ConnectionManager.roomMessages] for every room.
 ///
-/// Two consumers read inbound traffic, on purpose, from different streams and
-/// with different jobs:
+/// The **session writer** reads this stream and picks the target by the frame's
+/// own [roomId]: frames of the (peer, room) it is bound to become the chat
+/// transcript, every other room's frames only feed that room's in-memory state
+/// and the **background notifier**, which decides whether a banner is warranted.
+/// The room attribution has to come from the frame — the connection's addressed
+/// room is one mutable field that several screens re-assert, so it drifts, and
+/// a writer that trusted it wrote a stranger's frames into the open chat while
+/// dropping the open chat's own.
 ///
-///  * the **session writer** ([IChannel.serverMessages], active room only) owns
-///    the chat transcript — anything else in there would bleed into the open
-///    chat;
-///  * the **background notifier** ([ConnectionManager.roomMessages], every room)
-///    only decides whether a banner is warranted.
-///
-/// They are not mirrors of each other and do not reconcile: neither derives
-/// state the other depends on, so a message reaching both is deliberate, not
-/// double handling.
+/// [IChannel.serverMessages] remains the fallback for channels that cannot tag
+/// frames (in-memory transports, test fakes); there everything necessarily
+/// belongs to the bound room.
 class RoomMessage {
   final String epk;
   final String roomId;
