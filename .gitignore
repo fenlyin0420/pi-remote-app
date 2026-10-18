@@ -55,3 +55,7 @@ android/signing/
 
 # 项目记忆（本机）
 .agents/memory/
+
+# 本机状态（生成的文件与个人工具配置，不进库）
+local.properties
+.pi/
