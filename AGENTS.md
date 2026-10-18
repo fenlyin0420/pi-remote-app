@@ -20,6 +20,16 @@ flutter analyze
   its `+N` suffix, so bump and commit that before tagging. The job also compares the APK's
   certificate fingerprint with the keystore's and fails on a silent debug-key fallback.
 
+### Release notes
+
+`RELEASE_NOTES.md` **is** the release body — `app-release.yml` hands it to
+`gh release create --notes-file` verbatim. Rewrite it for every version and commit it together
+with the version bump, before tagging: one `# Remote Pi <version>` heading, a `What's new`
+section written for users (what changed and why it matters, no internal lineage), and the
+`Assets` list. Nothing checks this — with the file missing or still describing the previous
+version the job silently publishes a generic "Remote Pi <version>" body, so the release ships
+with no notes.
+
 ### Repository configuration
 
 Secrets (Actions → secrets): `ANDROID_KEYSTORE` (base64-encoded `.jks`),
