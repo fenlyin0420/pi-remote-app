@@ -50,6 +50,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamSubscription<StreamingMessage?>? _streamingSub;
   StreamSubscription<bool>? _workingSub;
   StreamSubscription<List<QueuedMsg>>? _queuedSub;
+  StreamSubscription<TodoState>? _todoSub;
   StreamSubscription<SessionEvent>? _eventSub;
   StreamSubscription<ExtensionUiRequest>? _uiReqSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
@@ -64,6 +65,8 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamingMessage? _streaming;
   bool _working = false;
   List<QueuedMsg> _queuedMessages = const [];
+  // Plan/63 — the room's todo list (pi-todo), mirrored by the Pi.
+  TodoState _todos = const TodoState();
   // Plan/57 — interactive extension_ui_request awaiting an answer (ask_user).
   ExtensionUiRequest? _pendingUiRequest;
   // Plan/57 — last submit-result error for the pending request (null when none
@@ -125,6 +128,11 @@ class ChatViewModel extends ViewModel<ChatState> {
     _streamingSub = _sync.streamingStream.listen(_onStreaming);
     _workingSub = _sync.workingStream.listen(_onWorking);
     _queuedSub = _sync.queuedStream.listen(_onQueued);
+    // Plan/63 — the todo subscription is created in `_bootstrap`, AFTER
+    // `activate()`: `activate` re-aims that stream at the new room's slot while
+    // it runs, and a listener reacting to it there would re-enter the compose
+    // path from inside the bind. Same reason streaming/working are seeded after
+    // `activate` instead of read in the constructor.
     _eventSub = _sync.events.listen(_onEvent);
     _uiReqSub = _sync.extensionUiRequestStream.listen(_onExtensionUiRequest);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -195,6 +203,10 @@ class ChatViewModel extends ViewModel<ChatState> {
   String? get queuedText =>
       _queuedMessages.isEmpty ? null : _queuedMessages.first.text;
 
+  /// Plan/63 — the room's todo list. Empty means "no list", which is also what
+  /// a Pi without pi-todo reports — the chat shows no todo affordance then.
+  TodoState get todos => _todos;
+
   void queueMessage(String text) {
     unawaited(_sync.queueMessage(text));
   }
@@ -257,8 +269,10 @@ class ChatViewModel extends ViewModel<ChatState> {
     _streaming = _sync.streaming;
     _working = _sync.isWorking;
     _queuedMessages = _sync.queuedMessages;
+    _todos = _sync.todos;
     _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
     _runtimeSub = _read.watchRuntime(epk, roomId).listen(_onRuntime);
+    _todoSub = _sync.todosStream.listen(_onTodos);
 
     _bootstrapping = false;
     _sync.requestSync();
@@ -282,6 +296,11 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onQueued(List<QueuedMsg> messages) {
     _queuedMessages = messages;
+    _recompute();
+  }
+
+  void _onTodos(TodoState todos) {
+    _todos = todos;
     _recompute();
   }
 
@@ -399,6 +418,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       peerPresence: peerPresence,
       isWorking: isWorking,
       queuedMessages: _queuedMessages,
+      todos: _todos,
       pendingUiRequest: _pendingUiRequest,
       notice: _notice,
       pendingUiError: _pendingUiError,
@@ -545,6 +565,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _streaming = null;
     _working = false;
     _queuedMessages = const [];
+    _todos = const TodoState();
     _recompute();
     await _sync.clearActiveSession();
   }
@@ -572,6 +593,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _streamingSub?.cancel();
     _workingSub?.cancel();
     _queuedSub?.cancel();
+    _todoSub?.cancel();
     _eventSub?.cancel();
     _uiReqSub?.cancel();
     _roomsSub?.cancel();

@@ -76,6 +76,11 @@ class _RoomTurn {
   String? workingReplyTo;
 
   List<QueuedMsg> queuedMessages = const [];
+
+  /// Plan/63 — the agent's todo list for this room (pi-todo), as last published
+  /// by the Pi. Room state, not turn state: it outlives turns and survives the
+  /// user switching away and back, exactly like [queuedMessages].
+  TodoState todos = TodoState();
 }
 
 /// Transport-level error codes (mirrors the Pi's `KnownErrorCode`).
@@ -135,6 +140,9 @@ class SyncService extends Service {
 
   final StreamController<List<QueuedMsg>> _queuedController =
       StreamController<List<QueuedMsg>>.broadcast();
+
+  final StreamController<TodoState> _todoController =
+      StreamController<TodoState>.broadcast();
 
   final StreamController<bool> _workingController =
       StreamController<bool>.broadcast();
@@ -371,6 +379,11 @@ class SyncService extends Service {
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
   Stream<List<QueuedMsg>> get queuedStream => _queuedController.stream;
 
+  /// Plan/63 — the ACTIVE room's todo list (pi-todo). Empty when the agent kept
+  /// no list, which is also what a Pi without the plugin reports.
+  TodoState get todos => _activeTurn?.todos ?? TodoState();
+  Stream<TodoState> get todosStream => _todoController.stream;
+
   /// True while the ACTIVE room's agent is producing a reply (whole turn).
   bool get isWorking => _activeTurn?.working ?? false;
   Stream<bool> get workingStream => _workingController.stream;
@@ -444,6 +457,14 @@ class SyncService extends Service {
       if (!_workingController.isClosed) {
         _workingController.add(nextTurn?.working ?? false);
       }
+    }
+    // Plan/63 — the todo ball is room-scoped like the working pill, so the
+    // switch re-aims it unconditionally: a chat that stays mounted must never
+    // keep showing the list of the room it just left.
+    if (!_todoController.isClosed) {
+      _todoController.add(
+        _turns[LocalBoxes.sessionKey(epk, room)]?.todos ?? TodoState(),
+      );
     }
     await _loadIndex();
     // The room just bound may have finished its turn while the app was
@@ -703,6 +724,7 @@ class SyncService extends Service {
     _cancelAllSendTimers();
     _discardStreamingState(t);
     _setQueuedMessages(t, const []);
+    _setTodos(t, TodoState());
     _setWorking(t, false);
     await _enqueue(() async {
       if (_activeEpk != epk || _activeRoomId != room) return;
@@ -820,6 +842,10 @@ class SyncService extends Service {
               createdAt: item.createdAt,
             ),
         ]);
+      case final TodoState todos:
+        // Plan/63 — a background room's list updates in its own slot, so
+        // opening that chat shows the rows without waiting for a re-sync.
+        _setTodos(t, todos);
       default:
         // DB-backed frames (AgentMessage, Tool*, SessionHistory, …) for a
         // background room: not the writer's job; recovered by re-sync.
@@ -897,6 +923,10 @@ class SyncService extends Service {
 
       case SteerConsumed(:final id):
         _clearSteeringLabel(id);
+
+      case final TodoState todos:
+        if (t == null) return;
+        _setTodos(t, todos);
 
       case UserInput(
         :final id,
@@ -1701,6 +1731,14 @@ class SyncService extends Service {
     if (_isActive(t) && !_queuedController.isClosed) _queuedController.add(next);
   }
 
+  /// Plan/63 — one room's todo list. `TodoState` compares by value, so a
+  /// replayed frame identical to the cached one emits nothing.
+  void _setTodos(_RoomTurn t, TodoState state) {
+    if (t.todos == state) return;
+    t.todos = state;
+    if (_isActive(t) && !_todoController.isClosed) _todoController.add(state);
+  }
+
   /// Single source of "a room is working". Drives that room's in-memory
   /// flag/stream (the chat pill, active room only), its durable session index
   /// (Home dot) and — for the connected room — the app-side room-meta
@@ -2048,5 +2086,6 @@ class SyncService extends Service {
     _extensionUiController.close();
     _workingController.close();
     _queuedController.close();
+    _todoController.close();
   }
 }

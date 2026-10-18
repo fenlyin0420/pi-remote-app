@@ -1133,6 +1133,9 @@ sealed class ServerMessage {
       // here is the "user-text-arrived" event regardless of origin.
       'user_input' || 'user_message' => UserInput.fromJson(json),
       'queued_message_state' => QueuedMessageState.fromJson(json),
+      // Plan/63 — the agent's todo list (pi-todo / rpiv-todo). Broadcast when
+      // it changes and replayed on `session_sync`.
+      'todo_state' => TodoState.fromJson(json),
       'steer_consumed' => SteerConsumed.fromJson(json),
       'agent_message' => AgentMessage.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
@@ -1464,6 +1467,153 @@ class SteerConsumed extends ServerMessage {
 
   factory SteerConsumed.fromJson(Map<String, dynamic> j) =>
       SteerConsumed(id: j['id'] as String);
+}
+
+// ---------------------------------------------------------------------------
+// Plan/63 — the agent's todo list (pi-todo / `rpiv-todo`)
+//
+// The plugin mirrors the snapshot rpiv-todo writes to the session branch, so the
+// rows here are the plugin's own state — the app never reconstructs the list
+// from `todo` tool calls (that would re-implement the reducer and miss calls
+// made from a codemode script). `tasks` empty means "no list at all".
+// ---------------------------------------------------------------------------
+
+/// pi-todo's task states minus `deleted` (tombstones never reach the app).
+enum TodoTaskStatus {
+  pending('pending'),
+  inProgress('in_progress'),
+  completed('completed'),
+
+  /// A state a newer plugin added: the row still renders, its glyph falls back.
+  unknown('');
+
+  final String wire;
+  const TodoTaskStatus(this.wire);
+
+  static TodoTaskStatus fromWire(String? s) => values.firstWhere(
+    (v) => v.wire == s,
+    orElse: () => TodoTaskStatus.unknown,
+  );
+}
+
+/// One row of [TodoState]: a task, trimmed to what a phone row renders.
+class TodoTask {
+  final int id;
+  final String subject;
+  final TodoTaskStatus status;
+
+  /// Present-continuous label for the in-progress row ("writing tests").
+  final String? activeForm;
+
+  /// Ids this row waits on.
+  final List<int> blockedBy;
+
+  /// Who the task was assigned to, when the agent set one.
+  final String? owner;
+
+  const TodoTask({
+    required this.id,
+    required this.subject,
+    required this.status,
+    this.activeForm,
+    this.blockedBy = const [],
+    this.owner,
+  });
+
+  factory TodoTask.fromJson(Map<String, dynamic> j) {
+    final rawBlocked = j['blocked_by'];
+    return TodoTask(
+      id: (j['id'] as num?)?.toInt() ?? 0,
+      subject: (j['subject'] as String?) ?? '',
+      status: TodoTaskStatus.fromWire(j['status'] as String?),
+      activeForm: j['active_form'] as String?,
+      blockedBy: rawBlocked is List
+          ? rawBlocked
+                .whereType<num>()
+                .map((n) => n.toInt())
+                .toList(growable: false)
+          : const [],
+      owner: j['owner'] as String?,
+    );
+  }
+
+  bool get isDone => status == TodoTaskStatus.completed;
+
+  @override
+  bool operator ==(Object other) =>
+      other is TodoTask &&
+      other.id == id &&
+      other.subject == subject &&
+      other.status == status &&
+      other.activeForm == activeForm &&
+      _sameInts(other.blockedBy, blockedBy) &&
+      other.owner == owner;
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    subject,
+    status,
+    activeForm,
+    Object.hashAll(blockedBy),
+    owner,
+  );
+}
+
+/// The whole list, as the plugin remembers it (`tasks` in id order).
+class TodoState extends ServerMessage {
+  final List<TodoTask> tasks;
+
+  const TodoState({this.tasks = const []});
+
+  bool get isEmpty => tasks.isEmpty;
+  int get total => tasks.length;
+  int get doneCount => tasks.where((t) => t.isDone).length;
+
+  /// The row the ball's label should mention while work is in flight.
+  TodoTask? get inProgress {
+    for (final t in tasks) {
+      if (t.status == TodoTaskStatus.inProgress) return t;
+    }
+    return null;
+  }
+
+  factory TodoState.fromJson(Map<String, dynamic> j) {
+    final raw = j['tasks'];
+    if (raw is! List) return TodoState();
+    return TodoState(
+      tasks: raw
+          .whereType<Map>()
+          .map((m) => TodoTask.fromJson(m.cast<String, dynamic>()))
+          .where((t) => t.subject.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is TodoState && _sameTodos(other.tasks, tasks);
+
+  @override
+  int get hashCode => Object.hashAll(tasks);
+}
+
+bool _sameInts(List<int> a, List<int> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+bool _sameTodos(List<TodoTask> a, List<TodoTask> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 class UserInput extends ServerMessage {
@@ -2333,12 +2483,16 @@ class AskResponseEnrichmentWire {
   /// 'submit' | 'elaborate' (null when cancel). Raw string for forward-compat.
   final String? mode;
   final Map<String, AskAnswerWire> answers;
+  /// Optional whole-ask note (pi-ask `details.note`). Response-level, never an
+  /// answer: pi-ask drops it when blank and never counts it as answered.
+  final String? note;
 
   const AskResponseEnrichmentWire({
     required this.flowId,
     this.isCancel = false,
     this.mode,
     this.answers = const <String, AskAnswerWire>{},
+    this.note,
   });
 
   Map<String, dynamic> toJson() {
@@ -2348,6 +2502,7 @@ class AskResponseEnrichmentWire {
       'kind': 'answer',
       if (mode != null) 'mode': mode,
       'answers': answers.map((k, v) => MapEntry(k, v.toJson())),
+      if (note != null && note!.isNotEmpty) 'note': note,
     };
   }
 }

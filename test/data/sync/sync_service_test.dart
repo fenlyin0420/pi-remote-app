@@ -168,6 +168,87 @@ void main() {
   }
 
   test(
+    'todo_state fills the active room\'s list and survives the stream',
+    () async {
+      final s = await setup();
+      final seen = <TodoState>[];
+      final sub = s.sync.todosStream.listen(seen.add);
+
+      s.ch.push(
+        TodoState(
+          tasks: const [
+            TodoTask(id: 1, subject: 'Adapt the app', status: TodoTaskStatus.inProgress),
+            TodoTask(id: 2, subject: 'Run the tests', status: TodoTaskStatus.pending),
+          ],
+        ),
+      );
+      await _settle();
+
+      expect(s.sync.todos.total, 2);
+      expect(s.sync.todos.doneCount, 0);
+      expect(seen.map((t) => t.total), [2]);
+
+      // The plugin's empty list is the "no more todos" signal, not an error.
+      s.ch.push(TodoState());
+      await _settle();
+      expect(s.sync.todos.isEmpty, isTrue);
+      expect(seen.map((t) => t.total), [2, 0]);
+
+      await sub.cancel();
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'a background room keeps its own todo list, and the switch re-aims it',
+    () async {
+      final s = await setupWithRooms();
+      // The room being viewed has a list...
+      s.ch.pushRoomFrame(
+        'main',
+        {
+          'type': 'todo_state',
+          'tasks': [{'id': 1, 'subject': 'Main room row', 'status': 'pending'}],
+        },
+      );
+      await _settle();
+      expect(s.sync.todos.tasks.single.subject, 'Main room row');
+
+      // ...while a room the user is NOT viewing publishes its own.
+      s.ch.pushRoomFrame(
+        'room2',
+        {
+          'type': 'todo_state',
+          'tasks': [
+            {'id': 1, 'subject': 'Room2 row A', 'status': 'pending'},
+            {'id': 2, 'subject': 'Room2 row B', 'status': 'completed'},
+          ],
+        },
+      );
+      await _settle();
+      expect(
+        s.sync.todos.tasks.single.subject,
+        'Main room row',
+        reason: 'a background frame must not rewrite the visible list',
+      );
+
+      // Switching re-aims the ball at the new room's list, and back again.
+      await s.sync.activate(s.epk, 'room2');
+      await _settle();
+      expect(s.sync.todos.total, 2);
+      expect(s.sync.todos.doneCount, 1);
+
+      await s.sync.activate(s.epk, 'main');
+      await _settle();
+      expect(s.sync.todos.tasks.single.subject, 'Main room row');
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
     'user_message echo writes one MessageRecord + updates the index',
     () async {
       final s = await setup();

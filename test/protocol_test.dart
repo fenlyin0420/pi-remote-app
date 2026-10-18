@@ -124,6 +124,92 @@ void main() {
     });
   });
 
+  group('TodoState (plan 63)', () {
+    test('parses rows, counts and the in-progress row', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'todo_state',
+        'tasks': [
+          {'id': 1, 'subject': 'Adapt the app', 'status': 'in_progress', 'active_form': 'implementing the pill'},
+          {'id': 2, 'subject': 'Run the tests', 'status': 'pending', 'blocked_by': [1], 'owner': 'agent'},
+          {'id': 3, 'subject': 'Ship it', 'status': 'completed'},
+        ],
+      }) as TodoState;
+
+      expect(msg.total, 3);
+      expect(msg.doneCount, 1);
+      expect(msg.inProgress?.subject, 'Adapt the app');
+      expect(msg.inProgress?.activeForm, 'implementing the pill');
+      expect(msg.tasks[1].blockedBy, [1]);
+      expect(msg.tasks[1].owner, 'agent');
+      expect(msg.tasks[2].isDone, isTrue);
+    });
+
+    test('empty and malformed lists collapse to "no list"', () {
+      expect((ServerMessage.fromJson({'type': 'todo_state', 'tasks': []}) as TodoState).isEmpty, isTrue);
+      expect((ServerMessage.fromJson({'type': 'todo_state'}) as TodoState).isEmpty, isTrue);
+      expect((ServerMessage.fromJson({'type': 'todo_state', 'tasks': 'nope'}) as TodoState).isEmpty, isTrue);
+      // A row without a subject renders as nothing — drop it instead of
+      // showing a blank line the user cannot identify.
+      expect(
+        (ServerMessage.fromJson({'type': 'todo_state', 'tasks': [{'id': 9}]}) as TodoState).isEmpty,
+        isTrue,
+      );
+    });
+
+    test('an unknown status keeps the row', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'todo_state',
+        'tasks': [{'id': 1, 'subject': 'From a newer plugin', 'status': 'blocked'}],
+      }) as TodoState;
+      expect(msg.total, 1);
+      expect(msg.tasks.single.status, TodoTaskStatus.unknown);
+      expect(msg.tasks.single.isDone, isFalse);
+    });
+
+    test('compares by value so an identical replay repaints nothing', () {      TodoState parse() => ServerMessage.fromJson({
+        'type': 'todo_state',
+        'tasks': [
+          {'id': 1, 'subject': 'One', 'status': 'pending', 'blocked_by': [2]},
+          {'id': 2, 'subject': 'Two', 'status': 'completed'},
+        ],
+      }) as TodoState;
+
+      expect(parse(), parse());
+      expect(parse().hashCode, parse().hashCode);
+      expect(
+        parse(),
+        isNot((ServerMessage.fromJson({
+          'type': 'todo_state',
+          'tasks': [{'id': 1, 'subject': 'One', 'status': 'completed'}],
+        }) as TodoState)),
+      );
+    });
+
+    // The fixture is the shared wire sample: the drift script only compares its
+    // sha256 across both repositories, so a coordinated rename
+    // (`blocked_by` → `blockedBy`) would keep CI green while the app silently
+    // lost the dependencies. Decode the real file and pin every field the app
+    // reads.
+    test('the fixture rows decode into the full row shape', () {
+      final lines = File('.orchestration/contracts/fixtures/todo_state.jsonl')
+          .readAsLinesSync()
+          .where((l) => l.trim().isNotEmpty)
+          .toList();
+      expect(lines, hasLength(2));
+
+      final list = decodeServer(lines[0]) as TodoState;
+      expect(list.total, 2);
+      expect(list.doneCount, 0);
+      expect(list.tasks[0].id, 1);
+      expect(list.tasks[0].subject, 'Adapt the app');
+      expect(list.tasks[0].status, TodoTaskStatus.inProgress);
+      expect(list.tasks[0].activeForm, 'implementing the ball');
+      expect(list.tasks[1].blockedBy, [1]);
+
+      expect((decodeServer(lines[1]) as TodoState).isEmpty, isTrue);
+    });
+  });
+
   group('ToolRequest', () {
     test('parses tool_call_id, tool, args', () {
       final msg = ServerMessage.fromJson({

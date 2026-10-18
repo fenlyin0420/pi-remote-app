@@ -20,6 +20,7 @@ import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_list.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app/ui/chat/widgets/session_picker_page.dart';
+import 'package:app/ui/chat/widgets/todo_panel.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -110,13 +111,61 @@ class ChatPage extends StatelessWidget {
                       key: const Key('chat-transcript'),
                       child: _buildBody(context, state, vm),
                     ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: _NoticeStrip(
-                        text: vm.notice,
-                        onDismiss: vm.dismissNotice,
+                    Positioned.fill(
+                      // Both are overlays: stacked in ONE bottom-anchored
+                      // column so neither can end up on top of the other (a
+                      // todo pill and a command's output at the same corner
+                      // used to cover each other). `fill` + bottom alignment is
+                      // what gives the todo card a real height bound to live
+                      // within — a `Positioned(bottom:)` child is laid out
+                      // against an unbounded height, so an oversized card would
+                      // be clipped at the top with no overflow warning.
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          // What the card may take from the transcript: its
+                          // height minus the pill + spacing it shares the corner
+                          // with, with the fixed ceiling kept for tall screens.
+                          final cardCap =
+                              ((constraints.maxHeight - 60) * 0.8).clamp(
+                                120.0,
+                                280.0,
+                              );
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _NoticeStrip(
+                                text: vm.notice,
+                                onDismiss: vm.dismissNotice,
+                              ),
+                              // Plan/63 — the agent's todo list (pi-todo): a
+                              // pill while collapsed, the rows in a card above
+                              // it when open. Renders nothing without a list.
+                              //
+                              // Trade-off: an open card covers the centred
+                              // "jump to latest" arrow (message_list's own
+                              // overlay). Deliberate — while reading the plan
+                              // the user is not trying to reach the newest
+                              // message, and collapsing restores the arrow.
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    0,
+                                    12,
+                                    12,
+                                  ),
+                                  child: TodoPanel(
+                                    todos: vm.todos,
+                                    maxCardHeight: cardCap,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ],

@@ -45,6 +45,11 @@ class ChatReady extends ChatState {
   final bool isWorking;
   final List<QueuedMsg> queuedMessages;
 
+  /// Plan/63 — the ACTIVE room's todo list (pi-todo), as the Pi published it.
+  /// Empty = no list, and the chat shows no todo affordance at all. Part of the
+  /// state identity so a list update repaints the ball without a message.
+  final TodoState todos;
+
   /// Plan/57 — an interactive extension_ui_request (ask_user via pi-ask)
   /// awaiting an answer. Non-null → the chat renders a full-screen modal.
   /// Cleared on submit/cancel/completed. Identity compared (the ViewModel
@@ -83,6 +88,7 @@ class ChatReady extends ChatState {
     this.peerPresence = const PresenceUnknown(),
     this.isWorking = false,
     this.queuedMessages = const [],
+    this.todos = const TodoState(),
     this.pendingUiRequest,
     this.notice,
     this.pendingUiError,
@@ -98,6 +104,7 @@ class ChatReady extends ChatState {
     PresenceState? peerPresence,
     bool? isWorking,
     List<QueuedMsg>? queuedMessages,
+    TodoState? todos,
     bool clearStreaming = false,
     bool clearPeerOffline = false,
     bool clearQueuedMessages = false,
@@ -122,6 +129,7 @@ class ChatReady extends ChatState {
         queuedMessages: clearQueuedMessages
             ? const []
             : (queuedMessages ?? this.queuedMessages),
+        todos: todos ?? this.todos,
         pendingUiRequest: clearPendingUiRequest
             ? null
             : (pendingUiRequest ?? this.pendingUiRequest),
@@ -143,6 +151,7 @@ class ChatReady extends ChatState {
       other.peerPresence.runtimeType == peerPresence.runtimeType &&
       other.isWorking == isWorking &&
       other.queuedMessages == queuedMessages &&
+      other.todos == todos &&
       other.pendingUiRequest == pendingUiRequest &&
       other.notice == notice &&
       other.pendingUiError == pendingUiError &&
@@ -158,6 +167,7 @@ class ChatReady extends ChatState {
         peerPresence.runtimeType,
         isWorking,
         queuedMessages,
+        todos,
         pendingUiRequest,
         notice,
         pendingUiError,
