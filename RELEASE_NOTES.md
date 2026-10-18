@@ -1,4 +1,4 @@
-# Remote Pi 1.5.46 (prod channel)
+# Remote Pi 1.5.46
 
 ## What's new
 

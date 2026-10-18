@@ -87,11 +87,10 @@ jobs:
       # src/protocol/types.ts，这里抓对端的 types.ts 做漂移检查。
       - name: Protocolo sem drift (vs pi-remote)
         run: |
-          curl -fsSL --retry 3 \
-            https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/src/protocol/types.ts \
+          BASE=https://raw.githubusercontent.com/fenlyin0420/pi-remote/main
+          curl -fsSL --retry 3 "$BASE/src/protocol/types.ts" \
             -o /tmp/types.ts
-          curl -fsSL --retry 3 \
-            https://raw.githubusercontent.com/fenlyin0420/pi-remote/main/scripts/protocol-fixtures.sha256 \
+          curl -fsSL --retry 3 "$BASE/scripts/protocol-fixtures.sha256" \
             -o /tmp/peer-fixtures.sha256
           node scripts/check-protocol-drift.mjs \
             --ts /tmp/types.ts \
@@ -257,7 +256,7 @@ jobs:
           else
             NOTES_FILE="$(mktemp)"
             {
-              echo "Remote Pi **${VERSION}** (${FLAVOR} channel)."
+              echo "Remote Pi **${VERSION}**."
               echo ""
               echo "**Assets**"
               echo ""
@@ -266,7 +265,9 @@ jobs:
               echo "- \`latest.json\` — manifest de auto-atualização"
             } > "$NOTES_FILE"
           fi
-          TITLE="Remote Pi ${VERSION} (${FLAVOR} channel)"
+          # Título sem canal: beta vs prod já é o flag de prerelease, e
+          # repetir o flavor no título só polui a lista de releases.
+          TITLE="Remote Pi ${VERSION}"
           PR_FLAG=""
           [ "$PRERELEASE" = "true" ] && PR_FLAG="--prerelease"
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -318,7 +319,7 @@ jobs:
           TAG="${{ steps.ref.outputs.ref }}"
           REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
           {
-            echo "## Remote Pi $V — $F channel"
+            echo "## Remote Pi $V"
             echo ""
             echo "Release: ${REPO_URL}/releases/tag/${TAG}"
             echo ""
