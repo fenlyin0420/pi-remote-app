@@ -278,16 +278,23 @@ void main() {
     expect(find.byKey(const Key('command-palette-compact')), findsNothing);
   });
 
-  testWidgets('tapping a supported entry runs it immediately', (tester) async {
+  testWidgets('tapping a supported entry completes it into the composer', (tester) async {
     final h = await pumpBar(tester, commands: catalogue);
     await type(tester, '/');
     await tester.tap(find.byKey(const Key('command-palette-compact')));
     await tester.pump();
-    expect(h.commands, ['/compact']);
+    // Typed, not sent — the user still presses send.
+    expect(h.commands, isEmpty);
     expect(h.sends, isEmpty);
-    // The composer is cleared and the palette gone.
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '/compact ',
+    );
+    // The trailing space ends the completion, so the palette steps aside.
     expect(find.byKey(const Key('command-palette-compact')), findsNothing);
+    // Pressing send runs the same line the tap used to send directly.
+    await submit(tester);
+    expect(h.commands, ['/compact']);
   });
 
   testWidgets('tapping an unsupported entry does nothing', (tester) async {

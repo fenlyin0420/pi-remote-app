@@ -325,12 +325,18 @@ class _InputBarState extends State<InputBar> {
     ];
   }
 
-  /// Runs a palette entry. Tapping is "do it": the entry's description is the
-  /// confirmation, and a command needing arguments is typed instead (the Pi's
-  /// own usage error explains what it wants).
-  void _runPaletteEntry(WireCommand command) {
-    _controller.clear();
-    (widget.onRunCommand ?? widget.onSend)('/${command.name}');
+  /// Completes a palette entry into the composer instead of running it: the
+  /// tap finishes the name, the user still reads it and presses send. The
+  /// trailing space ends the completion — the palette is driven by the
+  /// unfinished `/name`, so without it the list would sit there matching the
+  /// entry just completed — and leaves the caret ready for arguments.
+  void _completePaletteEntry(WireCommand command) {
+    final text = '/${command.name} ';
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _focusNode.requestFocus();
   }
 
   /// Wraps an "open an overlay from the composer" callback so the field's
@@ -559,7 +565,7 @@ class _InputBarState extends State<InputBar> {
                 ),
               _CommandPalette(
                 entries: _paletteMatches,
-                onRun: _runPaletteEntry,
+                onSelect: _completePaletteEntry,
               ),
               Row(
                 children: [
@@ -810,9 +816,9 @@ class _CommandPalette extends StatelessWidget {
   static const double maxHeight = 184;
 
   final List<WireCommand> entries;
-  final void Function(WireCommand command) onRun;
+  final void Function(WireCommand command) onSelect;
 
-  const _CommandPalette({required this.entries, required this.onRun});
+  const _CommandPalette({required this.entries, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
@@ -842,7 +848,7 @@ class _CommandPalette extends StatelessWidget {
           final nameColor = enabled ? colors.text : colors.muted2;
           return InkWell(
             key: Key('command-palette-${command.name}'),
-            onTap: enabled ? () => onRun(command) : null,
+            onTap: enabled ? () => onSelect(command) : null,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               child: Column(
