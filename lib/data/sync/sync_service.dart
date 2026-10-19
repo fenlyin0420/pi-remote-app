@@ -150,6 +150,11 @@ class SyncService extends Service {
   bool _pendingSyncRequest = false;
   Timer? _syncDebounce;
 
+  /// Resume token for the bound room's newest applied history event, mirrored
+  /// from its [SessionIndexRecord]. Null until a history is applied (or after a
+  /// session wipe), which makes the next `session_sync` ask for a full replay.
+  String? _syncCursor;
+
   // Plan/32 safety net — if the relay never echoes a sent message back, the
   // optimistic `pending:true` bubble would spin forever. After this window we
   // remove the bubble SILENTLY (no "failed" state, no spinner). The real fix
@@ -711,7 +716,21 @@ class SyncService extends Service {
       return;
     }
     _pendingSyncRequest = false;
-    ch.send(SessionSync(id: _newId()));
+    // Resume from the newest event this device holds, so a reconnect or a
+    // re-entry into a room it already has transfers only what is new. The Pi
+    // answers a cursor it cannot place with a full replay, which is the same
+    // substitute-the-cache behaviour as before — so a missing or stale cursor
+    // costs nothing but a round trip it was going to make anyway.
+    ch.send(
+      SessionSync(id: _newId(), since: _syncCursorFor(_activeEpk!, _activeRoomId)),
+    );
+  }
+
+  /// The resume token stored for `(epk, room)`, or null when this device has
+  /// never applied a history for it (or has since dropped it).
+  String? _syncCursorFor(String epk, String room) {
+    if (epk != _activeEpk || room != _activeRoomId) return null;
+    return _syncCursor;
   }
 
   /// Plan/28 — `session_new` acked: wipe the active session's rows + index.
@@ -1264,7 +1283,54 @@ class SyncService extends Service {
     final epk = _activeEpk;
     if (epk == null) return;
     final room = _activeRoomId;
-    final rows = _convertHistory(h.events);
+    if (!h.isDelta) {
+      await _reconcileHistory(
+        rows: _convertHistory(h.events),
+        sessionStartedAt: h.sessionStartedAt,
+        cursor: h.cursor,
+      );
+      return;
+    }
+    // A delta carries only what the Pi sent after the cursor this device last
+    // stored, so it is APPENDED to the rows on disk rather than replacing them.
+    // Everything the replay does to stay idempotent (blob carry-over, picture
+    // restore, the minimum-write diff) is written against rows sitting at their
+    // history positions, so the delta is materialised as "disk rows + new rows"
+    // and handed to the same reconcile. One code path, two ways in.
+    //
+    // The union comes from DISK, not from memory: the app can be killed between
+    // two syncs, and the delta only means anything on top of the rows that
+    // survived.
+    final existing = <MessageRecord>[];
+    await _enqueue(() async {
+      final box = await _boxes.msgsBox(epk, room);
+      final keys = box.keys.map((k) => (k as num).toInt()).toList()..sort();
+      for (final k in keys) {
+        existing.add(MessageRecord.fromJson(_coerce(box.get(k))));
+      }
+    });
+    if (_activeEpk != epk || _activeRoomId != room) return;
+    // `_convertHistory` numbers rows from zero and some ids embed that number
+    // (thinking rows), so the appended rows continue past the stored ones.
+    final appended = _convertHistory(h.events, seqOffset: existing.length);
+    await _reconcileHistory(
+      rows: [...existing, ...appended],
+      sessionStartedAt: h.sessionStartedAt,
+      cursor: h.cursor,
+    );
+  }
+
+  /// Write [rows] as the room's transcript: carry over cached blobs, restore
+  /// pictures a byte-less replay dropped, archive new ones, and reconcile the
+  /// box with the minimum number of writes.
+  Future<void> _reconcileHistory({
+    required List<MessageRecord> rows,
+    required int sessionStartedAt,
+    required String? cursor,
+  }) async {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final room = _activeRoomId;
     // LOCAL (fenlyin): self-heal the room's cached model from the history
     // itself. The relay caches each room's meta in memory and re-announces
     // it only when the room's FIRST conn registers, so a daemon that
@@ -1398,14 +1464,17 @@ class SyncService extends Service {
       }
     });
     if (_activeEpk == epk && _activeRoomId == room) {
-      final started = h.sessionStartedAt;
       _updateIndex(
         epk,
         room,
         (cur) => cur.copyWith(
-          sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(started),
+          sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(sessionStartedAt),
+          // The Pi's token for the newest event in this reply — echoed on the
+          // next `session_sync` so it only has to send what came after it.
+          syncCursor: cursor ?? cur.syncCursor,
         ),
       );
+      if (cursor != null) _syncCursor = cursor;
     }
   }
 
@@ -1414,9 +1483,19 @@ class SyncService extends Service {
   DateTime? _tsOf(SessionHistoryEvent e) =>
       e.ts > 0 ? DateTime.fromMillisecondsSinceEpoch(e.ts) : null;
 
-  List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
+  /// Map replayed events onto rows.
+  ///
+  /// [seqOffset] is where this batch starts in the room's transcript: zero for a
+  /// full replay (the rows ARE the transcript), and the number of rows already
+  /// stored for a delta. The offset only matters because some row ids embed the
+  /// position (thinking rows), and a delta that restarted numbering at zero would
+  /// collide with the row it is appending next to.
+  List<MessageRecord> _convertHistory(
+    List<SessionHistoryEvent> events, {
+    int seqOffset = 0,
+  }) {
     final out = <MessageRecord>[];
-    var seq = 0;
+    var seq = seqOffset;
     // A `tool_result` event carries no tool name, so the request is what says
     // "this was a send_to_phone" — and whether its card already exists.
     final toolNameByCallId = <String, String>{};
@@ -1587,6 +1666,16 @@ class SyncService extends Service {
       final box = await _boxes.msgsBox(epk, room);
       _idToSeq.clear();
       _nextSeq = 0;
+      // The resume token rides the session index, so a cold start resumes a
+      // room instead of replaying it.
+      final rawIdx = _boxes.sessionsIndexBox().get(
+        LocalBoxes.sessionKey(epk, room),
+      );
+      _syncCursor = rawIdx is Map
+          ? SessionIndexRecord.fromJson(
+              rawIdx.cast<String, dynamic>(),
+            ).syncCursor
+          : null;
       for (final k in box.keys) {
         final seq = (k as num).toInt();
         final r = MessageRecord.fromJson(_coerce(box.get(k)));

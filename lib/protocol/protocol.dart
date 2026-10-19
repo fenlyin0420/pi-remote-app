@@ -735,19 +735,29 @@ class PairRequest extends ClientMessage {
 }
 
 /// Sent on reconnect / re-entry to request the current view of Pi's
-/// session. With the mirror-cache strategy (plan/16) the app no longer
-/// negotiates incremental since_ts; it just asks for the latest N
-/// events and replaces local state with whatever Pi returns.
+/// session.
+///
+/// The reply is normally a wholesale substitute for the local cache, but it can
+/// also be a delta: [since] carries the opaque cursor the Pi minted for the last
+/// event this device holds, and the Pi answers with only what came after it. The
+/// field is additive — an older Pi ignores it and replays everything, which the
+/// app applies exactly as before.
 class SessionSync extends ClientMessage {
   final String id;
   final int? limit;
-  SessionSync({required this.id, this.limit});
+
+  /// Resume token from the previous `session_history.cursor`. Null asks for a
+  /// full replay (first sync of a room, or after a cursor was dropped).
+  final String? since;
+
+  SessionSync({required this.id, this.limit, this.since});
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'session_sync',
     'id': id,
     if (limit != null) 'limit': limit,
+    if (since != null) 'since': since,
   };
 }
 
@@ -1767,12 +1777,26 @@ class SessionHistory extends ServerMessage {
   final List<SessionHistoryEvent> events;
   final bool eos;
   final bool truncated;
+
+  /// `true` when [events] are only what came after the cursor this device sent,
+  /// to be APPENDED to the cache. `false` (the default, and what an older Pi
+  /// sends by omission) means [events] is the whole mirror and the cache is
+  /// replaced with it.
+  final bool isDelta;
+
+  /// Opaque resume token for the last event in [events]. Stored per session and
+  /// echoed as [SessionSync.since] next time; null when there is nothing to
+  /// resume from.
+  final String? cursor;
+
   SessionHistory({
     required this.inReplyTo,
     required this.sessionStartedAt,
     required this.events,
     required this.eos,
     this.truncated = false,
+    this.isDelta = false,
+    this.cursor,
   });
 
   factory SessionHistory.fromJson(Map<String, dynamic> j) => SessionHistory(
@@ -1784,6 +1808,9 @@ class SessionHistory extends ServerMessage {
     eos: j['eos'] as bool,
     // Tolerate absence during the protocol transition window.
     truncated: (j['truncated'] as bool?) ?? false,
+    // Absent `mode` is the pre-delta contract: a full replay.
+    isDelta: (j['mode'] as String?) == 'delta',
+    cursor: j['cursor'] as String?,
   );
 }
 

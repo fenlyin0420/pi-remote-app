@@ -687,6 +687,44 @@ void main() {
       expect(evt.images.single.data, 'QUJD');
     });
 
+    test('session_history without mode is a full replay', () {
+      final hist =
+          ServerMessage.fromJson({
+                'type': 'session_history',
+                'in_reply_to': 'sync1',
+                'session_started_at': 7,
+                'eos': true,
+                'events': const [],
+              })
+              as SessionHistory;
+      expect(hist.isDelta, isFalse);
+      expect(hist.cursor, isNull);
+    });
+
+    test('session_history delta carries its cursor', () {
+      final hist =
+          ServerMessage.fromJson({
+                'type': 'session_history',
+                'in_reply_to': 'sync1',
+                'session_started_at': 7,
+                'mode': 'delta',
+                'cursor': '7:abcdef0123456789',
+                'eos': true,
+                'events': const [],
+              })
+              as SessionHistory;
+      expect(hist.isDelta, isTrue);
+      expect(hist.cursor, '7:abcdef0123456789');
+    });
+
+    test('session_sync omits since until there is a cursor', () {
+      expect(SessionSync(id: 'a').toJson().containsKey('since'), isFalse);
+      expect(
+        SessionSync(id: 'a', since: '7:ff').toJson()['since'],
+        '7:ff',
+      );
+    });
+
     test('WireModel.vision roundtrips and defaults to false', () {
       const m = WireModel(
         id: 'claude-opus-4-7',

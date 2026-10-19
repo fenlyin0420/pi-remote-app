@@ -13,6 +13,12 @@ class SessionIndexRecord {
   final String? lastMessagePreview;
   final DateTime? sessionStartedAt;
 
+  /// Opaque resume token the Pi minted for the newest history event this device
+  /// holds (`session_history.cursor`). Sent back as `session_sync.since`, so a
+  /// reconnect or a re-entry into the room transfers only what came after it
+  /// instead of the whole mirror.
+  final String? syncCursor;
+
   const SessionIndexRecord({
     required this.epk,
     required this.roomId,
@@ -21,6 +27,7 @@ class SessionIndexRecord {
     this.lastMessageAt,
     this.lastMessagePreview,
     this.sessionStartedAt,
+    this.syncCursor,
   });
 
   String get key => '$epk:$roomId';
@@ -31,6 +38,7 @@ class SessionIndexRecord {
     DateTime? lastMessageAt,
     String? lastMessagePreview,
     DateTime? sessionStartedAt,
+    String? syncCursor,
   }) => SessionIndexRecord(
     epk: epk,
     roomId: roomId,
@@ -39,6 +47,7 @@ class SessionIndexRecord {
     lastMessageAt: lastMessageAt ?? this.lastMessageAt,
     lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
     sessionStartedAt: sessionStartedAt ?? this.sessionStartedAt,
+    syncCursor: syncCursor ?? this.syncCursor,
   );
 
   Map<String, dynamic> toJson() => {
@@ -49,6 +58,7 @@ class SessionIndexRecord {
     'last_message_at': lastMessageAt?.millisecondsSinceEpoch,
     'last_message_preview': lastMessagePreview,
     'session_started_at': sessionStartedAt?.millisecondsSinceEpoch,
+    'sync_cursor': syncCursor,
   };
 
   factory SessionIndexRecord.fromJson(Map<String, dynamic> j) {
@@ -66,6 +76,7 @@ class SessionIndexRecord {
       lastMessageAt: ms(j['last_message_at']),
       lastMessagePreview: j['last_message_preview'] as String?,
       sessionStartedAt: ms(j['session_started_at']),
+      syncCursor: j['sync_cursor'] as String?,
     );
   }
 
@@ -78,7 +89,8 @@ class SessionIndexRecord {
       other.status == status &&
       other.lastMessageAt == lastMessageAt &&
       other.lastMessagePreview == lastMessagePreview &&
-      other.sessionStartedAt == sessionStartedAt;
+      other.sessionStartedAt == sessionStartedAt &&
+      other.syncCursor == syncCursor;
 
   @override
   int get hashCode => Object.hash(
@@ -89,5 +101,6 @@ class SessionIndexRecord {
     lastMessageAt,
     lastMessagePreview,
     sessionStartedAt,
+    syncCursor,
   );
 }

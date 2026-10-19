@@ -2033,5 +2033,172 @@ void main() {
       s.conn.dispose();
       s.sync.dispose();
     });
+
+    // A reconnect or a room re-entry used to replay the whole mirror: measured
+    // over nine days, one room sent the same 526 KB ten times in ninety seconds,
+    // and nine of those arrived at rows that already matched. The app now sends
+    // the Pi's cursor back and gets only what came after it.
+    group('incremental session_history', () {
+      test('a delta appends to the stored rows instead of replacing them',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              AgentMessageEvt(ts: 11, inReplyTo: 'sync_10', text: 'answer'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+        expect(messages(s.epk).map((r) => r.text), ['first', 'answer']);
+
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync2',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'second'),
+              AgentMessageEvt(ts: 21, inReplyTo: 'sync_20', text: 'reply'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await _settle();
+        expect(
+          messages(s.epk).map((r) => r.text),
+          ['first', 'answer', 'second', 'reply'],
+          reason: 'the delta lands after what the device already had',
+        );
+        expect(index(s.epk)?.syncCursor, '100:bbbb');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('the cursor is stored, so the next sync asks from it', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'hi')],
+            eos: true,
+            cursor: '100:deadbeef',
+          ),
+        );
+        await _settle();
+        expect(index(s.epk)?.syncCursor, '100:deadbeef');
+
+        s.ch.sent.clear();
+        s.sync.requestSync();
+        await _settle();
+        final sync = s.ch.sent.whereType<SessionSync>().single;
+        expect(sync.since, '100:deadbeef');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a full replay still substitutes, and drops a stale delta base',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'old')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // The Pi could not place the cursor (session replaced, budget trimmed):
+        // it replays everything, and the app must end up with exactly that.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync2',
+            sessionStartedAt: 200,
+            events: const [UserInputEvt(ts: 30, id: 'sync_30', text: 'new')],
+            eos: true,
+            cursor: '200:cccc',
+          ),
+        );
+        await _settle();
+        expect(messages(s.epk).map((r) => r.text), ['new']);
+        expect(index(s.epk)?.syncCursor, '200:cccc');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('an empty delta is a no-op that still advances the cursor',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'hi')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync2',
+            sessionStartedAt: 100,
+            events: const [],
+            eos: true,
+            isDelta: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+        expect(messages(s.epk).map((r) => r.text), ['hi']);
+        expect(index(s.epk)?.syncCursor, '100:aaaa');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a delta cannot collide with an existing thinking row id', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              AgentThinkingEvt(ts: 10, inReplyTo: 'sync_10', text: 'one'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync2',
+            sessionStartedAt: 100,
+            events: const [
+              AgentThinkingEvt(ts: 10, inReplyTo: 'sync_10', text: 'two'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await _settle();
+        // Same ts and role: only the seq offset keeps the ids apart.
+        expect(messages(s.epk).map((r) => r.text), ['one', 'two']);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+    });
   });
 }
