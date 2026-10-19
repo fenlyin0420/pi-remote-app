@@ -27,17 +27,18 @@ import 'package:flutter/material.dart';
 /// recorded with the archive, or from the inline header. A bubble that grows
 /// from nothing to 220 px as the bytes land shoves every row under it down, which
 /// is what made a fling through a room with pictures stop dead.
+///
+/// A picture is its own bubble: the text the user typed alongside it lives in a
+/// separate card above (see `message_bubble.dart`), never inside this one.
 class ImageBubble extends StatefulWidget {
   const ImageBubble({
     super.key,
     required this.image,
-    this.caption = '',
     this.isFailed = false,
     this.loadBytes,
   });
 
   final MessageImage image;
-  final String caption;
   final bool isFailed;
 
   /// Reads the bytes archived under [MessageImage.blob] (null when this phone
@@ -122,7 +123,6 @@ class _ImageBubbleState extends State<ImageBubble> {
 
   @override
   Widget build(BuildContext context) {
-    final caption = widget.caption.trim();
     final colors = context.colors;
     return Container(
       decoration: BoxDecoration(
@@ -133,28 +133,13 @@ class _ImageBubbleState extends State<ImageBubble> {
             : null,
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        // Loose width on purpose: the picture's box is only as wide as the
-        // picture (see [ImageBubble]), and the caption then takes the width it
-        // needs under it — up to the bubble's 300 pt envelope.
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_bytes != null)
-            _picture(context)
-          else if (_reading)
-            _readingBox(context)
-          else
-            _broken(context),
-          if (caption.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-              child: Text(
-                caption,
-                style: context.typo.sansBody.copyWith(color: colors.text),
-              ),
-            ),
-        ],
-      ),
+      // Loose width on purpose: the bubble is only as wide as the picture's own
+      // box, up to the 300 pt envelope `message_bubble.dart` gives it.
+      child: _bytes != null
+          ? _picture(context)
+          : _reading
+          ? _readingBox(context)
+          : _broken(context),
     );
   }
 

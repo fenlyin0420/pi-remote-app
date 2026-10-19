@@ -124,6 +124,41 @@ void main() {
     expect(find.text('sending…'), findsOneWidget);
   });
 
+  testWidgets('the text and the picture are separate bubbles, text first', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: UserBubble(
+            UserMsg(
+              id: 'u1',
+              text: 'what do you make of this?',
+              images: [MessageImage(data: _square, mime: 'image/png')],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // Two cards: the caption in its own, the picture in its own.
+    expect(find.byType(SelectableText), findsOneWidget);
+    expect(find.byType(ImageBubble), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(SelectableText),
+        matching: find.byType(ImageBubble),
+      ),
+      findsNothing,
+      reason: 'the picture is never wrapped by the text card',
+    );
+    expect(
+      tester.getTopLeft(find.byType(SelectableText)).dy,
+      lessThan(tester.getTopLeft(find.byType(ImageBubble)).dy),
+    );
+  });
+
   testWidgets('every picture of a multi-image message gets its own bubble', (
     tester,
   ) async {

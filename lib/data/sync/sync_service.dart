@@ -810,12 +810,21 @@ class SyncService extends Service {
           ]);
         }
         if (streamingBehavior == UserMessageStreamingBehavior.steer) {
-          _setActivity(m.epk, m.roomId, SessionActivity.working, preview: text);
+          _setActivity(
+            m.epk,
+            m.roomId,
+            SessionActivity.working,
+            preview: _userText(text),
+          );
         } else {
           _setWorking(
             t,
             true,
-            preview: _preview(text, _messageImages(images), _messageFiles(files)),
+            preview: _preview(
+              _userText(text),
+              _messageImages(images),
+              _messageFiles(files),
+            ),
             replyTo: id,
           );
           if (t.streaming?.inReplyTo != id) {
@@ -958,7 +967,7 @@ class SyncService extends Service {
                   id: id,
                   seq: seq,
                   role: MsgRole.user,
-                  text: text,
+                  text: _userText(text),
                   images: _messageImages(images),
                   files: _messageFiles(files),
                   ts: DateTime.now(),
@@ -967,9 +976,14 @@ class SyncService extends Service {
         if (t == null) return;
         // Steering input should not start/replace the working turn bubble.
         if (streamingBehavior == UserMessageStreamingBehavior.steer) {
-          _setActivity(epk!, _activeRoomId, SessionActivity.working, preview: text);
+          _setActivity(
+            epk!,
+            _activeRoomId,
+            SessionActivity.working,
+            preview: _userText(text),
+          );
         } else {
-          _setWorking(t, true, preview: text, replyTo: id);
+          _setWorking(t, true, preview: _userText(text), replyTo: id);
           // Show the thinking cursor for this turn (foreign-device echo, or the
           // local echo when the send-seed was already cleared). Guarded so it
           // never wipes a buffer that's already accumulating for this id.
@@ -1414,7 +1428,7 @@ class SyncService extends Service {
               id: id,
               seq: seq++,
               role: MsgRole.user,
-              text: text,
+              text: _userText(text),
               images: _messageImages(images),
               files: _messageFiles(files),
               ts: _tsOf(e),
@@ -2060,6 +2074,43 @@ class SyncService extends Service {
   static List<MessageImage> _messageImages(List<WireImage> images) => images
       .map((i) => MessageImage(data: i.data, mime: i.mime))
       .toList();
+
+  /// A user message's text as it should read on the phone.
+  ///
+  /// pi appends its own model-facing notes to the text of any message that
+  /// carried pictures — the resize hint (`[Image: original 1080x2400, displayed
+  /// at 900x2000. Multiply coordinates by 1.20 to map to original image.]`), a
+  /// format conversion, an omission. Those notes address the model, not the
+  /// user, and only a `session_history` replay carries them (a phone-sent
+  /// message echoes back the text that was typed); replayed verbatim they turn
+  /// into a bubble above the picture.
+  static String _userText(String text) {
+    if (!text.contains('[Image')) return text;
+    final lines = text.split('\n');
+    final kept = [
+      for (final line in lines)
+        if (!_imageNote.hasMatch(line.trim())) line,
+    ];
+    if (kept.length == lines.length) return text;
+    // The note is its own paragraph: pi separates it with a blank line, which
+    // would otherwise leave the caption card with a trailing gap.
+    while (kept.isNotEmpty && kept.last.trim().isEmpty) {
+      kept.removeLast();
+    }
+    while (kept.isNotEmpty && kept.first.trim().isEmpty) {
+      kept.removeAt(0);
+    }
+    return kept.join('\n');
+  }
+
+  /// One line of pi's image notes
+  /// (`packages/coding-agent/src/utils/image-process.ts`).
+  static final RegExp _imageNote = RegExp(
+    r'^\[Image(: original \d+x\d+, displayed at \d+x\d+\. Multiply '
+    r'coordinates by \d+(?:\.\d+)? to map to original image\.'
+    r'| converted from [^\]]+'
+    r'| omitted: [^\]]*)\]$',
+  );
 
   static String _preview(String text, List<MessageImage> images, List<MessageFile> files) {
     if (text.isEmpty && images.isNotEmpty) return '📷 Image';

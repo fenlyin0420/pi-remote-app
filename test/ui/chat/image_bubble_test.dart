@@ -1,5 +1,6 @@
-// Plan/30 — ImageBubble renders a static thumbnail from base64 + optional
-// caption, with a broken-image fallback for bad data.
+// Plan/30 — ImageBubble renders a static thumbnail from base64, with a
+// broken-image fallback for bad data. The text the user typed alongside the
+// picture is a separate card (`message_bubble.dart`), never part of this one.
 //
 // Two layout rules are pinned here. A picture keeps its OWN ratio: a square is
 // square, a portrait screenshot is a tall strip — merely scaled down to fit the
@@ -49,8 +50,7 @@ const _wide =
 void main() {
   Future<void> pump(
     WidgetTester tester,
-    MessageImage image,
-    String caption, {
+    MessageImage image, {
     Future<Uint8List?> Function(String blob)? loadBytes,
   }) {
     return tester.pumpWidget(
@@ -61,11 +61,7 @@ void main() {
             // `message_bubble.dart`); the frame's arithmetic depends on it.
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 300),
-              child: ImageBubble(
-                image: image,
-                caption: caption,
-                loadBytes: loadBytes,
-              ),
+              child: ImageBubble(image: image, loadBytes: loadBytes),
             ),
           ),
         ),
@@ -75,21 +71,13 @@ void main() {
 
   Size imageSize(WidgetTester tester) => tester.getSize(find.byType(Image));
 
-  testWidgets('renders the image and the caption', (tester) async {
-    await pump(
-      tester,
-      const MessageImage(data: _png, mime: 'image/jpeg'),
-      'a kitten',
-    );
+  testWidgets('renders the picture and nothing but the picture', (
+    tester,
+  ) async {
+    await pump(tester, const MessageImage(data: _png, mime: 'image/jpeg'));
     await tester.pump();
     expect(find.byType(Image), findsOneWidget);
-    expect(find.text('a kitten'), findsOneWidget);
-  });
-
-  testWidgets('renders without a caption when empty', (tester) async {
-    await pump(tester, const MessageImage(data: _png, mime: 'image/jpeg'), '');
-    await tester.pump();
-    expect(find.byType(Image), findsOneWidget);
+    // No caption inside the card: the message's text gets its own bubble.
     expect(find.byType(Text), findsNothing);
   });
 
@@ -99,7 +87,6 @@ void main() {
     await pump(
       tester,
       const MessageImage(data: 'not valid base64 !!', mime: 'image/jpeg'),
-      '',
     );
     await tester.pump();
     expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
@@ -109,7 +96,7 @@ void main() {
   testWidgets('a square picture stays square, just smaller', (tester) async {
     // 200×200 in a 300 pt row: no crop, no stretch, and no blow-up either —
     // the bubble is the picture's own size.
-    await pump(tester, const MessageImage(data: _square, mime: 'image/png'), '');
+    await pump(tester, const MessageImage(data: _square, mime: 'image/png'));
     expect(imageSize(tester), const Size(200, 200));
     expect(tester.getSize(find.byType(ImageBubble)).width, 200);
     await tester.pump();
@@ -125,7 +112,6 @@ void main() {
     await pump(
       tester,
       const MessageImage(data: _portrait, mime: 'image/png'),
-      '',
     );
     const expected = Size(700 * 220 / 1568, 220);
     expect(imageSize(tester).height, closeTo(expected.height, 0.01));
@@ -139,21 +125,8 @@ void main() {
     tester,
   ) async {
     // 400×100 in a 300 pt row → 300×75.
-    await pump(tester, const MessageImage(data: _wide, mime: 'image/png'), '');
+    await pump(tester, const MessageImage(data: _wide, mime: 'image/png'));
     expect(imageSize(tester), const Size(300, 75));
-  });
-
-  testWidgets('a caption wider than the picture still fits the envelope', (
-    tester,
-  ) async {
-    await pump(
-      tester,
-      const MessageImage(data: _portrait, mime: 'image/png'),
-      'this caption is much wider than the narrow strip above it',
-    );
-    expect(tester.getSize(find.byType(ImageBubble)).width, 300);
-    // The picture keeps its own box inside that wider card.
-    expect(imageSize(tester).height, closeTo(220, 0.01));
   });
 
   testWidgets('tapping the picture opens the full-screen preview', (
@@ -162,7 +135,6 @@ void main() {
     await pump(
       tester,
       const MessageImage(data: _square, mime: 'image/png'),
-      '',
     );
     await tester.pump();
 
@@ -185,7 +157,6 @@ void main() {
     await pump(
       tester,
       const MessageImage(data: _portrait, mime: 'image/png'),
-      '',
     );
     final first = tester.widget<Image>(find.byType(Image));
 
@@ -193,7 +164,6 @@ void main() {
     await pump(
       tester,
       const MessageImage(data: _portrait, mime: 'image/png'),
-      '',
     );
     final second = tester.widget<Image>(find.byType(Image));
 
@@ -212,7 +182,7 @@ void main() {
     tester,
   ) async {
     // 400×100 → a 300 pt box, so the decode hint is 300 logical pixels' worth.
-    await pump(tester, const MessageImage(data: _wide, mime: 'image/png'), '');
+    await pump(tester, const MessageImage(data: _wide, mime: 'image/png'));
     final provider = tester.widget<Image>(find.byType(Image)).image;
     expect(provider, isA<ResizeImage>());
     expect(
@@ -237,7 +207,6 @@ void main() {
         width: 200,
         height: 200,
       ),
-      '',
       loadBytes: (blob) async => blob == 'img_archived_1.bin' ? bytes : null,
     );
     // Frame one: the box is already the picture's (the size rode along in the
@@ -259,7 +228,6 @@ void main() {
         width: 200,
         height: 200,
       ),
-      '',
       loadBytes: (blob) async => null,
     );
     await tester.pumpAndSettle();
@@ -279,7 +247,6 @@ void main() {
         width: 200,
         height: 200,
       ),
-      '',
       loadBytes: (blob) async => bytes,
     );
     await tester.pumpAndSettle();

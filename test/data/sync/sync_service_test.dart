@@ -1950,5 +1950,88 @@ void main() {
       s.conn.dispose();
       s.sync.dispose();
     });
+
+    // pi answers a picture with a note addressed to the MODEL (how far the
+    // inline copy was scaled down) and appends it to the user message's own
+    // text. Only a replay carries it — the phone-sent echo has the typed text —
+    // so entering the room again used to grow a bubble above the picture.
+    const hint =
+        '[Image: original 1080x2400, displayed at 900x2000. Multiply '
+        'coordinates by 1.20 to map to original image.]';
+
+    test('the model-facing image note never becomes a bubble', () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [
+            UserInputEvt(
+              ts: 40,
+              id: 'sync_40',
+              text: 'what is this?\n\n$hint',
+              images: [WireImage(data: _squarePng, mime: 'image/png')],
+            ),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      final row = messages(s.epk).single;
+      expect(row.text, 'what is this?', reason: 'the caption the user typed');
+      expect(row.images, hasLength(1));
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a note-only message keeps no text at all', () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [
+            UserInputEvt(
+              ts: 50,
+              id: 'sync_50',
+              text: hint,
+              images: [WireImage(data: _squarePng, mime: 'image/png')],
+            ),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      final row = messages(s.epk).single;
+      expect(row.text, isEmpty, reason: 'the picture carries the message');
+      expect(row.images, hasLength(1));
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('text that merely mentions an image survives', () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [
+            UserInputEvt(
+              ts: 60,
+              id: 'sync_60',
+              text: 'the [Image: ...] note in the log is noise',
+            ),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk).single.text,
+        'the [Image: ...] note in the log is noise',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    });
   });
 }

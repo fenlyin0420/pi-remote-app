@@ -21,9 +21,10 @@ class UserBubble extends StatelessWidget {
 
   const UserBubble(this.message, {super.key, this.loadImageBytes});
 
-  /// Multi-attachment layout: a caption card first (when the message has
-  /// text), then one bubble per image and per file, each 6px below the
-  /// previous one.
+  /// The layout of everything a user message carries: a caption card first
+  /// (when the message has text), then one bubble per image and per file, each
+  /// 6px below the previous one. A picture is never drawn inside the card that
+  /// holds the text — they are separate bubbles.
   static List<Widget> _attachmentKids(
     List<MessageImage> images,
     List<MessageFile> files,
@@ -89,9 +90,9 @@ class UserBubble extends StatelessWidget {
     final isFailed = message.status == UserMsgStatus.failed;
     final isSteering = message.steering;
     // Plan/30/63 — attachments render as bubbles: one ImageBubble per image
-    // and one FileBubble per file. A single attachment keeps the legacy look
-    // (the caption reads inside the card); several attachments stack a
-    // caption card (when the message has text) plus one bubble per item.
+    // and one FileBubble per file, with the text (when there is any) in its own
+    // card above them. A single file keeps the legacy look (the caption reads
+    // inside that card).
     final images = message.images;
     final files = message.files;
     final hasCaption = message.text.trim().isNotEmpty;
@@ -109,16 +110,7 @@ class UserBubble extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 mainAxisSize: MainAxisSize.min,
-                children: images.length == 1 && files.isEmpty
-                    ? [
-                        ImageBubble(
-                          image: images.first,
-                          caption: message.text,
-                          isFailed: isFailed,
-                          loadBytes: loadImageBytes,
-                        ),
-                      ]
-                    : files.length == 1 && images.isEmpty
+                children: files.length == 1 && images.isEmpty
                     ? [
                         FileBubble(
                           file: files.first,
