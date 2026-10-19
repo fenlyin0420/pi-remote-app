@@ -276,5 +276,55 @@ void main() {
       expect(p2.showMessageMetaFor('epk1', 'main'), isFalse);
       expect(p2.showMessageMetaFor('epk2', 'main'), isTrue);
     });
+
+    // LOCAL (fenlyin): the model label carries the provider learned from a
+    // fetched catalogue ("Model · provider"), and degrades to the bare name
+    // while the provider is unknown.
+    test('modelLabel appends the remembered provider, clipping the name first',
+        () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      expect(p.providerFor('Claude Opus 4.7'), isNull);
+      expect(p.modelLabel('Claude Opus 4.7'), 'Claude Opus 4.7');
+      expect(p.modelLabel(null), isNull);
+      expect(p.modelLabel(''), isNull);
+
+      await p.rememberModelProviders({
+        'Claude Opus 4.7': 'anthropic',
+        'GPT-5': 'openai',
+        '': 'ignored',
+        'Broken': '',
+      });
+
+      expect(p.providerFor('Claude Opus 4.7'), 'anthropic');
+      expect(p.providerFor('Broken'), isNull);
+      expect(p.modelLabel('Claude Opus 4.7'), 'Claude Opus 4.7 · anthropic');
+      // The name is clipped first so the provider always survives the clip.
+      expect(p.modelLabel('Claude Opus 4.7', maxName: 8),
+          'Claude … · anthropic');
+      expect(p.modelLabel('unknown-model'), 'unknown-model');
+
+      // Providers are persisted — a restart keeps naming them.
+      final p2 = Preferences(store);
+      await p2.load();
+      expect(p2.modelLabel('GPT-5'), 'GPT-5 · openai');
+    });
+
+    test('rememberModelProviders merges, never prunes, notifies on change only',
+        () async {
+      final p = Preferences(_FakeSecureStorage());
+      var notifs = 0;
+      p.addListener(() => notifs++);
+
+      await p.rememberModelProviders({'A': 'anthropic'});
+      expect(notifs, 1);
+      await p.rememberModelProviders({'A': 'anthropic'});
+      expect(notifs, 1, reason: 'no new pair → no write, no notify');
+
+      await p.rememberModelProviders({'B': 'openai'});
+      expect(notifs, 2);
+      expect(p.providerFor('A'), 'anthropic');
+      expect(p.providerFor('B'), 'openai');
+    });
   });
 }

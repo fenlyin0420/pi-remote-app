@@ -1,7 +1,9 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 /// A row in the Home list.
 ///
@@ -142,6 +144,7 @@ class _TitleBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final prefs = context.watch<Preferences>();
     final r = room;
     // Title preference: explicit room.name → cwd basename → peer
     // nickname → session name. The cwd path line was dropped on purpose
@@ -178,20 +181,19 @@ class _TitleBlock extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 3),
-        // Subtitle = the Pi-extension's model (when surfaced via
+        // Subtitle = the Pi-extension's model + provider (when surfaced via
         // `room_announced` / `room_meta_updated`), else the legacy
-        // "Last paired" timestamp so the row keeps a stable height.
+        // "Last paired" timestamp so the row keeps a stable height. The
+        // provider comes from the fetched model catalogue; while it is still
+        // unknown the subtitle is just the model name.
         Builder(builder: (_) {
-          final model = room?.model;
-          final hasModel = model != null && model.isNotEmpty;
+          final label = prefs.modelLabel(room?.model, maxName: 20);
           return Text(
-            hasModel
-                ? _truncateModel(model)
-                : 'Last paired: ${_relativeTime(peer.pairedAt)}',
+            label ?? 'Last paired: ${_relativeTime(peer.pairedAt)}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              color: hasModel ? colors.accent : colors.muted,
+              color: label != null ? colors.accent : colors.muted,
               fontSize: 12,
               fontFamily: kMonoFamily,
             ),
@@ -201,9 +203,6 @@ class _TitleBlock extends StatelessWidget {
     );
   }
 }
-
-String _truncateModel(String name) =>
-    name.length <= 24 ? name : '${name.substring(0, 21)}…';
 
 class _Avatar extends StatelessWidget {
   final String name;

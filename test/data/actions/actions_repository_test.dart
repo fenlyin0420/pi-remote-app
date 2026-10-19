@@ -7,11 +7,14 @@
 import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../support/fake_secure_storage.dart';
 
 class _FakeChannel implements IChannel, IControlLink {
   final _ctrl = StreamController<ServerMessage>.broadcast();
@@ -48,7 +51,10 @@ class _FakeStorage extends PairingStorage {
 }
 
 Future<({ActionsRepository repo, ConnectionManager cm, _FakeChannel ch})>
-_setup({Duration timeout = const Duration(seconds: 5)}) async {
+_setup({
+  Duration timeout = const Duration(seconds: 5),
+  Preferences? prefs,
+}) async {
   final ch = _FakeChannel();
   // emitDebounce: zero so rooms/presence updates flow synchronously
   // through the rooms stream and the ActionsRepository's reactive
@@ -59,7 +65,7 @@ _setup({Duration timeout = const Duration(seconds: 5)}) async {
     storage: _FakeStorage(),
     emitDebounce: Duration.zero,
   );
-  final repo = ActionsRepository(cm, timeout: timeout);
+  final repo = ActionsRepository(cm, prefs: prefs, timeout: timeout);
   cm.adopt(
     ch,
     const PeerRecord(
@@ -278,6 +284,40 @@ void main() {
       final secondSent = s.ch.sent.whereType<ListModels>().last;
       s.ch.push(ModelsList(inReplyTo: secondSent.id, models: const []));
       await secondList;
+      s.cm.dispose();
+    });
+
+    // LOCAL (fenlyin): the catalogue is the only place a provider is known —
+    // `room_meta.model` is a bare display name — so every fetched catalogue
+    // must teach Preferences the `name → provider` pairs the UI labels use.
+    test('a fetched catalogue records name → provider into Preferences',
+        () async {
+      final prefs = Preferences(FakeSecureStorage());
+      final s = await _setup(prefs: prefs);
+      final future = s.repo.listModels();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as ListModels;
+      const opus = WireModel(
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        provider: 'anthropic',
+        reasoning: true,
+        contextWindow: 200000,
+      );
+      const gpt = WireModel(
+        id: 'gpt-5',
+        name: 'GPT-5',
+        provider: 'openai',
+        reasoning: false,
+        contextWindow: 128000,
+      );
+      s.ch.push(
+        ModelsList(inReplyTo: sent.id, models: const [opus, gpt], current: opus),
+      );
+      await future;
+
+      expect(prefs.providerFor('Claude Opus 4.7'), 'anthropic');
+      expect(prefs.modelLabel('GPT-5'), 'GPT-5 · openai');
       s.cm.dispose();
     });
   });

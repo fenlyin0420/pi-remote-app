@@ -212,6 +212,13 @@ void main() {
 
       // Line 2 = model (from the room announce).
       expect(find.text('mac-model'), findsOneWidget);
+      // LOCAL (fenlyin): once the catalogue has taught the app the provider,
+      // line 2 names it too — matched by display name, which is all the wire's
+      // `room_meta.model` carries.
+      await prefs.rememberModelProviders({'mac-model': 'anthropic'});
+      await tester.pump();
+      expect(find.text('mac-model · anthropic'), findsOneWidget);
+      expect(find.text('mac-model'), findsNothing);
       // Line 1 = room title (from initialTitle) — distinct from the device, so
       // we know the subtitle isn't just echoing the title fallback.
       expect(find.text('My Project'), findsOneWidget);

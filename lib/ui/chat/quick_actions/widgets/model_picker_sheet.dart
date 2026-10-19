@@ -350,7 +350,7 @@ class _ModelTile extends StatelessWidget {
               ),
             ),
             if (current)
-              Icon(LucideIcons.check, color: colors.accent, size: 18),
+              Icon(LucideIcons.circleCheck, color: colors.accent, size: 18),
           ],
         ),
       ),

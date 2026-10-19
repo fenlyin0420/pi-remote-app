@@ -25,6 +25,13 @@ class Preferences extends ChangeNotifier {
   // LOCAL (fenlyin): per-room per-message caption (timestamp + model) toggle.
   // Default ON (captions shown).
   final Map<String, bool> _showMessageMetaRooms = <String, bool>{};
+  // LOCAL (fenlyin): model display name → provider slug ("Claude Opus 4.7" →
+  // "anthropic"). Learned from every model catalogue the app fetches and
+  // persisted, because `room_meta.model` on the wire only carries the display
+  // name — this is what lets Home / the chat top bar / session info name the
+  // provider. A provider belongs to the model name, so one catalogue teaches
+  // the whole app (every peer and room).
+  final Map<String, String> _modelProviders = <String, String>{};
   String? _selectedPeerEpk;
   String? _relayUrl;
   bool _onboardingCompleted = false;
@@ -39,6 +46,7 @@ class Preferences extends ChangeNotifier {
   static const _kHideToolCallsRoomsKey = 'prefs.hide_tool_calls_rooms';
   static const _kHideThinkingRoomsKey = 'prefs.hide_thinking_rooms';
   static const _kShowMessageMetaRoomsKey = 'prefs.show_message_meta_rooms';
+  static const _kModelProvidersKey = 'prefs.model_providers';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
@@ -102,6 +110,51 @@ class Preferences extends ChangeNotifier {
           key: _kShowMessageMetaRoomsKey,
           value: jsonEncode(_showMessageMetaRooms),
         );
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Model name → provider (LOCAL, fenlyin)
+  // ---------------------------------------------------------------------------
+
+  /// Provider slug of the model display name (e.g. `anthropic`), or `null`
+  /// while no fetched catalogue has mentioned that model. Matching is by
+  /// display name because that is all `room_meta.model` carries on the wire.
+  String? providerFor(String? modelName) =>
+      modelName == null ? null : _modelProviders[modelName];
+
+  /// The label used wherever the app names the running model:
+  /// `"Claude Opus 4.7 · anthropic"`. The provider half is omitted while
+  /// unknown, so this always degrades to the bare model name.
+  ///
+  /// [maxName] > 0 clips the model NAME first — a long name must never push
+  /// the provider out of a one-line slot (Home tile, chat top bar).
+  String? modelLabel(String? modelName, {int maxName = 0}) {
+    if (modelName == null || modelName.isEmpty) return null;
+    final clipped = maxName > 0 && modelName.length > maxName
+        ? '${modelName.substring(0, maxName - 1)}…'
+        : modelName;
+    final provider = _modelProviders[modelName];
+    if (provider == null || provider.isEmpty) return clipped;
+    return '$clipped · $provider';
+  }
+
+  /// Learn `model name → provider` from a fetched catalogue. Merges, never
+  /// prunes: a model missing from one peer's catalogue may still be another
+  /// peer's running model. No-op (and no write) when nothing new arrived.
+  Future<void> rememberModelProviders(Map<String, String> byName) async {
+    var changed = false;
+    for (final e in byName.entries) {
+      if (e.key.isEmpty || e.value.isEmpty) continue;
+      if (_modelProviders[e.key] == e.value) continue;
+      _modelProviders[e.key] = e.value;
+      changed = true;
+    }
+    if (!changed) return;
+    await _store.write(
+      key: _kModelProvidersKey,
+      value: jsonEncode(_modelProviders),
+    );
     notifyListeners();
   }
 
@@ -252,6 +305,19 @@ class Preferences extends ChangeNotifier {
       changed = true;
     }
 
+    final providers = _decodeStringMap(
+      await _store.read(key: _kModelProvidersKey),
+    );
+    final sameProviders =
+        providers.length == _modelProviders.length &&
+        providers.entries.every((e) => _modelProviders[e.key] == e.value);
+    if (!sameProviders) {
+      _modelProviders
+        ..clear()
+        ..addAll(providers);
+      changed = true;
+    }
+
     if (changed) notifyListeners();
   }
 
@@ -357,6 +423,21 @@ class Preferences extends ChangeNotifier {
             ),
           )
           .cast<String, bool>();
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  /// Parse a `{"key": "value"}` JSON blob; any malformation yields an
+  /// empty map.
+  static Map<String, String> _decodeStringMap(String? raw) {
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      final j = jsonDecode(raw);
+      if (j is! Map) return const {};
+      return j
+          .map((k, v) => MapEntry(k.toString(), v.toString()))
+          .cast<String, String>();
     } on FormatException {
       return const {};
     }

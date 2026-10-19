@@ -27,6 +27,7 @@
 
 import 'dart:async';
 
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/contracts/repository.dart';
@@ -163,6 +164,11 @@ class ActionsRepository extends Repository implements IActionsRepository {
   final ConnectionManager _conn;
   final Duration _timeout;
 
+  /// LOCAL (fenlyin): sink for the `model name → provider` index the UI needs
+  /// to name the provider of `room_meta.model` (which only carries the display
+  /// name). Optional so tests can build the repo without the app's store.
+  final Preferences? _prefs;
+
   StreamSubscription<ConnectionStatus>? _statusSub;
   StreamSubscription<ServerMessage>? _msgSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
@@ -184,8 +190,10 @@ class ActionsRepository extends Repository implements IActionsRepository {
 
   ActionsRepository(
     this._conn, {
+    Preferences? prefs,
     Duration timeout = const Duration(seconds: 15),
-  }) : _timeout = timeout {
+  }) : _prefs = prefs,
+       _timeout = timeout {
     _statusSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen(_onRooms);
     _onStatus(_conn.status);
@@ -415,7 +423,23 @@ class ActionsRepository extends Repository implements IActionsRepository {
     // mid-flight. We only cache against the key the *response* belongs
     // to, which is the live one when it resolves.
     _modelsCache[_sessionKey()] = result;
+    _recordProviders(result.models);
     return result;
+  }
+
+  /// LOCAL (fenlyin): remember `model name → provider` for every model the
+  /// catalogue lists. This is the only place the app learns a provider —
+  /// `room_meta.model` is a bare display name — so it feeds the label shown
+  /// on Home, in the chat top bar, in session info and in the quick actions
+  /// sheet. Persistence is fire-and-forget; the in-memory index updates
+  /// synchronously.
+  void _recordProviders(List<WireModel> models) {
+    final prefs = _prefs;
+    if (prefs == null || models.isEmpty) return;
+    // ignore: unawaited_futures — a failed write only loses the cache.
+    prefs.rememberModelProviders({
+      for (final m in models) m.name: m.provider,
+    });
   }
 
   @override

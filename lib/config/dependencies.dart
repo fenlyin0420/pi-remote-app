@@ -167,7 +167,10 @@ Future<void> setupDependencies() async {
 
   // Repositories
   _injector.addRepository<IActionsRepository>(
-    () => ActionsRepository(_injector.get<ConnectionManager>()),
+    () => ActionsRepository(
+      _injector.get<ConnectionManager>(),
+      prefs: _injector.get<Preferences>(),
+    ),
   );
 
   // ViewModels

@@ -105,6 +105,15 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
   void _showError(String message) =>
       _toast(message, widget.messenger.context.colors.error);
 
+  /// LOCAL (fenlyin): the running model plus its provider when the model
+  /// catalogue has taught us one ("Claude Opus 4.7 · anthropic"). Falls back
+  /// to the bare `room_meta.model` name while providers aren't known (and in
+  /// tests, where the VM carries no [Preferences]).
+  String? _modelLabel(QuickActionsViewModel vm) {
+    final name = vm.currentModelName ?? vm.currentModel?.name;
+    return _prefs?.modelLabel(name) ?? name;
+  }
+
   /// Toasts go through the chat scaffold's messenger (captured before the
   /// sheet opened) so success/failure feedback survives the sheet being
   /// popped on success.
@@ -171,7 +180,7 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
             ),
             const _Divider(),
             _ModelRow(
-              currentLabel: vm.currentModel?.name ?? vm.currentModelName,
+              currentLabel: _modelLabel(vm),
               busy: busyAction == ActionName.modelSet,
               onTap: () => _openModelPicker(vm),
             ),
