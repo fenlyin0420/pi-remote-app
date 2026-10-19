@@ -112,56 +112,52 @@ class ChatPage extends StatelessWidget {
                       child: _buildBody(context, state, vm),
                     ),
                     Positioned.fill(
-                      // Both are overlays: stacked in ONE bottom-anchored
-                      // column so neither can end up on top of the other (a
-                      // todo pill and a command's output at the same corner
-                      // used to cover each other). `fill` + bottom alignment is
-                      // what gives the todo card a real height bound to live
-                      // within — a `Positioned(bottom:)` child is laid out
-                      // against an unbounded height, so an oversized card would
-                      // be clipped at the top with no overflow warning.
+                      // `fill` + a bounded LayoutBuilder is what gives the todo
+                      // card a real height to live within: a `Positioned(top:)`
+                      // child is laid out against an unbounded height, so an
+                      // oversized card would be clipped with no overflow
+                      // warning.
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          // What the card may take from the transcript: its
-                          // height minus the pill + spacing it shares the corner
-                          // with, with the fixed ceiling kept for tall screens.
+                          // What the card may take from the transcript: the
+                          // height left below the pill, with the fixed ceiling
+                          // kept for tall screens.
                           final cardCap =
-                              ((constraints.maxHeight - 60) * 0.8).clamp(
+                              ((constraints.maxHeight - 72) * 0.8).clamp(
                                 120.0,
                                 280.0,
                               );
                           return Column(
-                            mainAxisSize: MainAxisSize.min,
-                            mainAxisAlignment: MainAxisAlignment.end,
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              _NoticeStrip(
-                                text: vm.notice,
-                                onDismiss: vm.dismissNotice,
-                              ),
                               // Plan/63 — the agent's todo list (pi-todo): a
-                              // pill while collapsed, the rows in a card above
-                              // it when open. Renders nothing without a list.
+                              // pill in the TOP-RIGHT corner, the rows in a card
+                              // unfolding below it when open. Renders nothing
+                              // without a list.
                               //
-                              // Trade-off: an open card covers the centred
-                              // "jump to latest" arrow (message_list's own
-                              // overlay). Deliberate — while reading the plan
-                              // the user is not trying to reach the newest
-                              // message, and collapsing restores the arrow.
+                              // The top is the one corner the transcript never
+                              // needs — the newest turn is at the bottom — so an
+                              // open card covers scrollback the user has already
+                              // read, never the message being read.
                               Align(
                                 alignment: Alignment.centerRight,
                                 child: Padding(
                                   padding: const EdgeInsets.fromLTRB(
                                     12,
+                                    12,
+                                    12,
                                     0,
-                                    12,
-                                    12,
                                   ),
                                   child: TodoPanel(
                                     todos: vm.todos,
                                     maxCardHeight: cardCap,
                                   ),
                                 ),
+                              ),
+                              _NoticeStrip(
+                                text: vm.notice,
+                                onDismiss: vm.dismissNotice,
                               ),
                             ],
                           );
@@ -213,7 +209,11 @@ class ChatPage extends StatelessWidget {
     // ViewModel sources from `isRoomLive`).
     final colors = context.colors;
     final vm = context.watch<ChatViewModel>();
+    final prefs = context.watch<Preferences>();
     final room = vm.activeRoom;
+    // LOCAL (fenlyin): model + provider. The provider half fills in once the
+    // model catalogue has been fetched (see ActionsRepository._recordProviders).
+    final modelLabel = prefs.modelLabel(room?.model, maxName: 20);
     // Plan/32g — until the VM has read a real runtime, trust the `initialOnline`
     // hint Home passed (the tile's live dot) so the status dot doesn't flash
     // "reconnecting" on the default runtime. The live signal takes over once
@@ -271,10 +271,10 @@ class ChatPage extends StatelessWidget {
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    if ((room?.model ?? '').isNotEmpty)
+                    if (modelLabel != null)
                       Flexible(
                         child: Text(
-                          _truncate(room!.model!, 24),
+                          modelLabel,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontFamily: kMonoFamily,
@@ -344,7 +344,17 @@ class ChatPage extends StatelessWidget {
             onPressed: () {
               final p = vm.activePeer;
               if (p != null) {
-                _showSessionInfo(context, p, vm.activeRoom, roomName, vm);
+                _showSessionInfo(
+                  context,
+                  p,
+                  vm.activeRoom,
+                  roomName,
+                  vm,
+                  // LOCAL (fenlyin): resolved here, where Preferences is in
+                  // scope — the dialog lives on a route above the page's
+                  // providers and cannot watch it itself.
+                  prefs.modelLabel(vm.activeRoom?.model),
+                );
               }
             },
           ),
@@ -363,6 +373,7 @@ class ChatPage extends StatelessWidget {
     RoomInfo? room,
     String name,
     ChatViewModel vm,
+    String? modelLabel,
   ) {
     // The dialog is a route: drop the composer's focus before pushing it, or
     // popping the dialog hands the focus back to the field and the soft
@@ -373,7 +384,6 @@ class ChatPage extends StatelessWidget {
         : peer.sessionName.isNotEmpty
         ? peer.sessionName
         : peer.remoteEpk.substring(0, 8);
-    final model = room?.model;
     final paired = peer.pairedAt.contains('T')
         ? peer.pairedAt.split('T').first
         : peer.pairedAt;
@@ -402,8 +412,8 @@ class ChatPage extends StatelessWidget {
               _InfoRow(label: 'Name', value: name),
               _InfoRow(label: 'Path', value: room?.cwd ?? '—'),
               _InfoRow(label: 'Owner', value: owner),
-              if (model != null && model.isNotEmpty)
-                _InfoRow(label: 'Model', value: model),
+              if (modelLabel != null && modelLabel.isNotEmpty)
+                _InfoRow(label: 'Model', value: modelLabel),
               if (room?.context != null)
                 _InfoRow(
                   label: 'Context',

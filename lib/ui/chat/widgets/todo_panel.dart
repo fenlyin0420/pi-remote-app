@@ -5,15 +5,20 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// Plan/63 — the agent's todo list (pi-todo), floated over the transcript.
 ///
-/// Collapsed it is a small pill carrying `done/total`; tapping it expands the
-/// rows in a card sitting just above the composer, and tapping it again
-/// collapses them. Nothing renders when the Pi has no list — a chat with a Pi
-/// that never ran `todo` looks exactly as it did before this existed.
+/// Collapsed it is a small pill carrying `done/total`; tapping it unfolds the
+/// rows in a card hanging just below the pill, and tapping it again folds them
+/// back. Nothing renders when the Pi has no list — a chat with a Pi that never
+/// ran `todo` looks exactly as it did before this existed.
+///
+/// The host anchors it in the transcript's top-right corner, and the card
+/// unfolds downward: the top is the one corner the transcript never needs (the
+/// newest turn is at the bottom), so an open card covers scrollback rather than
+/// the message being read.
 ///
 /// Collapsed by default: the transcript is the subject of the screen, and the
 /// plan is something you consult, not something that permanently occupies the
-/// bottom of the chat. The pill still answers "how far along is it?" without a
-/// tap, which is the part worth having at a glance.
+/// chat. The pill still answers "how far along is it?" without a tap, which is
+/// the part worth having at a glance.
 ///
 /// Rows are ordered by urgency — in progress, then pending, then done — which is
 /// the reverse of pi-todo's desktop panel (it keeps finished rows at the top
@@ -61,11 +66,11 @@ class _TodoPanelState extends State<TodoPanel> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        if (_open) ...[
-          _TodoCard(todos: todos, maxHeight: widget.maxCardHeight),
-          const SizedBox(height: 10),
-        ],
         _TodoPill(todos: todos, open: _open, onTap: _toggle),
+        if (_open) ...[
+          const SizedBox(height: 10),
+          _TodoCard(todos: todos, maxHeight: widget.maxCardHeight),
+        ],
       ],
     );
   }
@@ -74,6 +79,9 @@ class _TodoPanelState extends State<TodoPanel> {
 /// The floating affordance: a stadium-shaped pill with the icon and the
 /// `done/total` counter. Accent-tinted while something is in progress, so the
 /// one-glance answer is also "is the agent working on the list right now?".
+///
+/// The chevron points the way the card will move: down to unfold it below the
+/// pill, up to fold it back.
 class _TodoPill extends StatelessWidget {
   const _TodoPill({required this.todos, required this.open, required this.onTap});
 
@@ -142,6 +150,7 @@ class _TodoPill extends StatelessWidget {
 }
 
 /// The expanded list: header with the counter, then one row per task.
+/// Unfolds below the pill — see [TodoPanel].
 class _TodoCard extends StatelessWidget {
   const _TodoCard({required this.todos, required this.maxHeight});
 

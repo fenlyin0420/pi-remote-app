@@ -32,7 +32,7 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: Align(
-            alignment: Alignment.bottomRight,
+            alignment: Alignment.topRight,
             child: TodoPanel(todos: todos),
           ),
         ),
@@ -128,7 +128,7 @@ void main() {
             builder: (context, setState) {
               setOuter = setState;
               return Align(
-                alignment: Alignment.bottomRight,
+                alignment: Alignment.topRight,
                 child: TodoPanel(todos: todos),
               );
             },
@@ -182,6 +182,23 @@ void main() {
     expect(find.byIcon(LucideIcons.chevronDown), findsNothing);
   });
 
+  testWidgets('the card unfolds BELOW the pill (the panel is top-anchored)', (
+    tester,
+  ) async {
+    await pump(tester, list([task(1, 'One', TodoTaskStatus.pending)]));
+    final pillBottom = tester.getBottomLeft(find.byKey(const Key('todo-pill'))).dy;
+
+    await tester.tap(find.byKey(const Key('todo-pill-tap')));
+    await tester.pumpAndSettle();
+
+    final cardTop = tester.getTopLeft(find.byKey(const Key('todo-card'))).dy;
+    expect(
+      cardTop,
+      greaterThanOrEqualTo(pillBottom),
+      reason: 'a top-anchored pill must not push the card off the top edge',
+    );
+  });
+
   testWidgets('rows expose their status to a screen reader', (tester) async {
     final handle = tester.ensureSemantics();
     await pump(
@@ -204,12 +221,12 @@ void main() {
   ) async {
     // The transcript is ~200dp in landscape (or with the keyboard up): the host
     // passes that budget down, and the card must live inside it instead of
-    // being clipped at the top with no warning.
+    // being clipped with no warning.
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: Align(
-            alignment: Alignment.bottomRight,
+            alignment: Alignment.topRight,
             child: TodoPanel(
               todos: list([
                 for (var i = 1; i <= 12; i += 1)
