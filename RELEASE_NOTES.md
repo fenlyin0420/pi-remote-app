@@ -1,21 +1,23 @@
-# Remote Pi 1.6.1
+# Remote Pi 1.6.2
 
 ## What's new
 
-- **The chat stops spending data while it sits idle.** Keeping a conversation
-  open could leave a stream running at a steady few hundred KB/s — gigabytes a
-  day on mobile data, with nothing being sent or received. The app was asking
-  the relay for the same session state again and again; it now asks once and
-  goes quiet. Plain text chat is back to a few KB/s.
-- **The session list updates without the churn.** Those repeated requests were
-  also the reason the phone and the relay kept re-sending presence and room
-  snapshots to each other. A subscription is now established once per set of
-  paired Pis, and only repeated when that set actually changes.
-- **Fixed:** unpairing your last Pi and pairing the same one again could leave
-  the session list empty until the app was restarted.
+- **The model on screen now says who serves it.** The Pi reports the model's
+  name and nothing else, so a row that read `Claude Opus 4.7` now reads
+  `Claude Opus 4.7 · anthropic` — on the Home list, in the chat's top bar, in
+  the session info and in the quick actions sheet. The provider comes from the
+  model catalogue the app already downloads and is remembered for offline use;
+  while it is still unknown, the name is shown on its own.
+- **The agent's todo list moved out of the way.** The pill now sits in the
+  transcript's top-right corner and unfolds downward, so an open list covers
+  scrollback instead of the message being read. The chevron follows the
+  direction the card moves.
+
+Updating from 1.6.0, this release also carries 1.6.1's fix for a chat that kept
+draining mobile data while it sat idle.
 
 ## Assets
 
-- `remote-pi-1.6.1-arm64-signed.apk` — Android arm64
+- `remote-pi-1.6.2-arm64-signed.apk` — Android arm64
 - `SHA256SUMS` — checksums for the assets above
 - `latest.json` — auto-update manifest
