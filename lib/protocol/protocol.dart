@@ -278,8 +278,16 @@ class RoomInfo {
       other.context == context;
 
   @override
-  int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working);
+  int get hashCode => Object.hash(
+    roomId,
+    name,
+    cwd,
+    startedAt,
+    model,
+    thinking,
+    working,
+    context,
+  );
 }
 
 /// Plan/42 — best-effort context usage published by the Pi-extension
@@ -290,6 +298,22 @@ class RoomContextUsage {
   final int used;
   final int limit;
   const RoomContextUsage({required this.used, required this.limit});
+
+  /// Value equality is load-bearing, not cosmetic: [RoomInfo] compares its
+  /// `context`, and callers use that comparison to decide "the relay's
+  /// snapshot is identical to what we already hold, skip it". Without this,
+  /// every re-parsed snapshot carried a fresh instance, so the comparison was
+  /// never true — the app re-persisted rooms on every snapshot, and the
+  /// resulting `notifyListeners()` made Home re-subscribe, closing a loop that
+  /// cost a few hundred KB/s (see `ConnectionManager.subscribeToPeers`).
+  @override
+  bool operator ==(Object other) =>
+      other is RoomContextUsage &&
+      other.used == used &&
+      other.limit == limit;
+
+  @override
+  int get hashCode => Object.hash(used, limit);
 
   /// Parse the wire shape `{ "context": { "used": n, "limit": n } }`
   /// from a flat map (top-level frame) or a nested `meta` envelope.

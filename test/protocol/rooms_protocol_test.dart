@@ -1,9 +1,73 @@
 // Tests for the new room-related control frames (plan 17).
 
+import 'dart:convert';
+
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // The app decides "this snapshot is identical to what I hold, skip it" by
+  // comparing parsed rooms. That comparison is only as good as `RoomInfo.==`,
+  // so a field without value equality silently turns every re-parsed snapshot
+  // into a change — and a change is persisted, which notifies listeners that
+  // re-request the snapshot. See `ConnectionManager.subscribeToPeers`.
+  group('RoomInfo value equality', () {
+    Map<String, dynamic> frame() => {
+      'type': 'rooms',
+      'peer': 'epk_A',
+      'rooms': [
+        {
+          'room_id': 'r1',
+          'name': 'work',
+          'cwd': '/w',
+          'started_at': 1700000000000,
+          'model': 'gpt-x',
+          'thinking': 'auto',
+          'working': true,
+          'context': {'used': 1200, 'limit': 1000000},
+        },
+      ],
+    };
+
+    test('the same frame parsed twice compares equal', () {
+      final first = ControlInbound.tryFromJson(frame())! as RoomsSnapshot;
+      final second =
+          ControlInbound.tryFromJson(jsonDecode(jsonEncode(frame())))
+              as RoomsSnapshot;
+
+      expect(first.rooms, hasLength(1));
+      expect(second.rooms.first, first.rooms.first);
+      expect(second.rooms.first == first.rooms.first, isTrue);
+      // Both halves of the contract: a Map/Set lookup of a re-parsed room has
+      // to find the one already held, which needs matching hashCodes too.
+      expect(second.rooms.first.hashCode, first.rooms.first.hashCode);
+      expect(
+        second.rooms.first.context.hashCode,
+        first.rooms.first.context.hashCode,
+      );
+    });
+
+    test('equality still tells context usage apart', () {
+      final first = ControlInbound.tryFromJson(frame())! as RoomsSnapshot;
+      final changed = first.rooms.first.copyWith(
+        context: const RoomContextUsage(used: 1201, limit: 1000000),
+      );
+
+      expect(changed == first.rooms.first, isFalse);
+    });
+
+    test('context usage round-trips through toJson', () {
+      final parsed = ControlInbound.tryFromJson(frame())! as RoomsSnapshot;
+      final again = RoomInfo.fromJson(
+        jsonDecode(jsonEncode(parsed.rooms.first.toJson()))
+            as Map<String, dynamic>,
+      );
+
+      expect(again, parsed.rooms.first);
+      expect(again.context, const RoomContextUsage(used: 1200, limit: 1000000));
+    });
+  });
+
   group('ControlInbound — rooms (plan 17)', () {
     test('room_announced parses with name + cwd', () {
       final c = ControlInbound.tryFromJson({

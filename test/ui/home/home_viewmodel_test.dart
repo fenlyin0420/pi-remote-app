@@ -49,6 +49,30 @@ class _FakeStorage extends PairingStorage {
   }
 }
 
+/// Real notification semantics (the real `saveRooms`/`_writePeer` on top of the
+/// in-memory secure store), but the peer list comes back in a chosen order —
+/// which is what the platform is free to do with the map behind
+/// `FlutterSecureStorage.readAll()`.
+class _ReorderingStorage extends PairingStorage {
+  _ReorderingStorage() : super(_FakeSecureStorage());
+
+  List<PeerRecord>? _order;
+
+  void reorder(List<PeerRecord> peers) => _order = peers;
+
+  @override
+  Future<List<PeerRecord>> listPeers() async {
+    final all = await super.listPeers();
+    final want = _order;
+    if (want == null) return all;
+    final byEpk = {for (final p in all) p.remoteEpk: p};
+    return [
+      for (final p in want)
+        if (byEpk.containsKey(p.remoteEpk)) byEpk[p.remoteEpk]!,
+    ];
+  }
+}
+
 class _FakeSecureStorage implements FlutterSecureStorage {
   final Map<String, String> _store = {};
   @override
@@ -90,6 +114,15 @@ class _FakeSecureStorage implements FlutterSecureStorage {
     WindowsOptions? wOptions,
   }) async => _store.remove(key);
   @override
+  Future<Map<String, String>> readAll({
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async => Map.from(_store);
+  @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
@@ -130,6 +163,9 @@ class _ControllableChannel implements IChannel, IControlLink {
   final _serverCtrl = StreamController<ServerMessage>.broadcast();
   final _controlCtrl = StreamController<ControlInbound>.broadcast();
 
+  /// Every control frame the app put on the wire, in order.
+  final sentControl = <Map<String, dynamic>>[];
+
   @override
   Stream<ServerMessage> get serverMessages => _serverCtrl.stream;
   @override
@@ -137,7 +173,7 @@ class _ControllableChannel implements IChannel, IControlLink {
   @override
   Future<void> send(ClientMessage msg) async {}
   @override
-  void sendControl(Map<String, dynamic> json) {}
+  void sendControl(Map<String, dynamic> json) => sentControl.add(json);
   @override
   Future<void> close() async {
     await _serverCtrl.close();
@@ -833,6 +869,196 @@ void main() {
         ),
         'daemon',
       );
+      vm.dispose();
+    });
+  });
+
+  // The subscription is a network round trip, and the relay answers it with a
+  // full rooms snapshot. Storage notifies on every room change, so subscribing
+  // from a storage notification closed a loop that measured 1220 rounds in 6 s
+  // on a real phone (~105 KB/s up, ~375 KB/s down). These two cases pin the
+  // rule: the peer SET decides, nothing else.
+  group('HomeViewModel — subscription is tied to the peer set', () {
+    test('a storage notification that only changes rooms does not re-subscribe',
+        () async {
+      final ch = _ControllableChannel();
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(_peerA);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final before = ch.sentControl.length;
+      expect(before, greaterThan(0),
+          reason: 'the first load must subscribe');
+
+      // Exactly what `ConnectionManager._persistRoomsForPeer` does while an
+      // agent streams: the rooms view is rewritten and announced.
+      await storage.saveRooms(_peerA.remoteEpk, const [
+        PersistedRoom(roomId: 'r1', startedAt: 1),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(ch.sentControl.length, before,
+          reason: 'a rooms-only notification carries no new peer');
+      vm.dispose();
+    });
+
+    test('a new peer does re-subscribe', () async {
+      final ch = _ControllableChannel();
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(_peerA);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final before = ch.sentControl.length;
+
+      await storage.savePeer(_peerB);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(ch.sentControl.length, greaterThan(before));
+      expect(
+        ch.sentControl
+            .where((m) => m['type'] == 'subscribe_presence')
+            .last['peers'],
+        containsAll(<String>[_peerA.remoteEpk, _peerB.remoteEpk]),
+      );
+      vm.dispose();
+    });
+
+    test('a re-pair after the last peer was revoked subscribes again', () async {
+      final ch = _ControllableChannel();
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(_peerA);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // Settings → revoke the only peer: the relay subscription goes empty.
+      await storage.deletePeerSilent(_peerA.remoteEpk);
+      conn.subscribeToPeers(const []);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(conn.subscribedEpks, isEmpty);
+      ch.sentControl.clear();
+
+      // The same Pi paired again, in the same app run: same epk, newer
+      // `pairedAt`. Nothing replays a subscription in this path
+      // (`adopt` only replays what is stored, and the stored set is empty),
+      // so Home has to notice that the relay is not subscribed any more.
+      await storage.savePeer(
+        PeerRecord(
+          remoteEpk: _peerA.remoteEpk,
+          sessionName: _peerA.sessionName,
+          relayUrl: _peerA.relayUrl,
+          pairedAt: '2026-02-01T00:00:00Z',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(
+        ch.sentControl.where((m) => m['type'] == 'subscribe_rooms'),
+        isNotEmpty,
+        reason: 'without this the Pi never appears on Home until a cold start',
+      );
+      vm.dispose();
+    });
+
+    test(
+      'a rooms snapshot the relay repeats is not persisted or re-requested — '
+      'the per-token loop that cost ~500 KB/s on the wire',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = PairingStorage(_FakeSecureStorage());
+        await storage.savePeer(_peerA);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(storage, prefs, conn);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        ch.sentControl.clear();
+        var notifications = 0;
+        storage.addListener(() => notifications++);
+
+        // A fresh parse each time, because that is what the wire delivers. This
+        // case pins the two guards that keep a repeated snapshot from walking
+        // the app side (no second write, no second `rooms_check`); the value
+        // comparison that decides "is this the same rooms state" is pinned at
+        // the ConnectionManager level and in rooms_protocol_test.
+        RoomInfo room() => RoomInfo.fromJson({
+          'room_id': 'r1',
+          'name': 'work',
+          'cwd': '/w',
+          'started_at': 1,
+          'model': 'm',
+          'thinking': 'auto',
+          'working': true,
+          'context': {'used': 1200, 'limit': 1000000},
+        });
+
+        ch.pushControl(RoomsSnapshot(peer: _peerA.remoteEpk, rooms: [room()]));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        final afterFirst = ch.sentControl.length;
+        final notifsAfterFirst = notifications;
+
+        ch.pushControl(RoomsSnapshot(peer: _peerA.remoteEpk, rooms: [room()]));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(notifications, notifsAfterFirst,
+            reason: 'identical state must not be written again');
+        expect(ch.sentControl.length, afterFirst,
+            reason: 'and must not be answered with another rooms_check');
+        vm.dispose();
+      },
+    );
+
+    test('a reordered peer list is not a new set of peers', () async {
+      final ch = _ControllableChannel();
+      final storage = _ReorderingStorage();
+      await storage.savePeer(_peerA);
+      await storage.savePeer(_peerB);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(storage, prefs, conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final before = ch.sentControl.length;
+      expect(before, greaterThan(0));
+
+      // Same two peers, other order — plus a real notification to make sure the
+      // comparison actually runs.
+      storage.reorder([_peerB, _peerA]);
+      await storage.saveRooms(_peerA.remoteEpk, const [
+        PersistedRoom(roomId: 'r1', startedAt: 1),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(ch.sentControl.length, before,
+          reason: 'a reshuffled list is the same subscription');
       vm.dispose();
     });
   });

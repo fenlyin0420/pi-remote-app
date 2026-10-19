@@ -216,9 +216,15 @@ class PeerRecord {
 ///
 /// Mutations to the peer set (`savePeer`, `deletePeer`) and to the
 /// per-peer rooms cache (`saveRooms`, `deleteRooms`) call
-/// `notifyListeners()` so any UI watching the storage (HomeViewModel,
-/// SettingsViewModel) can refresh without manual plumbing between
-/// screens. Read methods do not notify.
+/// `notifyListeners()` so the UI watching the storage (HomeViewModel,
+/// and the screens that reload themselves by hand) can refresh without
+/// manual plumbing between screens. Read methods do not notify.
+///
+/// A mutation that changes nothing is not a mutation: it is neither written
+/// nor announced. Listeners here do not just repaint — they re-read their
+/// world, and HomeViewModel used to answer a notification by re-asking the
+/// relay for its state — so an unchanged write is a network round trip (see
+/// [ConnectionManager.subscribeToPeers]).
 class PairingStorage extends ChangeNotifier {
   final FlutterSecureStorage _store;
 
@@ -239,6 +245,13 @@ class PairingStorage extends ChangeNotifier {
   /// Plug the mesh-publish callback. The hook fires after the local
   /// write completes and after [notifyListeners], so UI sees the
   /// change before the relay does. Pass `null` to detach.
+  ///
+  /// It fires on every `savePeer` / `deletePeer` CALL, including one that
+  /// changed nothing locally: the relay holds the authoritative copy of the
+  /// membership, so a local no-op is not evidence that the relay is in sync.
+  /// The hook is therefore deliberately outside the write/notify no-op
+  /// short-circuit — a caller that reached this storage on a real change
+  /// still gets the publish it asked for.
   void attachPeerMutationHook(void Function()? hook) {
     _onPeersMutated = hook;
   }
@@ -275,16 +288,43 @@ class PairingStorage extends ChangeNotifier {
   Future<void> deletePeerSilent(String remoteEpk) => _erasePeer(remoteEpk);
 
   Future<void> _writePeer(PeerRecord record) async {
-    await _store.write(
-      key: _peerKey(record.remoteEpk),
-      value: jsonEncode(record.toJson()),
-    );
+    final value = jsonEncode(record.toJson());
+    if (await _storedEquals(_peerKey(record.remoteEpk), value)) return;
+    await _store.write(key: _peerKey(record.remoteEpk), value: value);
     notifyListeners();
   }
 
   Future<void> _erasePeer(String remoteEpk) async {
-    await _store.delete(key: _peerKey(remoteEpk));
+    final key = _peerKey(remoteEpk);
+    if (await _store.read(key: key) == null) return;
+    await _store.delete(key: key);
     notifyListeners();
+  }
+
+  /// `true` when [key] already holds [value] — in which case the mutation is a
+  /// no-op and must neither be written nor announced.
+  ///
+  /// Notifying on an unchanged write is not harmless: the listeners on this
+  /// storage react by re-reading the world, and HomeViewModel re-asks the relay
+  /// for its state, so a write that changed nothing turns "persist the current
+  /// view" into a network round trip. That is the shape of the loop documented
+  /// on [ConnectionManager.subscribeToPeers].
+  ///
+  /// The string compare covers every value this class wrote itself. The
+  /// fallback re-encode only absorbs differences in insignificant formatting
+  /// (whitespace, exponent notation) from some other serialiser; it keeps map
+  /// insertion order and absent-vs-null as they were, and `1` vs `1.0` stay
+  /// different, so a value written by a build with different key order still
+  /// reads as changed — one extra write, which is the safe direction.
+  Future<bool> _storedEquals(String key, String value) async {
+    final raw = await _store.read(key: key);
+    if (raw == null) return false;
+    if (raw == value) return true;
+    try {
+      return jsonEncode(jsonDecode(raw)) == jsonEncode(jsonDecode(value));
+    } catch (_) {
+      return false; // unreadable: let the write repair it
+    }
   }
 
   Future<List<PeerRecord>> listPeers() async {
@@ -306,12 +346,14 @@ class PairingStorage extends ChangeNotifier {
   Future<void> wipeAll() async {
     final all = await _store.readAll();
     final prefixes = ['$_kPeersService:', '$_kRoomsService:'];
+    var removed = false;
     for (final key in all.keys) {
       if (prefixes.any(key.startsWith)) {
         await _store.delete(key: key);
+        removed = true;
       }
     }
-    notifyListeners();
+    if (removed) notifyListeners();
   }
 
   // ---- Rooms (plan 17 follow-up) -----------------------------------------
@@ -322,10 +364,10 @@ class PairingStorage extends ChangeNotifier {
   /// previously stored set. Called on every room-state change in
   /// ConnectionManager so a cold start can reflect the same view.
   Future<void> saveRooms(String remoteEpk, List<PersistedRoom> rooms) async {
-    await _store.write(
-      key: _roomsKey(remoteEpk),
-      value: jsonEncode(rooms.map((r) => r.toJson()).toList()),
-    );
+    final key = _roomsKey(remoteEpk);
+    final value = jsonEncode(rooms.map((r) => r.toJson()).toList());
+    if (await _storedEquals(key, value)) return;
+    await _store.write(key: key, value: value);
     notifyListeners();
   }
 
@@ -339,7 +381,9 @@ class PairingStorage extends ChangeNotifier {
   }
 
   Future<void> deleteRooms(String remoteEpk) async {
-    await _store.delete(key: _roomsKey(remoteEpk));
+    final key = _roomsKey(remoteEpk);
+    if (await _store.read(key: key) == null) return;
+    await _store.delete(key: key);
     notifyListeners();
   }
 }

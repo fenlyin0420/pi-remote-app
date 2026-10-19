@@ -29,4 +29,31 @@ void main() {
       expect(toStandardB64('not base64 at all !!'), 'not base64 at all !!');
     });
   });
+
+  // Callers ask this to decide "is the relay already subscribed for this
+  // peer set?", and the lists come from `FlutterSecureStorage.readAll()`,
+  // whose order belongs to the platform. Getting it wrong is not cosmetic: a
+  // false "different" re-subscribes, and a subscription is a round trip the
+  // relay answers with a full rooms snapshot.
+  group('sameEpkSet', () {
+    test('ignores order', () {
+      expect(sameEpkSet(['a', 'b'], ['b', 'a']), isTrue);
+    });
+
+    test('is not fooled by a repeated member', () {
+      expect(sameEpkSet(['a', 'b'], ['a', 'a']), isFalse);
+    });
+
+    test('different lengths are different sets', () {
+      expect(sameEpkSet(['a'], ['a', 'b']), isFalse);
+    });
+
+    test('a real change is a change', () {
+      expect(sameEpkSet(['a', 'b'], ['a', 'c']), isFalse);
+    });
+
+    test('two empty lists are the same set', () {
+      expect(sameEpkSet(const [], const []), isTrue);
+    });
+  });
 }

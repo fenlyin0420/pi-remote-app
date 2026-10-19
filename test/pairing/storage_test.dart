@@ -246,12 +246,103 @@ void main() {
 
     test('notifies listeners exactly once', () async {
       final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(
+        const PeerRecord(
+          remoteEpk: 'epk-a',
+          sessionName: 'A',
+          relayUrl: 'ws://x',
+          pairedAt: '2026-01-01T00:00:00Z',
+        ),
+      );
       var notifications = 0;
       storage.addListener(() => notifications++);
 
       await storage.wipeAll();
 
       expect(notifications, 1);
+    });
+
+    test('stays silent when there is nothing to wipe', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      await storage.wipeAll();
+
+      expect(notifications, 0);
+    });
+  });
+
+  // A mutation that changes nothing must not announce itself. Listeners on
+  // this storage (HomeViewModel) react by re-reading the world AND by
+  // re-requesting the relay's state, so a no-op write used to close a network
+  // loop: persist → notify → subscribe → fresh snapshot → persist. See
+  // `ConnectionManager.subscribeToPeers`.
+  group('PairingStorage — no-op mutations stay silent', () {
+    const peer = PeerRecord(
+      remoteEpk: 'epk-a',
+      sessionName: 'A',
+      relayUrl: 'ws://x',
+      pairedAt: '2026-01-01T00:00:00Z',
+    );
+    const rooms = [PersistedRoom(roomId: 'main', startedAt: 1700000000000)];
+
+    test('savePeer with an unchanged record does not notify', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(peer);
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      await storage.savePeer(peer);
+
+      expect(notifications, 0);
+    });
+
+    test('savePeer with a real change still notifies', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(peer);
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      await storage.savePeer(peer.copyWith(nickname: 'renamed'));
+
+      expect(notifications, 1);
+    });
+
+    test('saveRooms with an identical list does not notify', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.saveRooms('epk-a', rooms);
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      // A re-persist of the same view — the common case while an agent
+      // streams, since the room list is rewritten on every metadata refresh.
+      await storage.saveRooms('epk-a', rooms);
+
+      expect(notifications, 0);
+    });
+
+    test('saveRooms with a changed list still notifies', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.saveRooms('epk-a', rooms);
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      await storage.saveRooms('epk-a', const [
+        PersistedRoom(roomId: 'main', startedAt: 1700000000000, model: 'm'),
+      ]);
+
+      expect(notifications, 1);
+    });
+
+    test('deleteRooms on an absent key does not notify', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      var notifications = 0;
+      storage.addListener(() => notifications++);
+
+      await storage.deleteRooms('epk-a');
+
+      expect(notifications, 0);
     });
   });
 }

@@ -147,6 +147,11 @@ class ConnectionManager extends Service {
   StreamSubscription<RoomFrame>? _roomFramesSub;
   // List currently subscribed for presence (so reconnect can replay it).
   List<String> _subscribedEpks = const [];
+  // Last subscription actually put on the wire, and when — used to bound how
+  // often a repeated request for the SAME peer set reaches the relay. Can be
+  // the empty list: revoking the last peer sets it on purpose.
+  List<String> _lastSentSubscribe = const [];
+  DateTime? _lastSentSubscribeAt;
   int _missedPings = 0;
   int _retryAttempt = 0;
   // Tracks the last-running connect token so the watchdog can tell
@@ -169,9 +174,11 @@ class ConnectionManager extends Service {
     required ConnectionFactory factory,
     required PairingStorage storage,
     Duration emitDebounce = const Duration(milliseconds: 50),
+    Duration subscribeRepeatWindow = const Duration(seconds: 1),
   }) : _factory = factory,
        _storage = storage,
-       _emitDebounce = emitDebounce {
+       _emitDebounce = emitDebounce,
+       _subscribeRepeatWindow = subscribeRepeatWindow {
     _startWatchdog();
   }
 
@@ -316,13 +323,47 @@ class ConnectionManager extends Service {
     if (link == null) {
       return;
     }
+    // Rate limit for an UNCHANGED peer set. Subscribing is not free — the
+    // relay answers `presence_check` / `rooms_check` with a full snapshot —
+    // so a caller that asks repeatedly (a storage notification firing on
+    // every room-metadata change, say) would otherwise turn its own
+    // notification into a snapshot, into a notification, forever: at one
+    // phone that measured 1220 rounds in 6 s, ~105 KB/s up and ~375 KB/s
+    // down. The subscription is already stored above, so a repeat inside the
+    // window loses nothing: the relay keeps pushing, and a real change of
+    // peer set is never delayed.
+    final now = DateTime.now();
+    final at = _lastSentSubscribeAt;
+    if (at != null &&
+        now.difference(at) < _subscribeRepeatWindow &&
+        sameEpkSet(_lastSentSubscribe, standard)) {
+      return;
+    }
     link.sendControl(subscribePresenceFrame(standard));
     link.sendControl(subscribeRoomsFrame(standard));
     if (standard.isNotEmpty) {
       link.sendControl(presenceCheckFrame(standard));
       link.sendControl(roomsCheckFrame(standard));
     }
+    // Stamped only after the frames went out: a send that throws
+    // synchronously (a channel that is already gone) would otherwise consume
+    // the window and suppress the retry that should follow it.
+    _lastSentSubscribe = standard;
+    _lastSentSubscribeAt = now;
   }
+
+  /// The peer set the relay is currently subscribed for, in standard base64.
+  ///
+  /// A caller deciding "do I still need to subscribe?" must ask this rather
+  /// than keeping its own copy: `boot`, `adopt`, the settings revoke path and
+  /// Home all move this state, and a private mirror goes stale in exactly the
+  /// case that matters — the last peer revoked (empty here), then the same Pi
+  /// paired again, where a stale mirror makes a required subscription look
+  /// like a duplicate.
+  List<String> get subscribedEpks => List.unmodifiable(_subscribedEpks);
+
+  /// The minimum gap between two identical subscriptions on the wire.
+  final Duration _subscribeRepeatWindow;
 
   /// One-shot snapshot request without changing the subscription.
   void refreshPresence([List<String>? epks]) {

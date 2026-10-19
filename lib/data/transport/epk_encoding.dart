@@ -35,6 +35,22 @@ String toStandardB64(String b64) {
   }
 }
 
+/// Set equality over two epk lists, ignoring order — "is this the same
+/// subscription?".
+///
+/// The lists being compared come from `FlutterSecureStorage.readAll()`, a
+/// platform map whose ordering is not ours to rely on, so a reshuffled list
+/// must not read as a new set. Duplicates are ignored for the same reason:
+/// repeating an epk does not add a subscription.
+///
+/// Note that this is set equality, not "same length and a subset":
+/// `['a', 'b']` and `['a', 'a']` are NOT the same set.
+bool sameEpkSet(List<String> a, List<String> b) {
+  final inA = a.toSet();
+  final inB = b.toSet();
+  return inA.length == inB.length && inA.every(inB.contains);
+}
+
 /// Convert an epk reported by the relay (standard base64) back to the
 /// format the app's stores use internally. Today that's base64url so the
 /// key matches `PairingStorage`/`PeerRecord.remoteEpk`. Idempotent.

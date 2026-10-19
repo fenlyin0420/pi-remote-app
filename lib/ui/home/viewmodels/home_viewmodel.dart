@@ -82,11 +82,25 @@ class HomeViewModel extends ViewModel<HomeState> {
       emit(const HomeNoPeer());
       return;
     }
-    // Make sure the relay is pushing updates for everyone we know about;
-    // the call is idempotent so this is safe even mid-session. The same
-    // subscribe also covers rooms (plan 17 — replay block in
-    // ConnectionManager sends both presence and rooms subscribes).
-    _conn.subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
+    // Make sure the relay is pushing updates for everyone we know about, but
+    // only when it is not already subscribed for this set. Storage notifies on
+    // every room change too (`ConnectionManager._persistRoomsForPeer`), and
+    // re-subscribing from those would close a loop: notify → subscribe → the
+    // relay answers a full rooms snapshot → persist → notify. Room updates
+    // reach this VM through `roomsStream` regardless, so nothing is lost by
+    // staying quiet; the same call also covers rooms (plan 17 — replay block
+    // in ConnectionManager sends both presence and rooms subscribes).
+    //
+    // The comparison asks ConnectionManager instead of caching a copy here:
+    // `boot`, `adopt`, the settings revoke path and this method all move that
+    // state, and a private mirror goes stale in exactly the case that matters —
+    // the last peer revoked (ConnectionManager's set goes empty), then the same
+    // Pi paired again, where the replay path has nothing left to replay.
+    final epks = peers.map((p) => p.remoteEpk).toList();
+    final standard = epks.map(toStandardB64).toList();
+    if (!sameEpkSet(_conn.subscribedEpks, standard)) {
+      _conn.subscribeToPeers(epks);
+    }
     // Preserve the selected tab: storage notifies on EVERY room change
     // (announce / end / meta refresh / rename / delete — see
     // ConnectionManager._persistRoomsForPeer), so without this the

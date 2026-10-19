@@ -649,6 +649,63 @@ void main() {
     );
 
     test(
+      'dedup: a RE-PARSED identical rooms snapshot (carrying context) does '
+      'not re-emit — the per-token loop that cost ~500 KB/s',
+      () async {
+        // The relay answers every `rooms_check` with this frame, and the
+        // per-room `context.used` counter advances while an agent streams. If
+        // the comparison of the incoming rooms against the held ones says
+        // "changed", every one of those answers walks the whole app side:
+        // persist → notify → Home re-subscribes → another `rooms_check`.
+        // Two INDEPENDENT parses are the point: an identity comparison passes
+        // this test while value comparison is what production needs, and
+        // `RoomContextUsage` was the one member without it.
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final emits = <Map<String, List<RoomInfo>>>[];
+        cm.roomsStream.listen(emits.add);
+        // A fresh map and a fresh parse on every call, like two frames off the
+        // wire.
+        Map<String, dynamic> frame() => {
+          'type': 'rooms',
+          'peer': 'epk_test',
+          'rooms': [
+            {
+              'room_id': 'r1',
+              'name': 'work',
+              'cwd': '/x',
+              'started_at': 1,
+              'model': 'm',
+              'thinking': 'auto',
+              'working': true,
+              'context': {'used': 1200, 'limit': 1000000},
+            },
+          ],
+        };
+
+        ch.pushControl(ControlInbound.tryFromJson(frame())!);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final afterFirst = emits.length;
+        expect(afterFirst, greaterThan(0));
+
+        ch.pushControl(ControlInbound.tryFromJson(frame())!);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(emits.length, afterFirst,
+            reason: 'the same rooms state must not look like a change');
+
+        cm.dispose();
+      },
+    );
+
+    test(
       'debounce coalesces a burst of distinct presence changes into '
       'a single emit',
       () async {
@@ -974,6 +1031,68 @@ void main() {
         // only cares that the count matches and the inputs survived
         // the round-trip semantically.
         expect((subs.first['peers'] as List), hasLength(2));
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'a repeat of the SAME subscription inside the window is not sent again',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        ch.sentControl.clear();
+
+        cm.subscribeToPeers(['epk_1']);
+        final afterFirst = ch.sentControl.length;
+        expect(afterFirst, 4,
+            reason: 'subscribe_presence + subscribe_rooms + both checks');
+
+        // A caller that reacts to its own notification would land here
+        // hundreds of times a second; each round costs the relay a full
+        // rooms snapshot in reply.
+        cm.subscribeToPeers(['epk_1']);
+        cm.subscribeToPeers(['epk_1']);
+        expect(ch.sentControl.length, afterFirst);
+
+        // A real change of peer set is never delayed.
+        cm.subscribeToPeers(['epk_1', 'epk_2']);
+        expect(ch.sentControl.length, greaterThan(afterFirst));
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'the same subscription IS sent again once the window has expired — a '
+      'dropped relay subscription must stay recoverable',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+          subscribeRepeatWindow: const Duration(milliseconds: 20),
+        );
+        await cm.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        ch.sentControl.clear();
+
+        cm.subscribeToPeers(['epk_1']);
+        final afterFirst = ch.sentControl.length;
+        cm.subscribeToPeers(['epk_1']);
+        expect(ch.sentControl.length, afterFirst, reason: 'inside the window');
+
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        cm.subscribeToPeers(['epk_1']);
+        expect(ch.sentControl.length, afterFirst * 2,
+            reason: 'a new window is a new chance to subscribe');
 
         cm.dispose();
       },
