@@ -2083,6 +2083,7 @@ class SyncService extends Service {
           : null;
       _syncedRows = stored?.syncedRows;
       _syncCursor = stored?.syncCursor;
+      final reasoning = <String>[];
       // A frontier the box cannot back up (rows lost to a half-done wipe, a
       // pruned box) or none at all (a cache written before the frontier existed)
       // means the boundary between replayed and live rows is unknown: a delta
@@ -2108,6 +2109,9 @@ class SyncService extends Service {
         final r = MessageRecord.fromJson(_coerce(box.get(k)));
         _idToSeq[_key(r.role, r.id)] = seq;
         _nextSeq = math.max(_nextSeq, seq + 1);
+        if (r.role == MsgRole.thinking && r.text.isNotEmpty) {
+          reasoning.add(r.text);
+        }
         // Re-arm the no-echo backstop for any pending row this session owns, so
         // a bubble persisted across an app restart / quick session-switch is
         // reaped by its `ts` instead of spinning forever (already-stale → fires
@@ -2117,8 +2121,37 @@ class SyncService extends Service {
           _armSendTimeout(r.id, r.ts!);
         }
       }
+      // LOCAL (fenlyin): a cache written before the reasoning pairing fix (see
+      // [_holdsSameReasoning]) can hold ONE block twice — the Pi's capped copy
+      // where it belongs and the live full copy the merge could not pair with
+      // it, hung at the end of the transcript, so a finished conversation read
+      // as if it ended on a thinking block. The rows cannot say which copy goes
+      // where, but the reply can: dropping the resume token makes the next
+      // `session_sync` a full replay, and that substitutes the rows in the order
+      // the Pi wrote them. It clears itself — a repaired room holds one copy,
+      // which is not the fingerprint.
+      if (_holdsSplitReasoning(reasoning)) {
+        debugPrint('[sync] load room=$room → cursor dropped (reasoning twice)');
+        _syncCursor = null;
+        _syncedRows = null;
+      }
       _indexLoaded = true;
     });
+  }
+
+  /// Whether [texts] holds the same reasoning block twice — one copy capped for
+  /// the re-sync mirror, one written live from the uncapped stream. A genuine
+  /// transcript cannot match: the Pi caps each block once, so a second copy of
+  /// the same head only ever came from this device's own live row.
+  static bool _holdsSplitReasoning(List<String> texts) {
+    for (var i = 0; i < texts.length; i++) {
+      if (!texts[i].contains(_thinkingCapMarker)) continue;
+      for (var j = 0; j < texts.length; j++) {
+        if (i == j) continue;
+        if (_holdsSameReasoning(texts[j], texts[i])) return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _upsert(

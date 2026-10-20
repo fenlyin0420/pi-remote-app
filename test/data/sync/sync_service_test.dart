@@ -3182,6 +3182,117 @@ void main() {
         s.sync.dispose();
       });
 
+      // The pre-fix merge could not pair a long reasoning block with the capped
+      // copy the reply brought back (see [_holdsSameReasoning]), so the live full
+      // copy stayed behind as an extra row at the end of the transcript. Such a
+      // cache is already on disk — the repair has to happen without the user
+      // wiping anything.
+      test('a cache holding a reasoning block twice asks for a full replay',
+          () async {
+        final s = await setup();
+        final head = 'x' * 16384;
+        final capped = '$head\n\n…[thinking truncated]';
+        final box = LocalBoxes().openMsgsBox(s.epk, 'main');
+        for (final r in [
+          MessageRecord(
+            id: 'sync_10',
+            seq: 0,
+            role: MsgRole.user,
+            text: 'first',
+            ts: DateTime.fromMillisecondsSinceEpoch(10),
+          ),
+          MessageRecord(
+            id: 'thinking_20_1',
+            seq: 1,
+            role: MsgRole.thinking,
+            text: capped,
+            ts: DateTime.fromMillisecondsSinceEpoch(20),
+          ),
+          MessageRecord(
+            id: 'agent_20',
+            seq: 2,
+            role: MsgRole.assistant,
+            text: 'the answer',
+            ts: DateTime.fromMillisecondsSinceEpoch(21),
+          ),
+          // The orphan, hung at the end by the old merge.
+          MessageRecord(
+            id: 'thinking_live',
+            seq: 3,
+            role: MsgRole.thinking,
+            text: 'x' * 20000,
+            ts: DateTime.fromMillisecondsSinceEpoch(22),
+          ),
+        ]) {
+          await box.put(r.seq, r.toJson());
+        }
+        await LocalBoxes().sessionsIndexBox().put(
+          '${s.epk}:main',
+          SessionIndexRecord(
+            epk: s.epk,
+            roomId: 'main',
+            sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(100),
+            syncCursor: '100:aaaa',
+            syncedRows: 3,
+          ).toJson(),
+        );
+
+        await s.sync.activate(s.epk, 'other');
+        await _settle();
+        await s.sync.activate(s.epk, 'main');
+        await _settle();
+        s.ch.sent.clear();
+        s.sync.requestSync();
+        await _settle();
+        final request = s.ch.sent.whereType<SessionSync>().single;
+        expect(
+          request.since,
+          isNull,
+          reason: 'the whole transcript comes back in the Pi\'s own order',
+        );
+
+        // The reply carries the block once, above the answer: the orphan is
+        // superseded and the capped copy rewritten in place.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: request.id,
+            sessionStartedAt: 100,
+            events: [
+              const UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              AgentThinkingEvt(
+                ts: 20,
+                inReplyTo: 'sync_10',
+                text: capped,
+              ),
+              const AgentMessageEvt(
+                ts: 21,
+                inReplyTo: 'sync_10',
+                text: 'the answer',
+              ),
+            ],
+            eos: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await waitUntil(() => messages(s.epk).length == 3);
+        final repaired = messages(s.epk);
+        expect(repaired.map((r) => r.role), [
+          MsgRole.user,
+          MsgRole.thinking,
+          MsgRole.assistant,
+        ]);
+        expect(index(s.epk)?.syncCursor, '100:bbbb');
+
+        // A clean room keeps its cursor: the repair costs one reply, not one per
+        // entry.
+        s.ch.sent.clear();
+        s.sync.requestSync();
+        await _settle();
+        expect(s.ch.sent.whereType<SessionSync>().single.since, '100:bbbb');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
       test('a frontier the box cannot back up asks for a full replay', () async {
         final s = await setup();
         s.ch.push(
