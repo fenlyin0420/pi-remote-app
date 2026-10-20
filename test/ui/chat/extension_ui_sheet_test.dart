@@ -48,6 +48,8 @@ void main() {
     required ExtensionUiRequest request,
     String? error,
     Future<void> Function(ExtensionUiResponse)? onRespond,
+    VoidCallback? onMinimize,
+    bool minimized = false,
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -55,7 +57,9 @@ void main() {
           key: ValueKey(request.id),
           request: request,
           error: error,
+          minimized: minimized,
           onRespond: onRespond ?? (_) async {},
+          onMinimize: onMinimize ?? () {},
         ),
       ),
     );
@@ -214,23 +218,81 @@ void main() {
     },
   );
 
-  testWidgets('system back cancels the flow instead of popping the route', (
+  // The modal covers the whole screen, so answering it hides the turn the
+  // question is about. Back and the leading chevron therefore fold it away
+  // (keeping the answers) instead of cancelling the flow or popping the chat.
+  testWidgets('system back minimizes the flow instead of cancelling it', (
     tester,
   ) async {
     final sent = <ExtensionUiResponse>[];
+    var minimized = 0;
     await pumpSheet(
       tester,
       request: _richRequest(),
       onRespond: (r) async => sent.add(r),
+      onMinimize: () => minimized++,
     );
 
     final popped = await tester.binding.handlePopRoute();
     await tester.pump();
 
-    expect(popped, isTrue, reason: 'PopScope intercepted the back gesture');
-    expect(sent, hasLength(1));
-    expect(sent.single.cancelled, isTrue);
-    expect(sent.single.ask?.isCancel, isTrue);
+    expect(popped, isTrue, reason: 'PopScope kept the chat route alive');
+    expect(minimized, 1, reason: 'back folds the sheet away');
+    expect(sent, isEmpty, reason: 'folding must not answer the Pi');
+  });
+
+  testWidgets('the leading chevron minimizes and keeps the answers', (
+    tester,
+  ) async {
+    var minimized = 0;
+    final request = _richRequest();
+    await pumpSheet(
+      tester,
+      request: request,
+      onMinimize: () => minimized++,
+    );
+
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('extension-ui-minimize')));
+    await tester.pump();
+    expect(minimized, 1);
+
+    // Folded: nothing rendered, nothing focusable, no PopScope to steal back.
+    await pumpSheet(tester, request: request, minimized: true);
+    await tester.pump();
+    expect(find.text('Alpha'), findsNothing);
+
+    // Reopened: the answer is still selected, so Submit is live again.
+    await pumpSheet(tester, request: request);
+    await tester.pump();
+    expect(
+      submitEnabled(tester),
+      isTrue,
+      reason: 'folding is not dismissing — the selection has to survive',
+    );
+  });
+
+  testWidgets('minimize is inert while a submit is in flight', (tester) async {
+    var minimized = 0;
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onMinimize: () => minimized++,
+    );
+
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    await tester.tap(submitButton());
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('extension-ui-minimize')));
+    await tester.pump();
+    expect(
+      minimized,
+      0,
+      reason: 'folding mid-submit would hide the spinner',
+    );
   });
 
   testWidgets('required question renders the advisory chip', (tester) async {

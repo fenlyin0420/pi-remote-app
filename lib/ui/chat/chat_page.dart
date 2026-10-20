@@ -27,7 +27,7 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
-class ChatPage extends StatelessWidget {
+class ChatPage extends StatefulWidget {
   /// Drops the composer's focus, wherever it is in the tree.
   ///
   /// Scoped disposition: the focus is handed back to the enclosing scope
@@ -76,9 +76,34 @@ class ChatPage extends StatelessWidget {
   });
 
   @override
+  State<ChatPage> createState() => _ChatPageState();
+}
+
+/// LOCAL (fenlyin) — the ask_user modal is full-screen, so answering it hides
+/// the very turn the question is about. This State therefore owns the one flag
+/// that fixes it: which ask the user folded away (see [ExtensionUiSheet]).
+/// Everything else here is presentational and reads off the ViewModel.
+class _ChatPageState extends State<ChatPage> {
+  /// id of the ask_user request the user folded away to read the transcript;
+  /// null = nothing folded. Keyed by request id (same key the sheet uses) so a
+  /// NEW flow opens itself instead of appearing folded, and so a folded flow
+  /// that completes on its own can never resurrect the bar.
+  String? _minimizedAskId;
+
+  void _minimizeAsk(String id) => setState(() => _minimizedAskId = id);
+
+  void _restoreAsk() => setState(() => _minimizedAskId = null);
+
+  @override
   Widget build(BuildContext context) {
     final vm = context.watch<ChatViewModel>();
     final state = vm.state;
+
+    // The interactive extension_ui_request (ask_user via pi-ask) pending for
+    // this room, and whether the user has folded it away to read the chat.
+    final ready = state is ChatReady ? state : null;
+    final uiRequest = ready?.pendingUiRequest;
+    final askMinimized = uiRequest != null && _minimizedAskId == uiRequest.id;
 
     final scaffold = Scaffold(
       backgroundColor: context.colors.bg,
@@ -155,9 +180,23 @@ class ChatPage extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                              _NoticeStrip(
-                                text: vm.notice,
-                                onDismiss: vm.dismissNotice,
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  // LOCAL (fenlyin) — the way back into a
+                                  // folded ask_user flow, at the bottom of the
+                                  // transcript where the composer's attention
+                                  // already is.
+                                  _PendingAskBar(
+                                    request: askMinimized ? uiRequest : null,
+                                    onOpen: _restoreAsk,
+                                  ),
+                                  _NoticeStrip(
+                                    text: vm.notice,
+                                    onDismiss: vm.dismissNotice,
+                                  ),
+                                ],
                               ),
                             ],
                           );
@@ -180,8 +219,12 @@ class ChatPage extends StatelessWidget {
     // (completed dismiss) — no route lifecycle to manage. `error` carries a
     // submit-result rejection so the modal can offer a retry instead of a dead
     // end.
-    final ready = state is ChatReady ? state : null;
-    final uiRequest = ready?.pendingUiRequest;
+    //
+    // LOCAL (fenlyin) — folded away ≠ dismissed: the sheet is passed
+    // `minimized` and keeps its State (so answers, custom text and scroll
+    // position survive), which is what lets the user drop into the transcript
+    // mid-answer and come back. Only a submit/cancel — the request clearing —
+    // removes it for good.
     if (uiRequest == null) return scaffold;
     return Stack(
       children: [
@@ -193,8 +236,10 @@ class ChatPage extends StatelessWidget {
           child: ExtensionUiSheet(
             key: ValueKey(uiRequest.id),
             request: uiRequest,
+            minimized: askMinimized,
             error: ready?.pendingUiError,
             onRespond: vm.respondExtensionUi,
+            onMinimize: () => _minimizeAsk(uiRequest.id),
           ),
         ),
       ],
@@ -219,7 +264,7 @@ class ChatPage extends StatelessWidget {
     // "reconnecting" on the default runtime. The live signal takes over once
     // resolved.
     final resolved = vm.connectionResolved;
-    final isOnline = resolved ? vm.isRoomLive : initialOnline;
+    final isOnline = resolved ? vm.isRoomLive : widget.initialOnline;
     // Plan-18 follow-up — when the chat is "offline" (WS to relay
     // down or retrying), prefer a "reconectando" amber pill so the
     // user knows it's the relay, not the Pi cwd, that's gone.
@@ -232,7 +277,7 @@ class ChatPage extends StatelessWidget {
     // either line of the AppBar (room or peer) shows it instead of
     // the generic placeholders when the ViewModel hasn't finished
     // bootstrapping yet.
-    final roomName = _roomDisplayName(room, state, initialTitle);
+    final roomName = _roomDisplayName(room, state, widget.initialTitle);
 
     return Container(
       height: 56,
@@ -243,7 +288,7 @@ class ChatPage extends StatelessWidget {
       ),
       child: Row(
         children: [
-          if (showBack)
+          if (widget.showBack)
             IconButton(
               icon: Icon(LucideIcons.chevronLeft, size: 18, color: colors.text),
               tooltip: 'Back',
@@ -925,6 +970,108 @@ class _InfoRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// LOCAL (fenlyin) — the way back into a folded `ask_user` flow.
+///
+/// The ask modal is full-screen, so the turn the agent is asking about is out
+/// of reach exactly when the user needs to read it. Folding the modal leaves
+/// this bar at the bottom of the transcript: one tap reopens the same sheet with
+/// every answer still in place, and the flow only disappears on submit (or an
+/// explicit cancel).
+///
+/// Floated over the transcript like [_NoticeStrip] — appearing must not reflow
+/// the messages the user folded the modal to read — and styled as chrome rather
+/// than as a message, for the same reason: it is the app asking, not the agent
+/// talking.
+class _PendingAskBar extends StatelessWidget {
+  const _PendingAskBar({required this.request, required this.onOpen});
+
+  /// The folded request, or null when nothing is folded (nothing is rendered).
+  final ExtensionUiRequest? request;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final req = request;
+    if (req == null) return const SizedBox.shrink();
+    final colors = context.colors;
+    final typo = context.typo;
+    final ask = req.ask;
+    final title = req.title ?? ask?.title ?? 'Clarification needed';
+    final count = ask?.questions.length ?? 0;
+    final subtitle = count > 1 ? '$title · $count questions' : title;
+
+    return Container(
+      key: const Key('chat-pending-ask'),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      decoration: BoxDecoration(
+        color: colors.codeBg,
+        border: Border.all(color: colors.accent.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Row(
+            children: [
+              Icon(
+                LucideIcons.messageCircleQuestion,
+                size: 14,
+                color: colors.accent,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'QUESTION PENDING',
+                      style: typo.monoSmall.copyWith(
+                        color: colors.accent,
+                        fontSize: 10,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: typo.sansBody.copyWith(
+                        fontSize: 13,
+                        color: colors.text,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Answer',
+                style: typo.monoSmall.copyWith(
+                  color: colors.accent,
+                  fontSize: 11,
+                  letterSpacing: 0.6,
+                ),
+              ),
+              Icon(LucideIcons.chevronUp, size: 14, color: colors.accent),
+            ],
+          ),
+        ),
       ),
     );
   }

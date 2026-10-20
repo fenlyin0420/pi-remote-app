@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// Plan/57 — full-screen modal rendering an interactive `extension_ui_request`
 /// (ask_user via pi-ask).
@@ -15,6 +16,12 @@ import 'package:flutter/material.dart';
 ///
 /// Validation follows pi-ask's rules: for non-multi questions a custom text and
 /// a selected value can't be combined, so custom text wins when present.
+///
+/// LOCAL (fenlyin) — the sheet covers the whole screen, hiding the turn the
+/// question is about. Both exits that used to end the flow now fold it instead
+/// (leading chevron, system back → [onMinimize]), so the chat is reachable
+/// mid-answer and the same sheet can be reopened with every answer intact.
+/// Only Submit and the explicit Cancel button end the flow.
 class ExtensionUiSheet extends StatefulWidget {
   final ExtensionUiRequest request;
 
@@ -24,11 +31,25 @@ class ExtensionUiSheet extends StatefulWidget {
   final String? error;
   final Future<void> Function(ExtensionUiResponse) onRespond;
 
+  /// LOCAL (fenlyin) — fold the sheet away without answering it. The owner is
+  /// expected to hide it via [minimized] (not unmount it), so this State —
+  /// selections, custom text, the note and the scroll position — survives until
+  /// the user reopens it.
+  final VoidCallback onMinimize;
+
+  /// LOCAL (fenlyin) — the owner has folded the sheet away. True builds
+  /// nothing at all: no fields to focus, no [PopScope] to steal the back
+  /// gesture, so the chat underneath is fully usable while the flow stays
+  /// pending.
+  final bool minimized;
+
   const ExtensionUiSheet({
     super.key,
     required this.request,
     this.error,
     required this.onRespond,
+    required this.onMinimize,
+    this.minimized = false,
   });
 
   @override
@@ -156,6 +177,19 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     );
   }
 
+  /// LOCAL (fenlyin) — fold the sheet so the transcript can be read, keeping
+  /// every answer. Nothing is sent to the Pi: the flow stays pending.
+  void _minimize() {
+    // A submit/cancel is in flight: folding would hide its spinner and leave
+    // the user with no feedback, so the button and back are inert until the Pi
+    // answers or the backstop fires.
+    if (_submitting) return;
+    // Fold with the keyboard, not just the sheet: a hidden field keeping focus
+    // would re-open the keyboard over the chat below.
+    FocusManager.instance.primaryFocus?.unfocus();
+    widget.onMinimize();
+  }
+
   ExtensionUiResponse _buildResponse() {
     final id = widget.request.id;
     final ask = _ask;
@@ -219,16 +253,22 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
 
   @override
   Widget build(BuildContext context) {
+    // LOCAL (fenlyin) — folded away: render nothing but keep this State alive
+    // (the element stays, only the subtree goes). Answers survive; the back
+    // gesture and every tap now belong to the chat below.
+    if (widget.minimized) return const SizedBox.shrink();
+
     final colors = context.colors;
     final ask = _ask;
     final title = widget.request.title ?? ask?.title ?? 'Clarification needed';
 
-    // System back (Android) mirrors the close button: cancel the flow instead
-    // of popping the chat route underneath while the modal is still overlaid.
+    // System back (Android) folds the sheet instead of cancelling the flow
+    // (losing the answers) or popping the chat route (leaving the flow pending
+    // and unreachable under a page the user has left).
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && !_submitting) _cancel();
+        if (!didPop) _minimize();
       },
       child: Material(
         color: colors.bg,
@@ -241,9 +281,10 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
               elevation: 0,
               scrolledUnderElevation: 0,
               leading: IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Cancel',
-                onPressed: _submitting ? null : _cancel,
+                key: const Key('extension-ui-minimize'),
+                icon: Icon(LucideIcons.chevronDown, size: 20),
+                tooltip: 'Minimize',
+                onPressed: _submitting ? null : _minimize,
               ),
               title: Text(title),
             ),

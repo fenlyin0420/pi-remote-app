@@ -486,4 +486,71 @@ void main() {
 
     shutdown(app);
   });
+
+  // LOCAL (fenlyin) — the ask_user modal is full-screen, so answering it hid
+  // the turn the question was about: the user had to abandon the question (and
+  // its answers) to re-read the agent's message. Folding it away is the fix;
+  // this pins both halves — the chat comes back, and the same sheet returns
+  // with the answer still selected, so only Submit/Cancel ever ends the flow.
+  testWidgets('an ask_user flow folds away and reopens with its answers', (
+    tester,
+  ) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+    const prompt = "What's the goal?";
+
+    app.sync.onServerMessageForTest(
+      ExtensionUiRequest(
+        id: 'tool:tc_ask',
+        method: ExtensionUiMethod.select,
+        title: 'Direction',
+        options: const ['Alpha', 'Beta'],
+        ask: AskEnrichmentWire(
+          flowId: 'flow-ask',
+          toolCallId: 'tc_ask',
+          source: 'tool',
+          title: 'Direction',
+          questions: const [
+            AskQuestionWire(
+              id: 'goal',
+              label: 'Goal',
+              prompt: prompt,
+              type: AskQuestionWireType.single,
+              required: true,
+              options: [
+                AskOptionWire(value: 'a', label: 'Alpha'),
+                AskOptionWire(value: 'b', label: 'Beta'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(prompt), findsOneWidget, reason: 'the modal opened');
+    expect(find.byKey(const Key('chat-pending-ask')), findsNothing);
+
+    // Answer half-way, then fold it to read the turn the question is about.
+    await tester.tap(find.text('Alpha'));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('extension-ui-minimize')));
+    await tester.pumpAndSettle();
+
+    expect(find.text(prompt), findsNothing, reason: 'the chat is back');
+    expect(find.byKey(const Key('chat-pending-ask')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-pending-ask')));
+    await tester.pumpAndSettle();
+
+    expect(find.text(prompt), findsOneWidget, reason: 'reopened on tap');
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Submit'))
+          .onPressed,
+      isNotNull,
+      reason: 'the folded answer has to survive, or folding loses work',
+    );
+
+    shutdown(app);
+  });
 }
