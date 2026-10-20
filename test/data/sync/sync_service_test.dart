@@ -1411,6 +1411,44 @@ void main() {
     s.sync.dispose();
   });
 
+  test('a replay that rewrites many rows publishes ONE list update for the '
+      'whole reply — not one rebuild per written row', () async {
+    final s = await setup();
+    final read = SessionReadRepository(LocalBoxes());
+    final seen = <int>[];
+    final sub = read
+        .watchMessages(s.epk, 'main')
+        .listen((rows) => seen.add(rows.length));
+    await _settle();
+    expect(seen, [0], reason: 'the empty projection on listen');
+
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'sync1',
+        sessionStartedAt: 0,
+        events: [
+          for (var i = 0; i < 8; i++) ...[
+            UserInputEvt(ts: 10 + i * 2, id: 'u$i', text: 'q$i'),
+            AgentMessageEvt(ts: 11 + i * 2, inReplyTo: 'u$i', text: 'a$i'),
+          ],
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+
+    expect(messages(s.epk), hasLength(16));
+    expect(
+      seen,
+      [0, 16],
+      reason: 'the box took 16 writes, the transcript is rebuilt once',
+    );
+
+    await sub.cancel();
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test(
     'switching the writer to a new session: a late frame from the OLD '
     "connection is dropped — it neither writes the new box nor appears in the "

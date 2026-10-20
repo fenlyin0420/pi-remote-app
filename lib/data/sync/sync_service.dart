@@ -772,7 +772,12 @@ class SyncService extends Service {
     while (_syncAsked.length > _maxSyncAsked) {
       _syncAsked.remove(_syncAsked.keys.first);
     }
-    ch.send(SessionSync(id: id, since: _syncCursorFor(_activeEpk!, _activeRoomId)));
+    final since = _syncCursorFor(_activeEpk!, _activeRoomId);
+    debugPrint(
+      '[sync] session_sync room=$_activeRoomId '
+      'since=${since == null ? 'none → full replay' : 'cursor'}',
+    );
+    ch.send(SessionSync(id: id, since: since));
   }
 
   /// The resume token stored for `(epk, room)`, or null when this device has
@@ -1337,6 +1342,11 @@ class SyncService extends Service {
     if (epk == null) return;
     final room = _activeRoomId;
     final replayed = _convertHistory(h.events);
+    debugPrint(
+      '[sync] history in ${h.isDelta ? 'delta' : 'full'} '
+      'events=${h.events.length} rows=${replayed.length} '
+      'truncated=${h.truncated} cursor=${h.cursor == null ? 'none' : 'given'}',
+    );
     // A reply describes the session as the Pi saw it when it answered, so a row
     // this device wrote AFTER asking cannot be in it. Those rows stay: dropping
     // them would lose them for good, because this reply's own cursor already
@@ -1729,23 +1739,43 @@ class SyncService extends Service {
     // means a re-sent identical history produces ZERO box writes → ZERO
     // emits → no rebuild; a changed history only rewrites the rows that
     // actually differ.
-    for (final k in box.keys.toList()) {
-      if ((k as num).toInt() >= desired.length) {
-        await box.delete(k);
+    //
+    // A rewrite that DOES change rows still lands one watch event per row, so
+    // the box is held quiet for the duration: a reader keeps its mirror current
+    // and publishes a single snapshot when the last row is in, instead of
+    // rebuilding the whole transcript (and re-following the bottom) per row.
+    final gate = LocalBoxes.quietGate(LocalBoxes.msgsBoxName(epk, room));
+    var deleted = 0;
+    var wrote = 0;
+    gate.hold();
+    try {
+      for (final k in box.keys.toList()) {
+        if ((k as num).toInt() >= desired.length) {
+          await box.delete(k);
+          deleted++;
+        }
       }
-    }
-    for (var i = 0; i < desired.length; i++) {
-      final newJson = desired[i].toJson();
-      final curRaw = box.get(i);
-      // Normalise the stored value through fromJson→toJson so the compare is
-      // independent of however Hive ordered the persisted map.
-      final curNorm = curRaw == null
-          ? null
-          : jsonEncode(MessageRecord.fromJson(_coerce(curRaw)).toJson());
-      if (curNorm != jsonEncode(newJson)) {
-        await box.put(i, newJson);
+      for (var i = 0; i < desired.length; i++) {
+        final newJson = desired[i].toJson();
+        final curRaw = box.get(i);
+        // Normalise the stored value through fromJson→toJson so the compare is
+        // independent of however Hive ordered the persisted map.
+        final curNorm = curRaw == null
+            ? null
+            : jsonEncode(MessageRecord.fromJson(_coerce(curRaw)).toJson());
+        if (curNorm != jsonEncode(newJson)) {
+          await box.put(i, newJson);
+          wrote++;
+        }
       }
+    } finally {
+      gate.release();
     }
+    debugPrint(
+      '[sync] history applied room=$room rows=${desired.length} wrote=$wrote '
+      'deleted=$deleted preserved=${preserved.length}'
+      '${wrote == 0 && deleted == 0 ? ' (cache already matched)' : ''}',
+    );
     if (_activeEpk == epk && _activeRoomId == room) {
       _idToSeq
         ..clear()
@@ -1760,25 +1790,28 @@ class SyncService extends Service {
       _syncedRows = frontier;
       if (cursor != null) _syncCursor = cursor;
       _indexLoaded = true;
-      final idx = _boxes.sessionsIndexBox();
-      final key = LocalBoxes.sessionKey(epk, room);
-      final raw = idx.get(key);
-      final entry = raw is Map
-          ? SessionIndexRecord.fromJson(raw.cast<String, dynamic>())
-          : SessionIndexRecord(epk: epk, roomId: room);
-      await idx.put(
-        key,
-        entry
-            .copyWith(
-              sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(
-                sessionStartedAt,
-              ),
-              syncCursor: cursor ?? entry.syncCursor,
-              syncedRows: frontier,
-            )
-            .toJson(),
-      );
     }
+    // The resume token is persisted for the room the reply described even when
+    // the chat moved on mid-apply: those rows ARE on disk, and dropping the
+    // token here would make the next entry ask for the whole mirror again.
+    final idx = _boxes.sessionsIndexBox();
+    final indexKey = LocalBoxes.sessionKey(epk, room);
+    final raw = idx.get(indexKey);
+    final entry = raw is Map
+        ? SessionIndexRecord.fromJson(raw.cast<String, dynamic>())
+        : SessionIndexRecord(epk: epk, roomId: room);
+    await idx.put(
+      indexKey,
+      entry
+          .copyWith(
+            sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(
+              sessionStartedAt,
+            ),
+            syncCursor: cursor ?? entry.syncCursor,
+            syncedRows: frontier,
+          )
+          .toJson(),
+    );
     return true;
   }
 
@@ -1996,11 +2029,20 @@ class SyncService extends Service {
       // could not tell which rows it is re-delivering. Drop the cursor once and
       // let the Pi substitute the cache wholesale — the full replay is the one
       // path that cannot leave a duplicate behind.
+      var dropped = '';
       if (_syncCursor != null &&
           (_syncedRows == null || _syncedRows! > box.length)) {
+        dropped = _syncedRows == null
+            ? ' → dropped (cache has no frontier)'
+            : ' → dropped (frontier $_syncedRows > ${box.length} rows)';
         _syncCursor = null;
         _syncedRows = null;
       }
+      debugPrint(
+        '[sync] load room=$room rows=${box.length} '
+        'syncedRows=${stored?.syncedRows} '
+        'storedCursor=${stored?.syncCursor == null ? 'none' : 'yes'}$dropped',
+      );
       for (final k in box.keys) {
         final seq = (k as num).toInt();
         final r = MessageRecord.fromJson(_coerce(box.get(k)));

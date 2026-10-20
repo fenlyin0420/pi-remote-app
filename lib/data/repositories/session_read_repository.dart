@@ -19,8 +19,19 @@ class SessionReadRepository extends Repository {
   /// snapshot on listen, then an updated list per row change.
   Stream<List<MessageRecord>> watchMessages(String epk, String roomId) {
     final byKey = <int, MessageRecord>{};
+    // A bulk rewrite holds this gate (a history replay's reconcile): the mirror
+    // below stays current row by row, but the listener is told ONCE when the
+    // last row lands instead of once per row.
+    final gate = LocalBoxes.quietGate(LocalBoxes.msgsBoxName(epk, roomId));
     StreamSubscription? sub;
+    var pendingEmit = false;
+    void Function()? flush;
     late final StreamController<List<MessageRecord>> controller;
+    void emit() {
+      pendingEmit = false;
+      if (!controller.isClosed) controller.add(_sorted(byKey));
+    }
+
     controller = StreamController<List<MessageRecord>>(
       onListen: () async {
         final box = await _boxes.msgsBox(epk, roomId);
@@ -30,6 +41,10 @@ class SessionReadRepository extends Repository {
           );
         }
         if (!controller.isClosed) controller.add(_sorted(byKey));
+        flush = () {
+          if (pendingEmit) emit();
+        };
+        gate.onRelease(flush!);
         sub = box.watch().listen((event) {
           final key = (event.key as num).toInt();
           if (event.deleted) {
@@ -38,10 +53,15 @@ class SessionReadRepository extends Repository {
             // Incremental: read ONLY the changed key, not the whole box.
             byKey[key] = MessageRecord.fromJson(_coerce(box.get(key)));
           }
-          if (!controller.isClosed) controller.add(_sorted(byKey));
+          if (gate.isQuiet) {
+            pendingEmit = true;
+            return;
+          }
+          emit();
         });
       },
       onCancel: () async {
+        if (flush != null) gate.offRelease(flush!);
         await sub?.cancel();
       },
     );
