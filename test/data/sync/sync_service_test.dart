@@ -3065,6 +3065,123 @@ void main() {
         s.sync.dispose();
       });
 
+      // The Pi caps a replayed reasoning block at 16 KiB and appends a marker,
+      // so the copy it sends back is the live text's head FOLLOWED BY marker
+      // text — never a prefix of what the app rendered. A plain prefix test
+      // therefore never paired a long block, and the live row it left behind was
+      // hung below the answer: the transcript ended on a thinking block.
+      test('a reasoning block past the re-sync cap pairs with the live row',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        final reasoning = 'x' * 20000;
+        s.ch.push(AgentThinking(inReplyTo: 'u1', delta: reasoning));
+        await _settle();
+        s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'the answer'));
+        s.ch.push(AgentDone(inReplyTo: 'u1'));
+        await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.role == MsgRole.assistant),
+        );
+
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: [
+              AgentThinkingEvt(
+                ts: 20,
+                inReplyTo: 'sync_20',
+                text: '${reasoning.substring(0, 16384)}\n\n…[thinking truncated]',
+              ),
+              const AgentMessageEvt(
+                ts: 21,
+                inReplyTo: 'sync_20',
+                text: 'the answer',
+              ),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await waitUntil(() => index(s.epk)?.syncCursor == '100:bbbb');
+        final rows = messages(s.epk);
+        expect(
+          rows.where((r) => r.role == MsgRole.thinking),
+          hasLength(1),
+          reason: 'the capped copy stands in for the block on screen',
+        );
+        expect(
+          rows.map((r) => r.role),
+          [MsgRole.user, MsgRole.thinking, MsgRole.assistant],
+          reason: 'reasoning still precedes the answer it produced',
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a live row the reply does not bring back keeps its place',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        s.ch.push(AgentThinking(inReplyTo: 'u1', delta: 'weighing it'));
+        await _settle();
+        s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'the answer'));
+        s.ch.push(AgentDone(inReplyTo: 'u1'));
+        await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.role == MsgRole.assistant),
+        );
+
+        // The reply brings the answer but NOT the reasoning that preceded it
+        // (the Pi had not written that event when it answered).
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              AgentMessageEvt(ts: 21, inReplyTo: 'sync_20', text: 'the answer'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await waitUntil(() => index(s.epk)?.syncCursor == '100:bbbb');
+        final rows = messages(s.epk);
+        expect(
+          rows.map((r) => r.role),
+          [MsgRole.user, MsgRole.thinking, MsgRole.assistant],
+          reason: 'an unpaired row cannot jump over the row that followed it',
+        );
+        expect(rows.where((r) => r.text == 'the answer'), hasLength(1));
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
       test('a frontier the box cannot back up asks for a full replay', () async {
         final s = await setup();
         s.ch.push(

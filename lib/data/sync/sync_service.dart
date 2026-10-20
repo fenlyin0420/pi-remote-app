@@ -1405,6 +1405,10 @@ class SyncService extends Service {
             if (e.seq < cut) e.row,
         ];
         final appended = _convertHistory(h.events, seqOffset: kept.length);
+        // Rows this reply repeats of the ones already replayed fold into them,
+        // leaving [fresh] as the part of the reply the cache has never seen.
+        final folded = _mergeReplayed(kept, appended);
+        final fresh = folded.fresh;
         // Which tail rows this reply re-delivers. Time alone cannot say it: the
         // Pi answers a snapshot, so a row written a moment before the request
         // can still be missing from the reply (its event had not been persisted
@@ -1413,26 +1417,51 @@ class SyncService extends Service {
         // reply brings the same thing back; anything else waits, on screen, for
         // the reply that owns it.
         final replaced = <MessageRecord>[];
-        final survivors = <MessageRecord>[];
-        final brought = _contentRows(appended);
-        for (final e in existing) {
-          if (e.seq < cut) continue;
-          final row = e.row;
+        final tail = [
+          for (final e in existing)
+            if (e.seq >= cut) e.row,
+        ];
+        final brought = _contentRows(fresh);
+        // Where each tail row's copy sits in this reply (null: not brought back).
+        final twinAt = <int?>[];
+        for (final row in tail) {
           final twin = _claimedBy(row, brought);
           if (twin == null) {
-            survivors.add(row);
+            twinAt.add(null);
             continue;
           }
           // The reply's copy stands in for the live one — carrying over what
           // only the live row knew (a tool's name and args, see [_adopt]).
-          final at = appended.indexOf(twin);
-          if (at >= 0) appended[at] = _adopt(row, twin);
+          final at = fresh.indexOf(twin);
+          if (at >= 0) fresh[at] = _adopt(row, twin);
+          twinAt.add(at < 0 ? null : at);
           replaced.add(row);
         }
-        final merged = _mergeReplayed(kept, appended);
-        rows = [...merged, ...survivors];
+        // The tail in the REPLY's order — that is the Pi's own, the order the
+        // session file was written in — with every live row the reply does not
+        // bring back inserted just before the reply row that followed it on
+        // disk. Hanging them at the end instead moved a row across the ones it
+        // preceded: a reasoning block that could not be paired up (see
+        // [_claimedBy]) landed BELOW the answer it produced, so the transcript
+        // ended on a thinking block.
+        final anchored = <int, List<MessageRecord>>{};
+        var anchor = fresh.length;
+        for (var i = tail.length - 1; i >= 0; i--) {
+          final at = twinAt[i];
+          if (at != null) {
+            anchor = at;
+            continue;
+          }
+          (anchored[anchor] ??= []).insert(0, tail[i]);
+        }
+        rows = [...folded.kept];
+        for (var i = 0; i <= fresh.length; i++) {
+          final survivors = anchored[i];
+          if (survivors != null) rows.addAll(survivors);
+          if (i < fresh.length) rows.add(fresh[i]);
+        }
         superseded = replaced;
-        frontier = merged.length;
+        frontier = rows.length;
         replayedFrom = kept.length;
       }
       await _reconcileHistoryLocked(
@@ -1482,8 +1511,9 @@ class SyncService extends Service {
   /// so two identical messages pair up one to one.
   ///
   /// Reasoning blocks are matched by text instead of a key: their identity
-  /// embeds a position, and the replay may be a capped prefix of what the app
-  /// rendered (the Pi caps a block at 16k chars on the way out).
+  /// embeds a position, and the copy the Pi sends back is capped (see
+  /// [_holdsSameReasoning]) — it is the live text's head plus marker text, which
+  /// a plain prefix test never recognises.
   static MessageRecord? _claimedBy(
     MessageRecord row,
     Map<String, List<MessageRecord>> brought,
@@ -1492,7 +1522,7 @@ class SyncService extends Service {
       final queue = brought[_contentKey(row)];
       if (queue == null) return null;
       final at = queue.indexWhere(
-        (t) => t.text.isNotEmpty && row.text.startsWith(t.text),
+        (t) => _holdsSameReasoning(row.text, t.text),
       );
       return at < 0 ? null : queue.removeAt(at);
     }
@@ -1503,7 +1533,30 @@ class SyncService extends Service {
     return queue.removeAt(0);
   }
 
-  /// The delta's own rows on top of the ones already replayed: a reply that
+  /// The marker the Pi appends to a reasoning block it had to cap on the way out
+  /// of `session_history` (16 KiB per block, live streaming is uncapped — see
+  /// PROTOCOL.md). Everything before it is a prefix of the whole block.
+  static const String _thinkingCapMarker = '…[thinking truncated]';
+
+  /// Whether [live] and [replayed] are the same reasoning block.
+  ///
+  /// Equality is the normal case; a block past the Pi's cap comes back as its own
+  /// head followed by [_thinkingCapMarker], so the two texts differ in the tail
+  /// and the replayed one is NOT a prefix of the other.
+  static bool _holdsSameReasoning(String live, String replayed) {
+    if (live == replayed) return true;
+    final cap = replayed.indexOf(_thinkingCapMarker);
+    if (cap <= 0) return false;
+    // The cap falls inside the text and the marker is separated from it by a
+    // newline: drop the marker AND the gap before it, so what is left is the
+    // head of the block exactly as the live row cut it.
+    final head = replayed.substring(0, cap).trimRight();
+    return head.isNotEmpty &&
+        live.length > head.length &&
+        live.startsWith(head);
+  }
+
+  /// The reply's rows folded into the ones already replayed: a reply that
   /// re-delivers an event this device already applied replaces that row instead
   /// of piling a second copy next to it.
   ///
@@ -1513,11 +1566,17 @@ class SyncService extends Service {
   /// Pi keys its replay by (it re-names user rows `sync_<ts>`, which is still
   /// stable for ONE message), except for reasoning blocks, whose id embeds their
   /// position in the batch — those match on their content instead.
-  static List<MessageRecord> _mergeReplayed(
+  ///
+  /// Returns the replayed prefix with those copies folded in, plus — in the
+  /// reply's own order — the rows that had no home there: the live tail is what
+  /// those are matched against.
+  static ({List<MessageRecord> kept, List<MessageRecord> fresh}) _mergeReplayed(
     List<MessageRecord> kept,
     List<MessageRecord> appended,
   ) {
-    if (appended.isEmpty) return kept;
+    if (appended.isEmpty) {
+      return (kept: kept, fresh: const <MessageRecord>[]);
+    }
     final byKey = <String, int>{
       for (var i = 0; i < kept.length; i++)
         '${kept[i].role.name}:${kept[i].id}': i,
@@ -1533,6 +1592,7 @@ class SyncService extends Service {
       }
     }
     final merged = [...kept];
+    final fresh = <MessageRecord>[];
     for (final row in appended) {
       final at =
           byKey['${row.role.name}:${row.id}'] ??
@@ -1540,12 +1600,12 @@ class SyncService extends Service {
               ? thinking['${row.ts?.millisecondsSinceEpoch}:${row.text}']
               : null);
       if (at == null) {
-        merged.add(row);
+        fresh.add(row);
         continue;
       }
       merged[at] = _adopt(merged[at], row);
     }
-    return merged;
+    return (kept: merged, fresh: fresh);
   }
 
   /// [replayed] taking the place of [keptRow].
