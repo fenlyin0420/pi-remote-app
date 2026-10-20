@@ -1,15 +1,15 @@
-# Remote Pi 1.6.6
+# Remote Pi 1.6.7
 
 ## What's new
 
-- **A finished conversation no longer ends on a thinking block.** After a room
-  caught up on its history, the reasoning above an answer could show up again at
-  the bottom of the transcript, below the reply it produced. Long reasoning
-  blocks were the trigger: they now line up with the copy the Pi replays and stay
-  above the answer, where they belong.
+- **Rooms that already ended on a thinking block fix themselves.** The previous
+  version stopped new transcripts from ending on a reasoning block, but a room
+  that already had one kept it until you switched away and back. Opening such a
+  room now re-pulls its history once, which puts every block back above the
+  answer it belongs to — no manual room switch, no re-pairing.
 
 ## Assets
 
-- `remote-pi-1.6.6-arm64-signed.apk` — Android arm64
+- `remote-pi-1.6.7-arm64-signed.apk` — Android arm64
 - `SHA256SUMS` — checksums for the assets above
 - `latest.json` — auto-update manifest
