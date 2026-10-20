@@ -155,6 +155,44 @@ class SyncService extends Service {
   /// session wipe), which makes the next `session_sync` ask for a full replay.
   String? _syncCursor;
 
+  /// How many of the bound room's rows came out of a replay (mirrored from
+  /// [SessionIndexRecord.syncedRows]). Everything past it was written from a
+  /// live frame and is provisional: a reply replaces the rows it brings back and
+  /// leaves the rest. Null when this cache has no frontier (written before it
+  /// existed, or after a session wipe) — [_loadIndex] then also drops the cursor
+  /// so a full replay substitutes the cache once.
+  int? _syncedRows;
+
+  /// `session_sync` requests this device has sent and not yet had answered, by
+  /// id. A reply answers ONE of them, and the moment that request left is the
+  /// line between "the Pi could see this row" and "the Pi could not": rows this
+  /// app wrote after it cannot be in the reply, so a re-sync leaves them alone
+  /// ([_applyHistory]) instead of replacing them with silence.
+  final Map<String, DateTime> _syncAsked = {};
+
+  /// A few in flight is the normal case (room entry + the online edge); the cap
+  /// only stops a channel that never answers from growing the map.
+  static const int _maxSyncAsked = 8;
+
+  /// When this device asked for the reply with [inReplyTo], and forget it.
+  ///
+  /// Only a full replay needs it (it substitutes the cache, so the rows written
+  /// while it was in flight have to be told apart); a delta decides by content
+  /// instead. A reply this device cannot place falls back to the oldest request
+  /// still in flight, and null means there is nothing to go on — a full replay
+  /// then treats its own event list as the whole truth.
+  DateTime? _takeSyncRequest(String? inReplyTo) {
+    // A request whose reply never came would otherwise linger and become the
+    // fallback for every later reply, dating rows as "newer" for good.
+    final stale = DateTime.now().subtract(const Duration(minutes: 2));
+    _syncAsked.removeWhere((_, askedAt) => askedAt.isBefore(stale));
+    if (inReplyTo != null) {
+      final askedAt = _syncAsked.remove(inReplyTo);
+      if (askedAt != null) return askedAt;
+    }
+    return _syncAsked.isEmpty ? null : _syncAsked.values.first;
+  }
+
   // Plan/32 safety net — if the relay never echoes a sent message back, the
   // optimistic `pending:true` bubble would spin forever. After this window we
   // remove the bubble SILENTLY (no "failed" state, no spinner). The real fix
@@ -448,6 +486,14 @@ class SyncService extends Service {
         : null;
     _activeEpk = epk;
     _activeRoomId = room;
+    // The resume state belongs to the room that was bound, and [_loadIndex]
+    // loads this one's below: until then "unknown" is the safe reading — a
+    // cursor from the PREVIOUS room that the Pi happened to place would answer
+    // with a delta this box cannot merge, and an unknown frontier keeps every
+    // row instead of dropping the ones it cannot account for.
+    _syncedRows = null;
+    _syncCursor = null;
+    _syncAsked.clear();
     // Re-aim the UI-facing streams at the NEW room's slot: when the previous
     // room was mid-turn (working pill / live bubble), publish the new room's
     // state — or the cleared sentinel — so listeners that don't re-seed on
@@ -721,9 +767,12 @@ class SyncService extends Service {
     // answers a cursor it cannot place with a full replay, which is the same
     // substitute-the-cache behaviour as before — so a missing or stale cursor
     // costs nothing but a round trip it was going to make anyway.
-    ch.send(
-      SessionSync(id: _newId(), since: _syncCursorFor(_activeEpk!, _activeRoomId)),
-    );
+    final id = _newId();
+    _syncAsked[id] = DateTime.now();
+    while (_syncAsked.length > _maxSyncAsked) {
+      _syncAsked.remove(_syncAsked.keys.first);
+    }
+    ch.send(SessionSync(id: id, since: _syncCursorFor(_activeEpk!, _activeRoomId)));
   }
 
   /// The resume token stored for `(epk, room)`, or null when this device has
@@ -751,6 +800,10 @@ class SyncService extends Service {
       await box.clear();
       _idToSeq.clear();
       _nextSeq = 0;
+      // The wiped session has neither a resume token nor a replay frontier: a
+      // leftover cursor would make the next sync a delta on top of an empty box.
+      _syncCursor = null;
+      _syncedRows = null;
       _indexLoaded = true;
       final idx = _boxes.sessionsIndexBox();
       await idx.delete(LocalBoxes.sessionKey(epk, room));
@@ -1283,54 +1336,256 @@ class SyncService extends Service {
     final epk = _activeEpk;
     if (epk == null) return;
     final room = _activeRoomId;
-    if (!h.isDelta) {
-      await _reconcileHistory(
-        rows: _convertHistory(h.events),
+    final replayed = _convertHistory(h.events);
+    // A reply describes the session as the Pi saw it when it answered, so a row
+    // this device wrote AFTER asking cannot be in it. Those rows stay: dropping
+    // them would lose them for good, because this reply's own cursor already
+    // points past them — a picture sent while the sync was in flight would never
+    // come back.
+    final askedAt = _takeSyncRequest(h.inReplyTo);
+    bool isNewer(MessageRecord r) {
+      // A pending row is preserved on its own below, whatever its age.
+      if (r.pending) return false;
+      final ts = r.ts;
+      return askedAt == null ? false : ts != null && ts.isAfter(askedAt);
+    }
+
+    // Read and apply hold the SAME write slot: a live frame landing between the
+    // two would be a row this reply knows nothing about, and the merge below is
+    // written against the rows that were on disk when it read.
+    await _enqueue(() async {
+      if (_activeEpk != epk || _activeRoomId != room) return;
+      final box = await _boxes.msgsBox(epk, room);
+      final onDisk = box.toMap().entries.toList()
+        ..sort((a, b) => (a.key as num).compareTo(b.key as num));
+      final existing = [
+        for (final e in onDisk)
+          (seq: (e.key as num).toInt(), row: MessageRecord.fromJson(_coerce(e.value))),
+      ];
+      final newer = [
+        for (final e in existing)
+          if (isNewer(e.row)) e.row,
+      ];
+      final List<MessageRecord> rows;
+      final List<MessageRecord> superseded;
+      final int frontier;
+      // Where this reply's own rows start in [rows]: after the already replayed
+      // prefix for a delta, at the beginning for a full replay.
+      var replayedFrom = 0;
+      if (!h.isDelta) {
+        // A pending bubble is the app's own, unconfirmed copy of something the
+        // reply cannot describe yet: it is preserved below, never superseded.
+        superseded = [
+          for (final e in existing)
+            if (!isNewer(e.row) && !e.row.pending) e.row,
+        ];
+        rows = [...replayed, ...newer];
+        frontier = replayed.length;
+      } else {
+        // A delta carries only what the Pi sent after the cursor this device
+        // last stored, so it lands on top of the rows on disk: the rows a replay
+        // already produced ([_syncedRows]) stand as they are, and the live tail
+        // past them is what this reply re-delivers. With no request time nothing
+        // counts as newer, so the matching alone decides which tail rows go.
+        final cut = _syncedRows == null
+            ? existing.length
+            : math.min(_syncedRows!, existing.length);
+        final kept = [
+          for (final e in existing)
+            if (e.seq < cut) e.row,
+        ];
+        final appended = _convertHistory(h.events, seqOffset: kept.length);
+        // Which tail rows this reply re-delivers. Time alone cannot say it: the
+        // Pi answers a snapshot, so a row written a moment before the request
+        // can still be missing from the reply (its event had not been persisted
+        // yet) — and that row would be lost for good, because the reply's own
+        // cursor already points past it. So a row is only replaced when the
+        // reply brings the same thing back; anything else waits, on screen, for
+        // the reply that owns it.
+        final replaced = <MessageRecord>[];
+        final survivors = <MessageRecord>[];
+        final brought = _contentRows(appended);
+        for (final e in existing) {
+          if (e.seq < cut) continue;
+          final row = e.row;
+          final twin = _claimedBy(row, brought);
+          if (twin == null) {
+            survivors.add(row);
+            continue;
+          }
+          // The reply's copy stands in for the live one — carrying over what
+          // only the live row knew (a tool's name and args, see [_adopt]).
+          final at = appended.indexOf(twin);
+          if (at >= 0) appended[at] = _adopt(row, twin);
+          replaced.add(row);
+        }
+        final merged = _mergeReplayed(kept, appended);
+        rows = [...merged, ...survivors];
+        superseded = replaced;
+        frontier = merged.length;
+        replayedFrom = kept.length;
+      }
+      await _reconcileHistoryLocked(
+        epk: epk,
+        room: room,
+        rows: rows,
+        frontier: frontier,
+        replayedFrom: replayedFrom,
+        superseded: superseded,
         sessionStartedAt: h.sessionStartedAt,
         cursor: h.cursor,
       );
-      return;
-    }
-    // A delta carries only what the Pi sent after the cursor this device last
-    // stored, so it is APPENDED to the rows on disk rather than replacing them.
-    // Everything the replay does to stay idempotent (blob carry-over, picture
-    // restore, the minimum-write diff) is written against rows sitting at their
-    // history positions, so the delta is materialised as "disk rows + new rows"
-    // and handed to the same reconcile. One code path, two ways in.
-    //
-    // The union comes from DISK, not from memory: the app can be killed between
-    // two syncs, and the delta only means anything on top of the rows that
-    // survived.
-    final existing = <MessageRecord>[];
-    await _enqueue(() async {
-      final box = await _boxes.msgsBox(epk, room);
-      final keys = box.keys.map((k) => (k as num).toInt()).toList()..sort();
-      for (final k in keys) {
-        existing.add(MessageRecord.fromJson(_coerce(box.get(k))));
-      }
     });
-    if (_activeEpk != epk || _activeRoomId != room) return;
-    // `_convertHistory` numbers rows from zero and some ids embed that number
-    // (thinking rows), so the appended rows continue past the stored ones.
-    final appended = _convertHistory(h.events, seqOffset: existing.length);
-    await _reconcileHistory(
-      rows: [...existing, ...appended],
-      sessionStartedAt: h.sessionStartedAt,
-      cursor: h.cursor,
+  }
+
+  /// The rows a reply brings, keyed so a live row can be recognised as the same
+  /// message. The ids differ on purpose (the app's own id live, `sync_<ts>` on
+  /// the way back), so the content is what pairs them — one entry per row, so a
+  /// text that appears twice needs two matches, not one.
+  static Map<String, List<MessageRecord>> _contentRows(List<MessageRecord> rows) {
+    final keys = <String, List<MessageRecord>>{};
+    for (final row in rows) {
+      final key = _contentKey(row);
+      if (key == null) continue;
+      (keys[key] ??= []).add(row);
+    }
+    return keys;
+  }
+
+  /// The identity a replayed row and its live twin share, or null when the row
+  /// has none (a tool row without a call id).
+  static String? _contentKey(MessageRecord r) => switch (r.role) {
+    MsgRole.tool => 'tool:${r.tool?.toolCallId}',
+    MsgRole.attachment => 'attachment:${r.id}',
+    MsgRole.compaction => 'compaction:${r.id}',
+    // Pictures are NOT part of it: a replay may come back without them, and that
+    // is exactly when the row has to be recognised anyway (see the picture
+    // carry-over below).
+    MsgRole.user => 'user:${r.text}|${r.files.map((f) => f.name).join(',')}',
+    MsgRole.assistant => 'assistant:${r.text}',
+    // One bucket for reasoning: their identity embeds a position and the replay
+    // may be a capped prefix, so [_claimedBy] pairs them inside the bucket.
+    MsgRole.thinking => 'thinking',
+  };
+
+  /// The row [brought] re-delivers that stands for [row], if any — consuming it
+  /// so two identical messages pair up one to one.
+  ///
+  /// Reasoning blocks are matched by text instead of a key: their identity
+  /// embeds a position, and the replay may be a capped prefix of what the app
+  /// rendered (the Pi caps a block at 16k chars on the way out).
+  static MessageRecord? _claimedBy(
+    MessageRecord row,
+    Map<String, List<MessageRecord>> brought,
+  ) {
+    if (row.role == MsgRole.thinking) {
+      final queue = brought[_contentKey(row)];
+      if (queue == null) return null;
+      final at = queue.indexWhere(
+        (t) => t.text.isNotEmpty && row.text.startsWith(t.text),
+      );
+      return at < 0 ? null : queue.removeAt(at);
+    }
+    final key = _contentKey(row);
+    if (key == null) return null;
+    final queue = brought[key];
+    if (queue == null || queue.isEmpty) return null;
+    return queue.removeAt(0);
+  }
+
+  /// The delta's own rows on top of the ones already replayed: a reply that
+  /// re-delivers an event this device already applied replaces that row instead
+  /// of piling a second copy next to it.
+  ///
+  /// Two `session_sync` requests can be in flight at once (entry + online edge),
+  /// and the second reply then repeats what the first one already wrote — the
+  /// same identity twice is the same message, not another one. Ids are what the
+  /// Pi keys its replay by (it re-names user rows `sync_<ts>`, which is still
+  /// stable for ONE message), except for reasoning blocks, whose id embeds their
+  /// position in the batch — those match on their content instead.
+  static List<MessageRecord> _mergeReplayed(
+    List<MessageRecord> kept,
+    List<MessageRecord> appended,
+  ) {
+    if (appended.isEmpty) return kept;
+    final byKey = <String, int>{
+      for (var i = 0; i < kept.length; i++)
+        '${kept[i].role.name}:${kept[i].id}': i,
+    };
+    final thinking = <String, int>{};
+    for (var i = 0; i < kept.length; i++) {
+      final ts = kept[i].ts;
+      // A session file without timestamps leaves `ts` null: content alone is not
+      // an identity then ("let me check" twice is two blocks), so those stay
+      // id-only.
+      if (kept[i].role == MsgRole.thinking && ts != null) {
+        thinking['${ts.millisecondsSinceEpoch}:${kept[i].text}'] = i;
+      }
+    }
+    final merged = [...kept];
+    for (final row in appended) {
+      final at =
+          byKey['${row.role.name}:${row.id}'] ??
+          (row.role == MsgRole.thinking
+              ? thinking['${row.ts?.millisecondsSinceEpoch}:${row.text}']
+              : null);
+      if (at == null) {
+        merged.add(row);
+        continue;
+      }
+      merged[at] = _adopt(merged[at], row);
+    }
+    return merged;
+  }
+
+  /// [replayed] taking the place of [keptRow].
+  ///
+  /// A `tool_result` replayed on its own carries no tool name, so the row that
+  /// already knows which tool ran (and what it was asked to do) keeps both and
+  /// only takes the outcome — otherwise the card would turn into `unknown`
+  /// because a sync happened to split the call from its result.
+  static MessageRecord _adopt(MessageRecord keptRow, MessageRecord replayed) {
+    final known = keptRow.tool;
+    final again = replayed.tool;
+    if (known == null || again == null) return replayed;
+    // A replayed request has no outcome yet; the row that already has one must
+    // not go back to looking like it is still running.
+    if (again.status == ToolEventStatus.pending &&
+        known.status != ToolEventStatus.pending) {
+      return keptRow;
+    }
+    return keptRow.copyWith(
+      tool: known.tool == 'unknown'
+          ? again
+          : known.copyWith(
+              status: again.status,
+              result: again.result,
+              error: again.error,
+              diff: again.diff,
+            ),
     );
   }
 
-  /// Write [rows] as the room's transcript: carry over cached blobs, restore
-  /// pictures a byte-less replay dropped, archive new ones, and reconcile the
-  /// box with the minimum number of writes.
-  Future<void> _reconcileHistory({
+  /// Write [rows] as the room's transcript — plus the index entry that says
+  /// where this device resumes from — with the write slot already held.
+  ///
+  /// [frontier] is how many of [rows] came out of a replay; the rest were
+  /// written from live frames after this reply was asked for, and the next reply
+  /// is the one that owns them. [superseded] are the rows on disk this reply
+  /// replaces: their cached blobs and pictures are carried over, because a
+  /// replay carries no bytes. Returns false when the room switched out from
+  /// under it.
+  Future<bool> _reconcileHistoryLocked({
+    required String epk,
+    required String room,
     required List<MessageRecord> rows,
+    required int frontier,
+    required int replayedFrom,
+    required List<MessageRecord> superseded,
     required int sessionStartedAt,
     required String? cursor,
   }) async {
-    final epk = _activeEpk;
-    if (epk == null) return;
-    final room = _activeRoomId;
+    if (_activeEpk != epk || _activeRoomId != room) return false;
     // LOCAL (fenlyin): self-heal the room's cached model from the history
     // itself. The relay caches each room's meta in memory and re-announces
     // it only when the room's FIRST conn registers, so a daemon that
@@ -1349,133 +1604,182 @@ class SyncService extends Service {
       _conn.updateRoomModel(epk, room, lastAssistantModel);
     }
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
-    await _enqueue(() async {
-      final box = await _boxes.msgsBox(epk, room);
-      // Preserve local pending user rows the Pi hasn't echoed yet.
-      final preserved = <MessageRecord>[];
-      // Attachment cards come back from history as metadata only, so carry the
-      // cached blob name over — otherwise every re-sync would turn a room full
-      // of already-seen screenshots back into "tap to load".
-      final blobs = <String, String>{};
-      // The rows currently on disk, by box position: the picture restore below
-      // and the `desired` diff both need the OLD row, not just its value.
-      final current = <int, MessageRecord>{};
-      for (final entry in box.toMap().entries) {
-        final r = MessageRecord.fromJson(_coerce(entry.value));
-        current[(entry.key as num).toInt()] = r;
-        if (r.role == MsgRole.attachment) {
-          final blob = r.attachment?.blobName;
-          if (blob != null) blobs[r.id] = blob;
-        }
-        if (r.role == MsgRole.user &&
-            r.pending &&
-            !historyIds.contains(_key(r.role, r.id))) {
-          preserved.add(r);
-        }
+    // Rows this reply claims are gone on purpose — including a pending bubble it
+    // just answered, which must not come back as a second, still-spinning copy.
+    final claimed = {for (final r in superseded) _key(r.role, r.id)};
+    final box = await _boxes.msgsBox(epk, room);
+    // Preserve local pending user rows the Pi hasn't echoed yet.
+    final preserved = <MessageRecord>[];
+    // Attachment cards come back from history as metadata only, so carry the
+    // cached blob name over — otherwise every re-sync would turn a room full
+    // of already-seen screenshots back into "tap to load".
+    final blobs = <String, String>{};
+    // The rows currently on disk, by box position: the picture restore below
+    // and the `desired` diff both need the OLD row, not just its value.
+    final current = <int, MessageRecord>{};
+    final onDisk = box.toMap().entries.toList()
+      ..sort((a, b) => (a.key as num).compareTo(b.key as num));
+    for (final entry in onDisk) {
+      final seq = (entry.key as num).toInt();
+      final r = MessageRecord.fromJson(_coerce(entry.value));
+      current[seq] = r;
+      if (r.role == MsgRole.attachment) {
+        final blob = r.attachment?.blobName;
+        if (blob != null) blobs[r.id] = blob;
       }
-      for (var i = 0; i < rows.length; i++) {
-        final blob = blobs[rows[i].id];
-        final a = rows[i].attachment;
-        if (blob != null && a != null && a.blobName == null) {
-          rows[i] = rows[i].copyWith(
-            attachment: AttachmentData(
-              name: a.name,
-              path: a.path,
-              mime: a.mime,
-              size: a.size,
-              note: a.note,
-              resized: a.resized,
-              originalSize: a.originalSize,
-              blobName: blob,
-              toolCallId: a.toolCallId,
-            ),
-          );
-        }
+      final key = _key(r.role, r.id);
+      if (r.role == MsgRole.user &&
+          r.pending &&
+          !historyIds.contains(key) &&
+          !claimed.contains(key)) {
+        preserved.add(r);
       }
-      // Pictures the user sent outlive the Pi's copy of them: the bytes are in
-      // the phone's archive, and this replay is the only thing that could erase
-      // them from the transcript.
-      //
-      //  * a replay that comes back WITHOUT the image payload (the Pi's session
-      //    file was cleaned/compacted, or the payload fell out of the replay's
-      //    byte budget) keeps the picture for the row that still holds this
-      //    position and this id — the same message, now byte-less;
-      //  * a replay that DOES carry bytes gets them archived, so the row stops
-      //    carrying a megabyte of base64 into Hive.
-      for (var i = 0; i < rows.length; i++) {
-        final row = rows[i];
-        if (row.role != MsgRole.user) continue;
-        var images = row.images;
-        if (images.isEmpty) {
-          final old = current[i];
-          if (old != null &&
-              old.role == MsgRole.user &&
-              old.id == row.id &&
-              old.text == row.text &&
-              old.images.isNotEmpty) {
-            images = old.images;
-          }
-        }
-        if (images.isEmpty) continue;
-        rows[i] = row.copyWith(images: await _archiveImages(images, msgsBox: box));
-      }
-      // Desired ordered state: history (seq = index) then preserved pending.
-      final desired = <MessageRecord>[
-        for (var i = 0; i < rows.length; i++) rows[i].copyWith(seq: i),
-        for (var j = 0; j < preserved.length; j++)
-          preserved[j].copyWith(seq: rows.length + j),
-      ];
-      // Reconcile the box to `desired` with the MINIMUM number of writes.
-      //
-      // The old path did `box.clear()` + re-put every row. Hive emits a watch
-      // event per deleted AND per put key, so the read repo re-emitted ~2N
-      // times — tearing the whole list down to EMPTY and rebuilding it — on
-      // EVERY SessionHistory the relay re-delivered (which it does on every
-      // reconnect). That was the flicker/"embaralha e some". Diffing instead
-      // means a re-sent identical history produces ZERO box writes → ZERO
-      // emits → no rebuild; a changed history only rewrites the rows that
-      // actually differ.
-      for (final k in box.keys.toList()) {
-        if ((k as num).toInt() >= desired.length) {
-          await box.delete(k);
-        }
-      }
-      for (var i = 0; i < desired.length; i++) {
-        final newJson = desired[i].toJson();
-        final curRaw = box.get(i);
-        // Normalise the stored value through fromJson→toJson so the compare is
-        // independent of however Hive ordered the persisted map.
-        final curNorm = curRaw == null
-            ? null
-            : jsonEncode(MessageRecord.fromJson(_coerce(curRaw)).toJson());
-        if (curNorm != jsonEncode(newJson)) {
-          await box.put(i, newJson);
-        }
-      }
-      if (_activeEpk == epk && _activeRoomId == room) {
-        _idToSeq
-          ..clear()
-          ..addEntries([
-            for (var i = 0; i < desired.length; i++)
-              MapEntry(_key(desired[i].role, desired[i].id), i),
-          ]);
-        _nextSeq = desired.length;
-        _indexLoaded = true;
-      }
-    });
-    if (_activeEpk == epk && _activeRoomId == room) {
-      _updateIndex(
-        epk,
-        room,
-        (cur) => cur.copyWith(
-          sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(sessionStartedAt),
-          // The Pi's token for the newest event in this reply — echoed on the
-          // next `session_sync` so it only has to send what came after it.
-          syncCursor: cursor ?? cur.syncCursor,
-        ),
-      );
-      if (cursor != null) _syncCursor = cursor;
     }
+    // Pictures the user sent outlive the Pi's copy of them: the bytes are in the
+    // phone's archive, and this replay is the only thing that could erase them
+    // from the transcript. A replay that comes back WITHOUT the image payload
+    // (the Pi's session file was cleaned, or the payload fell out of the replay's
+    // byte budget) keeps the picture the same message already had: by position
+    // and id for a re-run reply, by text for the live rows this one replaces —
+    // a replayed message gets the Pi's id (`sync_<ts>`), not the app's.
+    final displaced = <String, List<List<MessageImage>>>{};
+    for (final r in superseded) {
+      // Every replaced message takes a slot, picture or not: the k-th replayed
+      // row of a text is the k-th replaced one, so an image-less message in
+      // between must consume its slot instead of handing its neighbour's
+      // picture to the wrong bubble.
+      if (r.role == MsgRole.user) (displaced[r.text] ??= []).add(r.images);
+    }
+    // Pair by text only when both sides agree on how many messages carry it: a
+    // reply that re-delivers one of two same-text messages cannot say which
+    // picture belongs to which, and a wrong picture is worse than none.
+    // Only the rows THIS reply produced count: the ones before [replayedFrom]
+    // came out of an earlier reply, already carry their pictures, and would
+    // otherwise outnumber the pictures waiting here (that mismatch used to drop
+    // the picture of a text the room had already seen).
+    final replayedOfText = <String, int>{};
+    for (var i = replayedFrom; i < frontier && i < rows.length; i++) {
+      final r = rows[i];
+      if (r.role == MsgRole.user) {
+        replayedOfText[r.text] = (replayedOfText[r.text] ?? 0) + 1;
+      }
+    }
+    final pairable = {
+      for (final e in displaced.entries)
+        if ((replayedOfText[e.key] ?? 0) == e.value.length) e.key,
+    };
+    for (var i = 0; i < rows.length; i++) {
+      final blob = blobs[rows[i].id];
+      final a = rows[i].attachment;
+      if (blob != null && a != null && a.blobName == null) {
+        rows[i] = rows[i].copyWith(
+          attachment: AttachmentData(
+            name: a.name,
+            path: a.path,
+            mime: a.mime,
+            size: a.size,
+            note: a.note,
+            resized: a.resized,
+            originalSize: a.originalSize,
+            blobName: blob,
+            toolCallId: a.toolCallId,
+          ),
+        );
+      }
+    }
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.role != MsgRole.user) continue;
+      var images = row.images;
+      // One slot per replayed row, taken whether or not this reply brought the
+      // bytes: the k-th replayed row of a text is the k-th replaced row of it.
+      List<MessageImage>? carried;
+      if (i >= replayedFrom && i < frontier && pairable.contains(row.text)) {
+        final queue = displaced[row.text];
+        if (queue != null && queue.isNotEmpty) carried = queue.removeAt(0);
+      }
+      if (images.isEmpty) {
+        final old = current[i];
+        if (old != null &&
+            old.role == MsgRole.user &&
+            old.id == row.id &&
+            old.text == row.text &&
+            old.images.isNotEmpty) {
+          images = old.images;
+        } else if (carried != null) {
+          images = carried;
+        }
+      }
+      if (images.isEmpty) continue;
+      rows[i] = row.copyWith(images: await _archiveImages(images, msgsBox: box));
+    }
+    // Desired ordered state: history (seq = index) then preserved pending.
+    final desired = <MessageRecord>[
+      for (var i = 0; i < rows.length; i++) rows[i].copyWith(seq: i),
+      for (var j = 0; j < preserved.length; j++)
+        preserved[j].copyWith(seq: rows.length + j),
+    ];
+    // Reconcile the box to `desired` with the MINIMUM number of writes.
+    //
+    // The old path did `box.clear()` + re-put every row. Hive emits a watch
+    // event per deleted AND per put key, so the read repo re-emitted ~2N
+    // times — tearing the whole list down to EMPTY and rebuilding it — on
+    // EVERY SessionHistory the relay re-delivered (which it does on every
+    // reconnect). That was the flicker/"embaralha e some". Diffing instead
+    // means a re-sent identical history produces ZERO box writes → ZERO
+    // emits → no rebuild; a changed history only rewrites the rows that
+    // actually differ.
+    for (final k in box.keys.toList()) {
+      if ((k as num).toInt() >= desired.length) {
+        await box.delete(k);
+      }
+    }
+    for (var i = 0; i < desired.length; i++) {
+      final newJson = desired[i].toJson();
+      final curRaw = box.get(i);
+      // Normalise the stored value through fromJson→toJson so the compare is
+      // independent of however Hive ordered the persisted map.
+      final curNorm = curRaw == null
+          ? null
+          : jsonEncode(MessageRecord.fromJson(_coerce(curRaw)).toJson());
+      if (curNorm != jsonEncode(newJson)) {
+        await box.put(i, newJson);
+      }
+    }
+    if (_activeEpk == epk && _activeRoomId == room) {
+      _idToSeq
+        ..clear()
+        ..addEntries([
+          for (var i = 0; i < desired.length; i++)
+            MapEntry(_key(desired[i].role, desired[i].id), i),
+        ]);
+      _nextSeq = desired.length;
+      // Where this device resumes from, in the SAME write as the rows it
+      // describes: a reply landing between a box write and a later index write
+      // would otherwise resume from a cursor older than the rows on disk.
+      _syncedRows = frontier;
+      if (cursor != null) _syncCursor = cursor;
+      _indexLoaded = true;
+      final idx = _boxes.sessionsIndexBox();
+      final key = LocalBoxes.sessionKey(epk, room);
+      final raw = idx.get(key);
+      final entry = raw is Map
+          ? SessionIndexRecord.fromJson(raw.cast<String, dynamic>())
+          : SessionIndexRecord(epk: epk, roomId: room);
+      await idx.put(
+        key,
+        entry
+            .copyWith(
+              sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(
+                sessionStartedAt,
+              ),
+              syncCursor: cursor ?? entry.syncCursor,
+              syncedRows: frontier,
+            )
+            .toJson(),
+      );
+    }
+    return true;
   }
 
   /// The caption's timestamp. `ts` 0 is the mapper's "unknown" sentinel
@@ -1648,6 +1952,16 @@ class SyncService extends Service {
           );
       }
     }
+    // A card or marker that arrives twice in one reply is still one row: the id
+    // is its identity, and the Pi can hand us the same attachment event twice (a
+    // re-remembered card, or a byte-only re-delivery).
+    final seen = <String>{};
+    out.removeWhere((r) {
+      if (r.role != MsgRole.attachment && r.role != MsgRole.compaction) {
+        return false;
+      }
+      return !seen.add(_key(r.role, r.id));
+    });
     return out;
   }
 
@@ -1671,11 +1985,22 @@ class SyncService extends Service {
       final rawIdx = _boxes.sessionsIndexBox().get(
         LocalBoxes.sessionKey(epk, room),
       );
-      _syncCursor = rawIdx is Map
-          ? SessionIndexRecord.fromJson(
-              rawIdx.cast<String, dynamic>(),
-            ).syncCursor
+      final stored = rawIdx is Map
+          ? SessionIndexRecord.fromJson(rawIdx.cast<String, dynamic>())
           : null;
+      _syncedRows = stored?.syncedRows;
+      _syncCursor = stored?.syncCursor;
+      // A frontier the box cannot back up (rows lost to a half-done wipe, a
+      // pruned box) or none at all (a cache written before the frontier existed)
+      // means the boundary between replayed and live rows is unknown: a delta
+      // could not tell which rows it is re-delivering. Drop the cursor once and
+      // let the Pi substitute the cache wholesale — the full replay is the one
+      // path that cannot leave a duplicate behind.
+      if (_syncCursor != null &&
+          (_syncedRows == null || _syncedRows! > box.length)) {
+        _syncCursor = null;
+        _syncedRows = null;
+      }
       for (final k in box.keys) {
         final seq = (k as num).toInt();
         final r = MessageRecord.fromJson(_coerce(box.get(k)));

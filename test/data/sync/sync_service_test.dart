@@ -2039,6 +2039,39 @@ void main() {
     // and nine of those arrived at rows that already matched. The app now sends
     // the Pi's cursor back and gets only what came after it.
     group('incremental session_history', () {
+      /// Ask for a sync and hand back the id of that request. A reply answers
+      /// one of them, and the moment it left is how the store tells the rows the
+      /// reply can contain from the ones written while it was in flight.
+      String askForSync(_FakeChannel ch, SyncService sync) {
+        ch.sent.clear();
+        sync.requestSync();
+        return ch.sent.whereType<SessionSync>().single.id;
+      }
+
+      /// Poll until [done] holds — the index write rides the same queue as the
+      /// rows, so a fixed delay is a slow machine rather than a broken app.
+      Future<void> waitUntil(bool Function() done) async {
+        for (var i = 0; i < 200; i++) {
+          if (done()) return;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(done(), isTrue, reason: 'the condition never held');
+      }
+
+      /// Wait for the box to reach a state instead of sleeping a fixed window:
+      /// a replay goes through the write queue and a card also decodes + archives
+      /// its bytes, so a fixed delay is a slow machine, not a failed assertion.
+      Future<List<MessageRecord>> rowsWhen(
+        String epk,
+        bool Function(List<MessageRecord>) done,
+      ) async {
+        for (var i = 0; i < 200; i++) {
+          if (done(messages(epk))) break;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        return messages(epk);
+      }
+
       test('a delta appends to the stored rows instead of replacing them',
           () async {
         final s = await setup();
@@ -2196,6 +2229,884 @@ void main() {
         await _settle();
         // Same ts and role: only the seq offset keeps the ids apart.
         expect(messages(s.epk).map((r) => r.text), ['one', 'two']);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // The delta answers "everything after your cursor" — and the rows the app
+      // rendered from LIVE frames after that cursor are part of the answer too.
+      // Concatenating them blindly puts one message on screen twice: two bubbles
+      // for one message, two cards for one screenshot.
+      test('a delta that re-delivers rows the app wrote live does not duplicate '
+          'them', () async {
+        final s = await setup();
+        // Baseline replay, so the device holds a cursor to resume from.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              AgentMessageEvt(ts: 11, inReplyTo: 'sync_10', text: 'answer'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // Live turn: the user sends, the Pi echoes, a tool reads an image.
+        await s.sync.sendMessage('run it');
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'run it'));
+        s.ch.push(ToolRequest(toolCallId: 'tc1', tool: 'read', args: const {}));
+        s.ch.push(
+          FileOffer(
+            id: 'att_tc1',
+            name: 'shot.png',
+            path: '/tmp/shot.png',
+            mime: 'image/png',
+            size: 3,
+            data: _squarePng,
+            toolCallId: 'tc1',
+          ),
+        );
+        final live = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.role == MsgRole.attachment),
+        );
+        expect(live.map((r) => r.role), [
+          MsgRole.user,
+          MsgRole.assistant,
+          MsgRole.user,
+          MsgRole.tool,
+          MsgRole.attachment,
+        ]);
+
+        // Reconnect: the Pi replays that same tail from its session file.
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'run it'),
+              ToolRequestEvt(
+                ts: 21,
+                toolCallId: 'tc1',
+                tool: 'read',
+                args: null,
+              ),
+              ToolResultEvt(ts: 22, toolCallId: 'tc1', result: 'ok'),
+              AttachmentEvt(
+                ts: 23,
+                id: 'att_tc1',
+                name: 'shot.png',
+                path: '/tmp/shot.png',
+                mime: 'image/png',
+                size: 3,
+                toolCallId: 'tc1',
+              ),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final replayed = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20') && rows.length == 5,
+        );
+        expect(
+          replayed.any((r) => r.id == localId),
+          isFalse,
+          reason: 'the live row is replaced, not kept next to its replay',
+        );
+        expect(replayed.map((r) => r.role), [
+          MsgRole.user,
+          MsgRole.assistant,
+          MsgRole.user,
+          MsgRole.tool,
+          MsgRole.attachment,
+        ], reason: 'the replay replaces the live rows it re-delivers');
+        expect(
+          replayed.where((r) => r.role == MsgRole.attachment),
+          hasLength(1),
+          reason: 'one card per image, not one per delivery',
+        );
+        expect(
+          replayed.last.attachment!.blobName,
+          isNotNull,
+          reason: 'the replay is metadata-only: the card keeps the cached bytes',
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test(
+        'a pending bubble the delta does not cover is still preserved',
+        () async {
+          final s = await setup();
+          s.ch.push(
+            SessionHistory(
+              inReplyTo: 'sync1',
+              sessionStartedAt: 100,
+              events: const [
+                UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              ],
+              eos: true,
+              cursor: '100:aaaa',
+            ),
+          );
+          await _settle();
+
+          // Sent, but the Pi has not echoed it yet: the row is optimistic only.
+          await s.sync.sendMessage('not echoed yet');
+          await _settle();
+
+          s.ch.push(
+            SessionHistory(
+              inReplyTo: 'sync2',
+              sessionStartedAt: 100,
+              events: const [
+                AgentMessageEvt(ts: 11, inReplyTo: 'sync_10', text: 'ok'),
+              ],
+              eos: true,
+              isDelta: true,
+              cursor: '100:bbbb',
+            ),
+          );
+          await _settle();
+          expect(messages(s.epk).map((r) => r.text), [
+            'first',
+            'ok',
+            'not echoed yet',
+          ]);
+          expect(messages(s.epk).last.pending, isTrue);
+          s.conn.dispose();
+          s.sync.dispose();
+        },
+      );
+
+      test(
+        'a cache from before the frontier existed asks for a full replay once',
+        () async {
+          final s = await setup();
+          s.ch.push(
+            SessionHistory(
+              inReplyTo: 'sync1',
+              sessionStartedAt: 100,
+              events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'hi')],
+              eos: true,
+              cursor: '100:aaaa',
+            ),
+          );
+          // The index write rides the same queue as the rows: wait for it to
+          // land, or the patch below would be overwritten by it.
+          await waitUntil(() => index(s.epk)?.syncCursor == '100:aaaa');
+          // Simulate an index written by a build without `synced_rows`.
+          final idx = LocalBoxes().sessionsIndexBox();
+          final key = '${s.epk}:main';
+          final stored = (idx.get(key) as Map).cast<String, dynamic>()
+            ..remove('synced_rows');
+          await idx.put(key, stored);
+
+          // Re-entering the room re-reads the index: with no frontier the delta
+          // cannot tell provisional rows apart, so it must ask for everything.
+          await s.sync.activate(s.epk, 'other');
+          await _settle();
+          await s.sync.activate(s.epk, 'main');
+          await _settle();
+          s.ch.sent.clear();
+          s.sync.requestSync();
+          await _settle();
+          expect(s.ch.sent.whereType<SessionSync>().single.since, isNull);
+          s.conn.dispose();
+          s.sync.dispose();
+        },
+      );
+
+      test('the frontier is persisted, so re-entering the room keeps the cursor',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              AgentMessageEvt(ts: 11, inReplyTo: 'sync_10', text: 'answer'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await waitUntil(() => index(s.epk)?.syncedRows == 2);
+        // Without this the app silently degrades to a full replay on every entry
+        // and every cold start — the exact cost the delta was built to remove.
+        expect(index(s.epk)?.syncedRows, 2);
+
+        await s.sync.activate(s.epk, 'other');
+        await _settle();
+        await s.sync.activate(s.epk, 'main');
+        await _settle();
+        s.ch.sent.clear();
+        s.sync.requestSync();
+        await _settle();
+        expect(s.ch.sent.whereType<SessionSync>().single.since, '100:aaaa');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a delta that repeats events the device already applied is idempotent',
+          () async {
+        final s = await setup();
+        // Two `session_sync` requests can be in flight at once (room entry +
+        // online edge): the second reply repeats what the first one wrote.
+        SessionHistory delta(String cursor) => SessionHistory(
+          inReplyTo: 'sync-$cursor',
+          sessionStartedAt: 100,
+          events: const [
+            UserInputEvt(ts: 20, id: 'sync_20', text: 'again'),
+            AgentThinkingEvt(ts: 21, inReplyTo: 'sync_20', text: 'hmm'),
+            ToolRequestEvt(ts: 22, toolCallId: 'tc1', tool: 'read', args: null),
+            AttachmentEvt(
+              ts: 23,
+              id: 'att_tc1',
+              name: 'shot.png',
+              path: '/tmp/shot.png',
+              mime: 'image/png',
+              size: 3,
+              toolCallId: 'tc1',
+            ),
+          ],
+          eos: true,
+          isDelta: true,
+          cursor: cursor,
+        );
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+        s.ch.push(delta('100:bbbb'));
+        await rowsWhen(s.epk, (rows) => rows.length == 5);
+        s.ch.push(delta('100:cccc'));
+        final rows = await rowsWhen(s.epk, (_) => false);
+        expect(rows.map((r) => r.text), ['first', 'again', 'hmm', '', '']);
+        expect(rows.map((r) => r.role), [
+          MsgRole.user,
+          MsgRole.user,
+          MsgRole.thinking,
+          MsgRole.tool,
+          MsgRole.attachment,
+        ]);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a delta replay that arrives byte-less keeps the live row\'s picture',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // The phone sends a picture; the Pi echoes it (the row is confirmed,
+        // live-written, and holds this device's only copy of the bytes).
+        await s.sync.sendMessage(
+          'look',
+          images: const [
+            MessageImage(data: _squarePng, mime: 'image/png'),
+          ],
+        );
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'look'));
+        final live = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.images.isNotEmpty),
+        );
+        expect(live.where((r) => r.text == 'look').single.images, hasLength(1));
+
+        // The replay comes back without the payload (session file cleaned, or the
+        // bytes fell out of the budget) and under the Pi's own id: the archived
+        // picture must survive the replacement, not vanish with the live row.
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'look'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final after = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20'),
+        );
+        final text = after.where((r) => r.text == 'look').single;
+        expect(after.where((r) => r.text == 'look'), hasLength(1));
+        expect(text.images, hasLength(1));
+        expect(text.images.single.blob, isNotNull);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a reply that carries the same attachment event twice writes one card',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              ToolRequestEvt(ts: 10, toolCallId: 'tc1', tool: 'read', args: null),
+              AttachmentEvt(
+                ts: 11,
+                id: 'att_tc1',
+                name: 'shot.png',
+                path: '/tmp/shot.png',
+                mime: 'image/png',
+                size: 3,
+                toolCallId: 'tc1',
+              ),
+              AttachmentEvt(
+                ts: 11,
+                id: 'att_tc1',
+                name: 'shot.png',
+                path: '/tmp/shot.png',
+                mime: 'image/png',
+                size: 3,
+                toolCallId: 'tc1',
+              ),
+            ],
+            eos: true,
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.role == MsgRole.attachment),
+        );
+        expect(rows.where((r) => r.role == MsgRole.attachment), hasLength(1));
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a reply keeps the live rows it could not have seen', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // A picture goes out while the room is idle; the Pi echoes it, so the
+        // row is confirmed and holds this device's only copy of the bytes.
+        await s.sync.sendMessage(
+          'look',
+          images: const [MessageImage(data: _squarePng, mime: 'image/png')],
+        );
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'look'));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.images.isNotEmpty));
+
+        // A sync asked for BEFORE the send answers with nothing this device has
+        // not already applied. The reply must not take the row with it: its own
+        // cursor points past the picture, so nothing would ever re-deliver it.
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        await waitUntil(() => index(s.epk)?.syncCursor == '100:bbbb');
+        final rows = messages(s.epk);
+        expect(rows.where((r) => r.text == 'look'), hasLength(1));
+        expect(rows.where((r) => r.text == 'look').single.images, hasLength(1));
+        expect(rows.where((r) => r.text == 'look').single.pending, isFalse);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a replay pairs a repeated text with its own picture', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // Two messages with the same text, only the first carrying a picture.
+        await s.sync.sendMessage(
+          'shot',
+          images: const [MessageImage(data: _squarePng, mime: 'image/png')],
+        );
+        final firstId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: firstId, text: 'shot'));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.images.isNotEmpty));
+        await s.sync.sendMessage('shot');
+        final secondId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: secondId, text: 'shot'));
+        await rowsWhen(s.epk, (rows) => rows.where((r) => r.text == 'shot').length == 2);
+
+        // Both come back byte-less; the picture belongs to the first one.
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'shot'),
+              UserInputEvt(ts: 21, id: 'sync_21', text: 'shot'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.where((r) => r.text == 'shot').length == 2 &&
+              rows.any((r) => r.id == 'sync_21'),
+        );
+        final shots = rows.where((r) => r.text == 'shot').toList();
+        expect(shots.first.images, hasLength(1));
+        expect(shots.first.images.single.blob, isNotNull);
+        expect(shots.last.images, isEmpty);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a reply that brings more of a text than the buffer held does not '
+          'guess at a picture', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // One picture with the text, live.
+        await s.sync.sendMessage(
+          'shot',
+          images: const [MessageImage(data: _squarePng, mime: 'image/png')],
+        );
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'shot'));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.images.isNotEmpty));
+
+        // The reply brings TWO of that text (one was written while this device
+        // was away) and neither carries bytes: there is no way to tell which
+        // message the picture belongs to, so guessing would put it on the wrong
+        // bubble — the picture is left off this round instead.
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'shot'),
+              UserInputEvt(ts: 21, id: 'sync_21', text: 'shot'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.where((r) => r.text == 'shot').length == 2,
+        );
+        expect(rows.where((r) => r.text == 'shot'), hasLength(2));
+        expect(
+          rows.any((r) => r.images.isNotEmpty),
+          isFalse,
+          reason: 'a picture is never attached to a message it may not belong to',
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a picture survives when the room already had a message with the '
+          'same text', () async {
+        final s = await setup();
+        // The history already holds a message with this very text — the count of
+        // that text is not "one" when this reply lands.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 5, id: 'sync_5', text: 'look'),
+              AgentMessageEvt(ts: 6, inReplyTo: 'sync_5', text: 'seen'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        await s.sync.sendMessage(
+          'look',
+          images: const [MessageImage(data: _squarePng, mime: 'image/png')],
+        );
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'look'));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.images.isNotEmpty));
+
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 20, id: 'sync_20', text: 'look')],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20'),
+        );
+        final replay = rows.firstWhere((r) => r.id == 'sync_20');
+        expect(
+          replay.images,
+          hasLength(1),
+          reason: 'the picture the phone archives is the only copy there is',
+        );
+        expect(replay.images.single.blob, isNotNull);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a reply that answers a still-pending bubble leaves one bubble',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // Sent, but the echo never arrived (the connection blinked): the row
+        // stays pending and the re-sync is what reports it instead.
+        await s.sync.sendMessage('still pending');
+        await _settle();
+
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'still pending'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20'),
+        );
+        expect(
+          rows.where((r) => r.text == 'still pending'),
+          hasLength(1),
+          reason: 'the answered bubble is replaced, not kept as a second copy',
+        );
+        expect(rows.where((r) => r.text == 'still pending').single.pending,
+            isFalse);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a row written while the reply was in flight is matched, not doubled',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // Ask first, then write: the row is younger than the request, yet the Pi
+        // had already persisted it when it built the reply. (The gap keeps the
+        // row's millisecond timestamp strictly after the request's.)
+        final reply = askForSync(s.ch, s.sync);
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await s.sync.sendMessage('written after the ask');
+        final localId = s.ch.sent.whereType<UserMessage>().last.id;
+        s.ch.push(UserInput(id: localId, text: 'written after the ask'));
+        await _settle();
+
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 20, id: 'sync_20', text: 'written after the ask'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20'),
+        );
+        expect(rows.where((r) => r.text == 'written after the ask'),
+            hasLength(1));
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test("a result replayed over a live card keeps the tool's name",
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // The call is live (the echo is pending here), the result comes back
+        // through a reply that carries no tool name.
+        s.ch.push(ToolRequest(toolCallId: 'tc1', tool: 'bash', args: const {}));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.role == MsgRole.tool));
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              ToolResultEvt(ts: 11, toolCallId: 'tc1', result: 'a.txt'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) =>
+              rows.where((r) => r.role == MsgRole.tool).length == 1 &&
+              rows.last.tool?.status == ToolEventStatus.completed,
+        );
+        expect(rows.where((r) => r.role == MsgRole.tool), hasLength(1));
+        expect(rows.last.tool!.tool, 'bash');
+        expect(rows.last.tool!.result, 'a.txt');
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a full replay keeps a bubble the Pi has not answered yet', () async {
+        final s = await setup();
+        // Sent while offline: nothing on the Pi knows about it yet.
+        await s.sync.sendMessage('still mine');
+        await _settle();
+        expect(messages(s.epk).single.pending, isTrue);
+
+        // A cold start (or a cursor the Pi could not place) answers with a full
+        // replay, which substitutes everything it knows — and it knows nothing
+        // about that bubble.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+          ),
+        );
+        await waitUntil(() => messages(s.epk).length == 2);
+        final rows = messages(s.epk);
+        expect(rows.map((r) => r.text), ['first', 'still mine']);
+        expect(rows.last.pending, isTrue);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a reasoning block the reply brings back is not shown twice',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [UserInputEvt(ts: 10, id: 'sync_10', text: 'first')],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // A live turn: the model reasons, then answers.
+        s.ch.push(AgentThinking(inReplyTo: 'u1', delta: 'weighing it'));
+        await _settle();
+        s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'the answer'));
+        await rowsWhen(s.epk, (rows) => rows.any((r) => r.role == MsgRole.thinking));
+
+        final reply = askForSync(s.ch, s.sync);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: reply,
+            sessionStartedAt: 100,
+            events: const [
+              AgentThinkingEvt(ts: 20, inReplyTo: 'sync_20', text: 'weighing it'),
+              AgentMessageEvt(ts: 21, inReplyTo: 'sync_20', text: 'the answer'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.any((r) => r.id == 'sync_20'),
+        );
+        expect(
+          rows.where((r) => r.role == MsgRole.thinking),
+          hasLength(1),
+          reason: 'the replayed block stands in for the one on screen',
+        );
+        expect(rows.where((r) => r.text == 'the answer'), hasLength(1));
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a frontier the box cannot back up asks for a full replay', () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 10, id: 'sync_10', text: 'first'),
+              AgentMessageEvt(ts: 11, inReplyTo: 'sync_10', text: 'answer'),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await waitUntil(() => index(s.epk)?.syncedRows == 2);
+        // Rows are gone (a half-done wipe): the frontier no longer describes the
+        // box, so a delta on top of it would leave holes.
+        final idx = LocalBoxes().sessionsIndexBox();
+        final key = '${s.epk}:main';
+        final stored = (idx.get(key) as Map).cast<String, dynamic>()
+          ..['synced_rows'] = 9;
+        await idx.put(key, stored);
+
+        await s.sync.activate(s.epk, 'other');
+        await _settle();
+        await s.sync.activate(s.epk, 'main');
+        await _settle();
+        s.ch.sent.clear();
+        s.sync.requestSync();
+        await _settle();
+        expect(s.ch.sent.whereType<SessionSync>().single.since, isNull);
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      test('a sync that splits a tool call from its result keeps one card',
+          () async {
+        final s = await setup();
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync1',
+            sessionStartedAt: 100,
+            events: const [
+              UserInputEvt(ts: 10, id: 'sync_10', text: 'list it'),
+              ToolRequestEvt(
+                ts: 11,
+                toolCallId: 'tc1',
+                tool: 'bash',
+                args: null,
+              ),
+            ],
+            eos: true,
+            cursor: '100:aaaa',
+          ),
+        );
+        await _settle();
+
+        // The reconnect's cursor lands between the call and its result: the delta
+        // only carries the result, which knows no tool name.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 'sync2',
+            sessionStartedAt: 100,
+            events: const [
+              ToolResultEvt(ts: 12, toolCallId: 'tc1', result: 'a.txt'),
+            ],
+            eos: true,
+            isDelta: true,
+            cursor: '100:bbbb',
+          ),
+        );
+        final rows = await rowsWhen(
+          s.epk,
+          (rows) => rows.where((r) => r.role == MsgRole.tool).length == 1 &&
+              rows.last.tool?.status == ToolEventStatus.completed,
+        );
+        expect(rows.where((r) => r.role == MsgRole.tool), hasLength(1),
+            reason: 'the result replaces the card instead of adding a second one');
+        expect(rows.last.tool!.tool, 'bash', reason: 'the name the card showed');
+        expect(rows.last.tool!.result, 'a.txt');
         s.conn.dispose();
         s.sync.dispose();
       });

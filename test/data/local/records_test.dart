@@ -190,10 +190,14 @@ void main() {
         lastMessageAt: DateTime.fromMillisecondsSinceEpoch(99),
         lastMessagePreview: 'hi',
         sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(10),
+        syncCursor: '100:aaaa',
+        syncedRows: 7,
       );
       final back = SessionIndexRecord.fromJson(r.toJson());
       expect(back, r);
       expect(back.status, SessionActivity.working);
+      expect(back.syncCursor, '100:aaaa');
+      expect(back.syncedRows, 7);
     });
 
     test('RuntimeRecord survives roundtrip', () {

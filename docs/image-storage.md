@@ -57,8 +57,21 @@ On the Pi's side of the connection:
    > keep the old row's pictures when the new row sits at the same position, has
    > the same id and the same text, and comes back byte-less.
 
+   A delta (incremental `session_history`) replaces the rows this device wrote
+   from live frames, and those carry the archive references under the app's own
+   id. The replayed row's id differs (`sync_<ts>`), so the two are paired by
+   message text — in transcript order, one slot per message, and only when both
+   sides hold the same number of messages with that text. A reply that brings a
+   different count cannot say which one carries the picture, and a picture on the
+   wrong bubble is worse than no picture at all.
+
    That is what keeps a picture on screen after the Pi cleaned up its session
    file, or after the payload fell out of the replay's byte budget.
+
+   A reply only replaces the live rows it brings back. Anything it cannot
+   account for — written a moment before it was asked for, or never persisted on
+   the Pi's side — stays on screen to be picked up by the next reply, at the end
+   of the loaded window rather than at its own timestamp.
 
 A write that fails (no space) leaves the bytes inline in the row: a picture that
 cannot be cached is still worth showing.
@@ -135,7 +148,12 @@ ratio.
 ## Why the archive exists at all
 
 `session_history` is applied as a **wholesale substitute** for the room's rows,
-not as a merge. Before the archive, a user picture lived only inside its row, so
+not as a merge. An incremental reply (`mode: "delta"`) adds the events that came
+after the cursor this device sent, and replaces only the live-written rows it
+brings back — a row it cannot account for stays on screen and waits for the
+reply that owns it, because dropping it would lose it for good (that reply's own
+cursor is already past it). Before the
+archive, a user picture lived only inside its row, so
 any replay that dropped the payload — a cleaned session file, or the replay's
 3 MB budget trimming the oldest events — wrote over the phone's copy and the
 picture vanished from the transcript. Keeping the bytes in a separate,

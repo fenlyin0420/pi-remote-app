@@ -19,6 +19,12 @@ class SessionIndexRecord {
   /// instead of the whole mirror.
   final String? syncCursor;
 
+  /// How many of the room's rows the last applied history reply produced. Rows
+  /// past it were written from a LIVE frame, and a later delta re-delivers them
+  /// in their replayed form — so they are provisional and get replaced, never
+  /// appended to. Null for a cache written before this field existed.
+  final int? syncedRows;
+
   const SessionIndexRecord({
     required this.epk,
     required this.roomId,
@@ -28,6 +34,7 @@ class SessionIndexRecord {
     this.lastMessagePreview,
     this.sessionStartedAt,
     this.syncCursor,
+    this.syncedRows,
   });
 
   String get key => '$epk:$roomId';
@@ -39,6 +46,7 @@ class SessionIndexRecord {
     String? lastMessagePreview,
     DateTime? sessionStartedAt,
     String? syncCursor,
+    int? syncedRows,
   }) => SessionIndexRecord(
     epk: epk,
     roomId: roomId,
@@ -48,6 +56,7 @@ class SessionIndexRecord {
     lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
     sessionStartedAt: sessionStartedAt ?? this.sessionStartedAt,
     syncCursor: syncCursor ?? this.syncCursor,
+    syncedRows: syncedRows ?? this.syncedRows,
   );
 
   Map<String, dynamic> toJson() => {
@@ -59,6 +68,7 @@ class SessionIndexRecord {
     'last_message_preview': lastMessagePreview,
     'session_started_at': sessionStartedAt?.millisecondsSinceEpoch,
     'sync_cursor': syncCursor,
+    'synced_rows': syncedRows,
   };
 
   factory SessionIndexRecord.fromJson(Map<String, dynamic> j) {
@@ -77,6 +87,7 @@ class SessionIndexRecord {
       lastMessagePreview: j['last_message_preview'] as String?,
       sessionStartedAt: ms(j['session_started_at']),
       syncCursor: j['sync_cursor'] as String?,
+      syncedRows: (j['synced_rows'] as num?)?.toInt(),
     );
   }
 
@@ -90,7 +101,8 @@ class SessionIndexRecord {
       other.lastMessageAt == lastMessageAt &&
       other.lastMessagePreview == lastMessagePreview &&
       other.sessionStartedAt == sessionStartedAt &&
-      other.syncCursor == syncCursor;
+      other.syncCursor == syncCursor &&
+      other.syncedRows == syncedRows;
 
   @override
   int get hashCode => Object.hash(
@@ -102,5 +114,6 @@ class SessionIndexRecord {
     lastMessagePreview,
     sessionStartedAt,
     syncCursor,
+    syncedRows,
   );
 }
