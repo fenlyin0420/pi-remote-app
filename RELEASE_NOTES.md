@@ -1,20 +1,21 @@
-# Remote Pi 1.6.3
+# Remote Pi 1.6.4
 
 ## What's new
 
-- **Answering a question no longer hides the message you're answering about.**
-  When the agent stops to ask a clarifying question, the question sheet took
-  the whole screen, so the turn that prompted it was out of reach exactly when
-  you needed to read it. The sheet now folds away — tap the chevron in its
-  top-left corner, or use the system back gesture — and the chat comes back.
-  A *Question pending* bar sits above the composer; tap it and the same sheet
-  returns with every choice, typed answer and note still in place.
-- **Back is safe.** Leaving the question sheet no longer cancels the question,
-  so a stray gesture can't throw away answers you already filled in: only
-  Submit, or the sheet's own Cancel button, ends the flow.
+- **The chat no longer shows the same thing twice.** Reconnecting, or coming back
+  to a room you already had open, could print a message, a reasoning block or a
+  screenshot a second time — one tool card holding the same picture twice, the
+  same sentence twice in a row. A re-sync now brings in only what arrived since
+  the last one and stands in for the rows it repeats instead of stacking new
+  copies next to the ones already on screen.
+- **Nothing you sent while a sync was in flight can disappear.** If the phone was
+  re-syncing at that moment, the reply could not include what was sent after it
+  was asked for; the bubble stays on screen and is picked up by the next sync.
+  That includes a picture you had just sent, which used to be able to vanish
+  along with its message.
 
 ## Assets
 
-- `remote-pi-1.6.3-arm64-signed.apk` — Android arm64
+- `remote-pi-1.6.4-arm64-signed.apk` — Android arm64
 - `SHA256SUMS` — checksums for the assets above
 - `latest.json` — auto-update manifest
