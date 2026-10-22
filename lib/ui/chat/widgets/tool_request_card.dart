@@ -105,9 +105,23 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     };
   }
 
+  /// Width of the write marker: the extra left border a call that writes to
+  /// the Pi's machine carries. The card's left padding shrinks by the same
+  /// amount, so its text starts where every other card's does.
+  static const double _writeMarkerWidth = 3;
+
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(context);
+    // A call the Pi classified as writing (it changes files, git or package
+    // state) carries a bar on its left edge, like the TUI's marker. It takes
+    // the place of part of the border and padding rather than adding width.
+    final write = tool.write;
+    final borderSide = BorderSide(color: color);
+    final writeBar = BorderSide(
+      color: context.colors.accent,
+      width: borderSide.width + _writeMarkerWidth,
+    );
     // The tool's own diff, when it has one — see [_resultDiffLines].
     final resultDiff = _resultDiffLines();
     // Dim only the inert states (denied/expired); keep done/failed at full
@@ -121,7 +135,14 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
       child: Container(
         decoration: BoxDecoration(
           color: context.colors.surface,
-          border: Border.all(color: color, width: 1),
+          border: write
+              ? Border(
+                  left: writeBar,
+                  top: borderSide,
+                  right: borderSide,
+                  bottom: borderSide,
+                )
+              : Border.all(color: color, width: borderSide.width),
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
@@ -131,7 +152,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             ),
           ],
         ),
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.fromLTRB(write ? 14 - _writeMarkerWidth : 14, 14, 14, 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,

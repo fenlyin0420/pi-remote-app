@@ -224,6 +224,30 @@ void main() {
     });
   });
 
+  group('ToolWrite', () {
+    test('parses the live write verdict', () {
+      final msg = ServerMessage.fromJson({
+        'type': 'tool_write',
+        'tool_call_id': 'tc_1',
+        'write': true,
+      });
+      expect((msg as ToolWrite).toolCallId, 'tc_1');
+      expect(msg.write, isTrue);
+    });
+
+    test('parses the replayed write verdict', () {
+      final evt = SessionHistoryEvent.fromJson({
+        'ts': 7,
+        'type': 'tool_write',
+        'tool_call_id': 'tc_1',
+        'write': true,
+      });
+      expect((evt as ToolWriteEvt).toolCallId, 'tc_1');
+      expect(evt.write, isTrue);
+      expect(evt.ts, 7);
+    });
+  });
+
   group('ToolResult', () {
     test('parses result', () {
       final msg = ServerMessage.fromJson({

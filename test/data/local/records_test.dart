@@ -145,9 +145,15 @@ void main() {
           status: ToolEventStatus.completed,
           result: {'exit': 0},
           diff: '- 1 old\n+ 1 new',
+          write: true,
         ),
       );
       final back = MessageRecord.fromJson(r.toJson());
+      expect(
+        back.tool?.write,
+        isTrue,
+        reason: 'a reopened chat keeps the write marker',
+      );
       expect(back.tool?.tool, 'Bash');
       expect(back.tool?.status, ToolEventStatus.completed);
       final evt = back.toChatMessage() as ToolEvent;

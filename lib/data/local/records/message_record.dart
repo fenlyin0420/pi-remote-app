@@ -246,6 +246,7 @@ class MessageRecord {
           result: t?.result,
           error: t?.error,
           diff: t?.diff,
+          write: t?.write ?? false,
           ts: ts,
           model: model,
         );
@@ -352,6 +353,10 @@ class ToolEventData {
   /// so reopening the app keeps showing the same diff a live call showed.
   final String? diff;
 
+  /// Whether the Pi classified this call as writing to its machine (see
+  /// [ToolEvent.write]). Persisted, so reopening the app keeps the marker.
+  final bool write;
+
   const ToolEventData({
     required this.toolCallId,
     required this.tool,
@@ -360,6 +365,7 @@ class ToolEventData {
     this.result,
     this.error,
     this.diff,
+    this.write = false,
   });
 
   ToolEventData copyWith({
@@ -367,6 +373,7 @@ class ToolEventData {
     dynamic result,
     String? error,
     String? diff,
+    bool? write,
   }) => ToolEventData(
     toolCallId: toolCallId,
     tool: tool,
@@ -375,6 +382,7 @@ class ToolEventData {
     result: result ?? this.result,
     error: error ?? this.error,
     diff: diff ?? this.diff,
+    write: write ?? this.write,
   );
 
   Map<String, dynamic> toJson() => {
@@ -385,6 +393,7 @@ class ToolEventData {
     'result': result,
     'error': error,
     'diff': diff,
+    'write': write,
   };
 
   factory ToolEventData.fromJson(Map<String, dynamic> j) => ToolEventData(
@@ -398,5 +407,6 @@ class ToolEventData {
     result: j['result'],
     error: j['error'] as String?,
     diff: j['diff'] as String?,
+    write: j['write'] == true,
   );
 }

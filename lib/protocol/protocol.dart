@@ -1154,6 +1154,7 @@ sealed class ServerMessage {
       'agent_done' => AgentDone.fromJson(json),
       'tool_request' => ToolRequest.fromJson(json),
       'tool_result' => ToolResult.fromJson(json),
+      'tool_write' => ToolWrite.fromJson(json),
       'error' => ErrorMessage.fromJson(json),
       'cancelled' => Cancelled.fromJson(json),
       'pong' => Pong.fromJson(json),
@@ -1252,6 +1253,22 @@ class ToolRequest extends ServerMessage {
     toolCallId: j['tool_call_id'] as String,
     tool: j['tool'] as String,
     args: j['args'],
+  );
+}
+
+/// LOCAL (fenlyin): the Pi's write-operation verdict for one tool call. It can
+/// arrive before [ToolRequest] (local rules decide at call start) or after
+/// [ToolResult] (a classifier model decides the hard cases later), so the sync
+/// layer applies it by `toolCallId` in whatever order it lands.
+class ToolWrite extends ServerMessage {
+  final String toolCallId;
+  final bool write;
+
+  ToolWrite({required this.toolCallId, required this.write});
+
+  factory ToolWrite.fromJson(Map<String, dynamic> j) => ToolWrite(
+    toolCallId: j['tool_call_id'] as String,
+    write: j['write'] == true,
   );
 }
 
@@ -1866,6 +1883,11 @@ sealed class SessionHistoryEvent {
         tool: j['tool'] as String,
         args: j['args'],
       ),
+      'tool_write' => ToolWriteEvt(
+        ts: ts,
+        toolCallId: j['tool_call_id'] as String,
+        write: j['write'] == true,
+      ),
       'tool_result' => ToolResultEvt(
         ts: ts,
         toolCallId: j['tool_call_id'] as String,
@@ -1936,6 +1958,19 @@ class UserInputEvt extends SessionHistoryEvent {
     this.images = const [],
     this.files = const [],
     super.model,
+  });
+}
+
+/// LOCAL (fenlyin): replayed write marker (`tool_write`), so a re-sync keeps
+/// the marker on rows whose verdict the classifier decided after the call.
+class ToolWriteEvt extends SessionHistoryEvent {
+  final String toolCallId;
+  final bool write;
+
+  const ToolWriteEvt({
+    required super.ts,
+    required this.toolCallId,
+    required this.write,
   });
 }
 

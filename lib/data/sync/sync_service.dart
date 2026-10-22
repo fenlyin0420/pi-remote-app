@@ -218,6 +218,11 @@ class SyncService extends Service {
   /// Live `send_to_phone` calls whose tool card was skipped, so the matching
   /// `tool_result` can be recognised (a bare result frame carries no tool name).
   final Set<String> _attachmentToolCalls = {};
+  /// Tool calls the Pi classified as writing, kept even when the verdict lands
+  /// before the row does (local rules answer at `tool_execution_start`). The
+  /// row is marked when it is created; a verdict that lands later marks it
+  /// directly.
+  final Set<String> _writeToolCalls = {};
 
   /// Writes a card's file into the phone's storage. Null where the platform has
   /// no channel for it (desktop builds, tests) — reported, never faked.
@@ -1101,9 +1106,31 @@ class SyncService extends Service {
                   toolCallId: toolCallId,
                   tool: tool,
                   args: args,
+                  write: _writeToolCalls.contains(toolCallId),
                 ),
               ),
         );
+
+      case ToolWrite(:final toolCallId, :final write):
+        if (!write) break;
+        _writeToolCalls.add(toolCallId);
+        // No row yet: `ToolRequest`/`ToolResult` will mark it when it appears.
+        if (_idToSeq[_key(MsgRole.tool, toolCallId)] == null) break;
+        // ignore: discarded_futures
+        _upsert(MsgRole.tool, toolCallId, (seq, existing) {
+          final base =
+              existing?.tool ??
+              ToolEventData(toolCallId: toolCallId, tool: 'unknown');
+          return (existing ??
+                  MessageRecord(
+                    id: toolCallId,
+                    seq: seq,
+                    role: MsgRole.tool,
+                    ts: DateTime.now(),
+                    model: _activeRoomModel,
+                  ))
+              .copyWith(tool: base.copyWith(write: true));
+        });
 
       case ToolResult(:final toolCallId, :final result, :final error, :final diff):
         // A `send_to_phone` that succeeded is already on screen as its
@@ -1130,6 +1157,7 @@ class SyncService extends Service {
                   result: result,
                   error: error,
                   diff: diff,
+                  write: base.write || _writeToolCalls.contains(toolCallId),
                 ),
               );
         });
@@ -1896,6 +1924,9 @@ class SyncService extends Service {
     // A `tool_result` event carries no tool name, so the request is what says
     // "this was a send_to_phone" — and whether its card already exists.
     final toolNameByCallId = <String, String>{};
+    // Write verdicts replayed ahead of their `tool_request`, applied when the
+    // row is created (see the live `ToolWrite` case for the ordering rules).
+    final writeToolCallIds = <String>{};
     for (final e in events) {
       switch (e) {
         case UserInputEvt(:final id, :final text, :final images, :final files):
@@ -1939,6 +1970,17 @@ class SyncService extends Service {
               ),
             );
           }
+        case ToolWriteEvt(:final toolCallId, :final write):
+          if (!write) break;
+          writeToolCallIds.add(toolCallId);
+          final marked = out.lastIndexWhere(
+            (m) => m.role == MsgRole.tool && m.tool?.toolCallId == toolCallId,
+          );
+          if (marked >= 0) {
+            out[marked] = out[marked].copyWith(
+              tool: out[marked].tool!.copyWith(write: true),
+            );
+          }
         case ToolRequestEvt(:final toolCallId, :final tool, :final args):
           toolNameByCallId[toolCallId] = tool;
           // The attachment card replaces this row (see the live `ToolRequest`
@@ -1956,6 +1998,7 @@ class SyncService extends Service {
                 toolCallId: toolCallId,
                 tool: tool,
                 args: args,
+                write: writeToolCallIds.contains(toolCallId),
               ),
             ),
           );
@@ -1976,6 +2019,9 @@ class SyncService extends Service {
                 result: result,
                 error: error,
                 diff: diff,
+                write:
+                    out[idx].tool!.write ||
+                    writeToolCallIds.contains(toolCallId),
               ),
             );
           } else {
@@ -1995,6 +2041,7 @@ class SyncService extends Service {
                   result: result,
                   error: error,
                   diff: diff,
+                  write: writeToolCallIds.contains(toolCallId),
                 ),
               ),
             );

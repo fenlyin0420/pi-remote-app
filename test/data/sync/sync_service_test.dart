@@ -1366,6 +1366,99 @@ void main() {
     },
   );
 
+  test('a write verdict marks its tool row — before the row exists, and after '
+      'the result', () async {
+    final s = await setup();
+    // Local rules decide at call start, so the verdict can beat tool_request.
+    s.ch.push(ToolWrite(toolCallId: 'tc1', write: true));
+    await _settle();
+    s.ch.push(
+      ToolRequest(
+        toolCallId: 'tc1',
+        tool: 'bash',
+        args: const {'command': 'touch out.txt'},
+      ),
+    );
+    await _settle();
+    expect(messages(s.epk).single.tool?.write, isTrue);
+    expect(
+      (messages(s.epk).single.toChatMessage() as ToolEvent).write,
+      isTrue,
+    );
+
+    // A classifier decides the hard cases, so its verdict arrives after the
+    // result. It must mark the row that is already there, not add another.
+    s.ch.push(ToolRequest(toolCallId: 'tc2', tool: 'bash', args: const {}));
+    await _settle();
+    s.ch.push(ToolResult(toolCallId: 'tc2', result: 'ok'));
+    await _settle();
+    s.ch.push(ToolWrite(toolCallId: 'tc2', write: true));
+    await _settle();
+    final rows = messages(s.epk);
+    expect(rows, hasLength(2));
+    expect(rows.firstWhere((r) => r.tool?.toolCallId == 'tc2').tool?.write, isTrue);
+
+    // A read-only verdict never marks anything.
+    s.ch.push(ToolRequest(toolCallId: 'tc3', tool: 'bash', args: const {}));
+    await _settle();
+    s.ch.push(ToolWrite(toolCallId: 'tc3', write: false));
+    await _settle();
+    expect(
+      messages(s.epk).firstWhere((r) => r.tool?.toolCallId == 'tc3').tool?.write,
+      isFalse,
+    );
+
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('a replayed write verdict marks its row in either order', () async {
+    final s = await setup();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'sync1',
+        sessionStartedAt: 0,
+        events: const [
+          ToolWriteEvt(ts: 1, toolCallId: 'h1', write: true),
+          ToolRequestEvt(
+            ts: 2,
+            toolCallId: 'h1',
+            tool: 'bash',
+            args: {'command': 'rm -rf build'},
+          ),
+          ToolResultEvt(ts: 3, toolCallId: 'h1', result: 'ok'),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    expect(
+      messages(s.epk).firstWhere((r) => r.tool?.toolCallId == 'h1').tool?.write,
+      isTrue,
+    );
+
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'sync2',
+        sessionStartedAt: 0,
+        events: const [
+          ToolRequestEvt(ts: 4, toolCallId: 'h2', tool: 'bash', args: null),
+          ToolResultEvt(ts: 5, toolCallId: 'h2', result: 'ok'),
+          ToolWriteEvt(ts: 6, toolCallId: 'h2', write: true),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    expect(
+      messages(s.epk).firstWhere((r) => r.tool?.toolCallId == 'h2').tool?.write,
+      isTrue,
+    );
+
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test('re-applying an IDENTICAL SessionHistory is idempotent — no box churn, '
       'so the relay re-sending history on every reconnect no longer tears the '
       'list down and rebuilds it (plan/32 flicker fix)', () async {

@@ -389,6 +389,13 @@ class ToolEvent extends ChatMessage {
   /// before the edit ran, and history does not replay it).
   final String? diff;
 
+  /// Whether the Pi classified this call as writing to its machine: it can
+  /// create, change, or delete files, git or package state, or other persistent
+  /// state. The card draws a bar on its left edge. Local rules answer at call
+  /// start; a classifier model answers the hard cases (`bash` with a heredoc or
+  /// a script), so the flag can also arrive after the result.
+  final bool write;
+
   const ToolEvent({
     required super.id,
     required this.toolCallId,
@@ -398,6 +405,7 @@ class ToolEvent extends ChatMessage {
     this.result,
     this.error,
     this.diff,
+    this.write = false,
     super.ts,
     super.model,
   });
@@ -407,6 +415,7 @@ class ToolEvent extends ChatMessage {
     dynamic result,
     String? error,
     String? diff,
+    bool? write,
   }) => ToolEvent(
     id: id,
     toolCallId: toolCallId,
@@ -416,6 +425,7 @@ class ToolEvent extends ChatMessage {
     result: result ?? this.result,
     error: error ?? this.error,
     diff: diff ?? this.diff,
+    write: write ?? this.write,
     ts: ts,
     model: model,
   );
@@ -425,10 +435,11 @@ class ToolEvent extends ChatMessage {
       other is ToolEvent &&
       other.id == id &&
       other.toolCallId == toolCallId &&
-      other.status == status;
+      other.status == status &&
+      other.write == write;
 
   @override
-  int get hashCode => Object.hash(id, toolCallId, status);
+  int get hashCode => Object.hash(id, toolCallId, status, write);
 }
 
 /// Plan/32 — `denied` = the user/SDK declined the tool; `failed` = the tool
