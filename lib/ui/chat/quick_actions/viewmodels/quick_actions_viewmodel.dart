@@ -29,6 +29,12 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   final _errorController = StreamController<String>.broadcast();
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _disposed = false;
+  /// Monotonic guards so an older round-trip can never overwrite a newer one:
+  /// only the latest `model_set` / `thinking_set` / `list_models` may write
+  /// its result (or its rollback) into the state.
+  int _modelSeq = 0;
+  int _thinkingSeq = 0;
+  int _catalogueSeq = 0;
 
   QuickActionsViewModel(this._repo, [this._prefs])
     : super(const QuickActionsIdle()) {
@@ -133,6 +139,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   Future<void> setModel(WireModel model) async {
     // Optimistic highlight — flip the current model immediately so the
     // picker row reflects the tap before the round-trip resolves.
+    final seq = ++_modelSeq;
     final previous = state.currentModel;
     final previousName = state.currentModelName;
     _emitIfAlive(QuickActionsBusy(
@@ -143,24 +150,31 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     ));
     try {
       await _repo.setModel(model.provider, model.id);
+      // A newer tap owns the state now; keep its optimistic value instead of
+      // reverting the UI to this (older) model.
+      if (seq != _modelSeq) return;
       _emitIfAlive(QuickActionsIdle(
         currentModel: model,
         currentModelName: model.name,
         currentThinking: state.currentThinking,
       ));
     } on ActionFailure catch (e) {
-      // Revert optimistic highlight on failure.
-      _emitIfAlive(QuickActionsIdle(
-        currentModel: previous,
-        currentModelName: previousName,
-        currentThinking: state.currentThinking,
-      ));
       _errorController.add(e.message);
+      // Only roll back if nothing newer was requested meanwhile — otherwise
+      // this stale failure would erase a later (successful) selection.
+      if (seq == _modelSeq) {
+        _emitIfAlive(QuickActionsIdle(
+          currentModel: previous,
+          currentModelName: previousName,
+          currentThinking: state.currentThinking,
+        ));
+      }
       rethrow;
     }
   }
 
   Future<void> setThinking(ThinkingLevel level) async {
+    final seq = ++_thinkingSeq;
     final previous = state.currentThinking;
     _emitIfAlive(QuickActionsBusy(
       action: ActionName.thinkingSet,
@@ -170,18 +184,29 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     ));
     try {
       await _repo.setThinking(level);
+      if (seq != _thinkingSeq) return;
+      // The SDK silently clamps to the nearest supported level and only
+      // announces the change when the result differs from the previous level.
+      // Adopt the room's authoritative value when it already reflects the
+      // answer; otherwise keep the optimistic pick until the broadcast lands.
+      // The Pi publishes the read-back BEFORE it replies `action_ok`, so by
+      // now the room carries the level the SDK actually applied. Prefer it: on
+      // the clamp-with-no-change path no second broadcast will ever correct a
+      // request-valued display.
       _emitIfAlive(QuickActionsIdle(
-        currentThinking: level,
+        currentThinking: _repo.activeRoomMeta.thinking ?? level,
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
     } on ActionFailure catch (e) {
-      _emitIfAlive(QuickActionsIdle(
-        currentThinking: previous,
-        currentModel: state.currentModel,
-        currentModelName: state.currentModelName,
-      ));
       _errorController.add(e.message);
+      if (seq == _thinkingSeq) {
+        _emitIfAlive(QuickActionsIdle(
+          currentThinking: previous,
+          currentModel: state.currentModel,
+          currentModelName: state.currentModelName,
+        ));
+      }
       rethrow;
     }
   }
@@ -190,12 +215,13 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   /// picker. Throws [ActionFailure] on disconnect / timeout — the
   /// picker widget catches and renders an error placeholder.
   Future<ModelsCatalogue> loadModels({bool forceRefresh = false}) async {
+    final seq = ++_catalogueSeq;
     try {
       final catalogue = await _repo.listModels(forceRefresh: forceRefresh);
-      // Adopt the Pi's "current" answer; only overwrite when present so
-      // a stale cache entry (current=null) doesn't clobber a value we
-      // already learned via setModel.
-      if (catalogue.current != null) {
+      // Only the LATEST request may adopt `current`: a slow earlier reply
+      // would otherwise reinstate a model the Pi (or another client) already
+      // moved past.
+      if (seq == _catalogueSeq && catalogue.current != null) {
         _emitIfAlive(QuickActionsIdle(
           currentModel: catalogue.current,
           currentModelName: catalogue.current?.name ?? state.currentModelName,

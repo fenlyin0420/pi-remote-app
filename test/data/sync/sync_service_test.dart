@@ -1050,6 +1050,51 @@ void main() {
     s.sync.dispose();
   });
 
+  // Deltas carry the same snapshot: the current model is a property of the
+  // session, not of the events in the reply.
+  test('session_history delta adopts the current-model snapshot', () async {
+    final s = await setup();
+    s.ch.pushControl(
+      RoomAnnounced(
+        peer: s.epk,
+        roomId: 'main',
+        startedAt: 0,
+        model: 'Claude Opus 4.7', // stale cached value
+      ),
+    );
+    await _settle();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          AgentMessageEvt(
+            ts: 11,
+            inReplyTo: 'u1',
+            text: 'the answer',
+            model: 'Claude Opus 4.7',
+          ),
+        ],
+        eos: true,
+        isDelta: true,
+        model: const WireModel(
+          id: 'qwen3-27b',
+          name: 'Qwen3.8-27B',
+          provider: 'vllm',
+          reasoning: true,
+          contextWindow: 131072,
+        ),
+        thinking: ThinkingLevel.high,
+      ),
+    );
+    await _settle();
+    final room = s.conn.roomsFor(s.epk).single;
+    expect(room.model, 'Qwen3.8-27B');
+    expect(room.thinking, ThinkingLevel.high);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   // Legacy Pi (no snapshot field): keep the old self-heal, but only when the
   // room has no model at all — never override a model the Pi confirmed.
   test('session_history legacy fallback fills an empty room model only', () async {

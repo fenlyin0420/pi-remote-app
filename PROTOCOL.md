@@ -369,7 +369,7 @@ idêntico.
 
 Os replies (`action_ok` / `models_list`) só confirmam dispatch. Efeitos visíveis chegam pelos canais normais:
 - Compact concluído → `agent_chunk`/`agent_done` no chat
-- Modelo trocado → evento `model_select` broadcast pra todos os owners conectados
+- Modelo trocado → `room_meta_updated` (campo `model`) broadcast pra todos os owners conectados
 - Nova sessão → `pair_ok` (ou equivalente) com novo `session_started_at`
 
 ### Por que ações tipadas *e* `/` em vez de só um dos dois
@@ -845,8 +845,31 @@ completo continua existindo como fallback.
   "mode": "delta",            // ausente = Pi antigo → tratar como "full"
   "cursor": "1700000000000:4a1b…",
   "events": [ /* só os que vieram depois do cursor */ ],
+  // Estado ATUAL, não histórico (campos aditivos; Pi antigo omite):
+  "model": { "id": "qwen3-27b", "name": "Qwen3.8-27B", "provider": "vllm",
+             "reasoning": true, "context_window": 131072, "vision": true },
+  "thinking": "high",
   "eos": true, "truncated": false }
 ```
+
+### Modelo/thinking atuais (`model` / `thinking`)
+
+As linhas de `events` dizem qual modelo gerou cada resposta **passada**; elas não
+dizem qual o Pi está usando **agora**. Sem o snapshot no reply, o app inferia o
+modelo da sala a partir da última linha `agent_message` — e uma troca de modelo
+recém-feita aparecia revertida em todo replay (reentrar na sala, reconnect,
+troca de sessão), inclusive ficando gravada no cache local.
+
+Regras para o app:
+
+- `model` presente → adote o **nome** dele para a sala; não olhe as linhas.
+- `model` ausente (Pi antigo) → só preencha a sala quando ela não tiver modelo
+  nenhum. Nunca sobrescreva um modelo já confirmado por `room_meta`.
+- `thinking` presente → grave na sala, como um `room_meta.thinking`
+  (`ConnectionManager.updateRoomThinking`).
+
+O `models_list.current` continua sendo a fonte estruturada (id + provider) do
+modelo em uso; é o que o picker usa para marcar a linha selecionada.
 
 ### O cursor
 

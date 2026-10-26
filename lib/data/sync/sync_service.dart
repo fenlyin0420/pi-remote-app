@@ -1767,6 +1767,7 @@ class SyncService extends Service {
         sessionStartedAt: h.sessionStartedAt,
         cursor: h.cursor,
         currentModel: h.model,
+        currentThinking: h.thinking,
       );
     });
   }
@@ -1949,6 +1950,7 @@ class SyncService extends Service {
     required int sessionStartedAt,
     required String? cursor,
     WireModel? currentModel,
+    ThinkingLevel? currentThinking,
   }) async {
     if (_activeEpk != epk || _activeRoomId != room) return false;
     // The room's CURRENT model comes from the reply's snapshot, never from the
@@ -1973,6 +1975,11 @@ class SyncService extends Service {
       if (lastAssistantModel != null && lastAssistantModel.isNotEmpty) {
         _conn.updateRoomModel(epk, room, lastAssistantModel);
       }
+    }
+    // The thinking level has no history rows to infer from, so the snapshot is
+    // the only correction path for a room whose meta frame was missed.
+    if (currentThinking != null) {
+      _conn.updateRoomThinking(epk, room, currentThinking);
     }
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
     // Rows this reply claims are gone on purpose — including a pending bubble it

@@ -400,6 +400,9 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   // ---------------------------------------------------------------------------
 
   Future<void> _refreshVision() async {
+    // A meta change during the fetch needs no second round-trip: [_resolveVision]
+    // reads the room's model AFTER the await, so the fresh name is what decides
+    // — and the repo has already dropped the catalogue when the name changed.
     if (_resolvingVision) return;
     _resolvingVision = true;
     try {
@@ -417,14 +420,13 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   bool? _resolveVision(ModelsCatalogue catalogue) {
     final current = catalogue.current;
     if (current != null) return current.vision;
-    // No explicit current — match the active room's model name.
+    // No explicit current (older Pi) — match the active room's model name, but
+    // only on a UNIQUE hit: two providers exposing the same display name would
+    // otherwise decide the attachment gate by catalogue order.
     final name = _actions.activeRoomMeta.model;
-    if (name != null) {
-      for (final m in catalogue.models) {
-        if (m.name == name) return m.vision;
-      }
-    }
-    return null;
+    if (name == null) return null;
+    final matches = catalogue.models.where((m) => m.name == name).toList();
+    return matches.length == 1 ? matches.single.vision : null;
   }
 
   void _emitTray(List<AttachmentItem> items) {

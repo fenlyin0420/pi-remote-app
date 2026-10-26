@@ -18,6 +18,11 @@ class _FakeActionsRepository implements IActionsRepository {
   Object? compactError;
   Object? setModelError;
   Object? setThinkingError;
+  /// Optional gate so a test can hold a round-trip open and let a newer one
+  /// finish first.
+  Future<void>? modelGate;
+  Future<void>? thinkingGate;
+  Future<void>? listGate;
   ModelsCatalogue catalogue =
       const ModelsCatalogue(models: [], current: null);
   Object? listError;
@@ -53,12 +58,14 @@ class _FakeActionsRepository implements IActionsRepository {
   Future<void> setModel(String provider, String modelId) async {
     lastProvider = provider;
     lastModelId = modelId;
+    if (modelGate != null) await modelGate;
     if (setModelError != null) throw setModelError!;
   }
 
   @override
   Future<void> setThinking(ThinkingLevel level) async {
     lastThinking = level;
+    if (thinkingGate != null) await thinkingGate;
     if (setThinkingError != null) throw setThinkingError!;
   }
   @override
@@ -70,6 +77,7 @@ class _FakeActionsRepository implements IActionsRepository {
   @override
   Future<ModelsCatalogue> listModels({bool forceRefresh = false}) async {
     forceRefreshAsked = forceRefresh;
+    if (listGate != null) await listGate;
     if (listError != null) throw listError!;
     return catalogue;
   }
@@ -133,6 +141,85 @@ void main() {
       await vm.setThinking(ThinkingLevel.high);
       expect(vm.currentThinking, ThinkingLevel.high);
       expect(repo.lastThinking, ThinkingLevel.high);
+      vm.dispose();
+    });
+
+    test('a stale failed setModel cannot erase a newer successful pick',
+        () async {
+      final repo = _FakeActionsRepository();
+      final vm = QuickActionsViewModel(repo);
+      const first = WireModel(
+        id: 'gpt-4o',
+        name: 'GPT-4o',
+        provider: 'openai',
+        reasoning: false,
+        contextWindow: 128000,
+      );
+      const second = WireModel(
+        id: 'qwen3-27b',
+        name: 'Qwen3.8-27B',
+        provider: 'vllm',
+        reasoning: true,
+        contextWindow: 131072,
+      );
+
+      final gate = Completer<void>();
+      repo.modelGate = gate.future;
+      repo.setModelError = const ActionFailure('timeout');
+      final stale = vm.setModel(first).catchError((Object _) {});
+
+      repo.modelGate = null;
+      repo.setModelError = null;
+      await vm.setModel(second);
+      gate.complete();
+      await stale;
+
+      expect(vm.currentModel, second);
+      expect(vm.currentModelName, 'Qwen3.8-27B');
+      vm.dispose();
+    });
+
+    test('a clamped thinking pick converges to the room read-back', () async {
+      final repo = _FakeActionsRepository();
+      // The Pi applied `high` (the model's ceiling) and already published it:
+      // the sheet must stop showing the optimistic `xhigh`.
+      repo.meta = const ActiveRoomMeta(thinking: ThinkingLevel.high);
+      final vm = QuickActionsViewModel(repo);
+      await vm.setThinking(ThinkingLevel.xhigh);
+      expect(vm.currentThinking, ThinkingLevel.high);
+      vm.dispose();
+    });
+
+    test('a late listModels reply cannot overwrite a newer one', () async {
+      final repo = _FakeActionsRepository();
+      final vm = QuickActionsViewModel(repo);
+      const oldModel = WireModel(
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        provider: 'anthropic',
+        reasoning: true,
+        contextWindow: 200000,
+      );
+      const newModel = WireModel(
+        id: 'qwen3-27b',
+        name: 'Qwen3.8-27B',
+        provider: 'vllm',
+        reasoning: true,
+        contextWindow: 131072,
+      );
+
+      final slow = Completer<void>();
+      repo.listGate = slow.future;
+      repo.catalogue = const ModelsCatalogue(models: [oldModel], current: oldModel);
+      final stale = vm.loadModels();
+
+      repo.listGate = null;
+      repo.catalogue = const ModelsCatalogue(models: [newModel], current: newModel);
+      await vm.loadModels();
+      slow.complete();
+      await stale;
+
+      expect(vm.currentModel, newModel);
       vm.dispose();
     });
 

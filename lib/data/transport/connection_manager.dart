@@ -967,6 +967,23 @@ class ConnectionManager extends Service {
     _persistRoomsForPeer(key);
   }
 
+  /// App-side correction for the connected room's cached thinking level.
+  ///
+  /// Same reasoning as [updateRoomModel]: a `session_history` reply carries the
+  /// level the Pi is running right now, so a room whose last `room_meta` frame
+  /// was missed can be corrected without waiting for the next toggle.
+  void updateRoomThinking(String epk, String roomId, ThinkingLevel thinking) {
+    final key = toStandardB64(epk);
+    final list = _roomsByPeer[key];
+    if (list == null) return;
+    final idx = list.indexWhere((r) => r.roomId == roomId);
+    if (idx < 0 || list[idx].thinking == thinking) return;
+    list[idx] = list[idx].copyWith(thinking: thinking);
+    _scheduleRoomsEmit();
+    // ignore: unawaited_futures
+    _persistRoomsForPeer(key);
+  }
+
   /// App-side correction for the connected room's working flag.
   ///
   /// The relay remains the source for non-active rooms, but the active channel

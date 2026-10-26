@@ -261,6 +261,19 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) p.completer.complete(sessions);
+      case ErrorMessage(:final inReplyTo?, :final message):
+        // Some Pi actions report failure as a generic `error` frame instead of
+        // `action_error` (e.g. `list_models` when the model catalogue is
+        // malformed). Pair it by `in_reply_to` so the caller gets the real
+        // reason instead of waiting out the 15s timeout.
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.completeError(
+            ActionFailure(message.isEmpty ? 'action failed' : message),
+          );
+        }
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -347,12 +360,14 @@ class ActionsRepository extends Repository implements IActionsRepository {
 
   @override
   Future<void> setModel(String provider, String modelId) async {
+    // Same rule as [listModels]: invalidate the room that ISSUED the switch.
+    final key = _sessionKey();
     await _dispatch<void>(
       (id) => ModelSet(id: id, provider: provider, modelId: modelId),
     );
     // Invalidate the cached catalogue so the next picker open reflects
     // the new `current` highlight.
-    _modelsCache.remove(_sessionKey());
+    _modelsCache.remove(key);
   }
 
   @override
@@ -412,6 +427,9 @@ class ActionsRepository extends Repository implements IActionsRepository {
 
   @override
   Future<ModelsCatalogue> listModels({bool forceRefresh = false}) async {
+    // Capture the key BEFORE the round-trip: the response belongs to the room
+    // that ASKED, not to whichever room is active when it resolves. Caching
+    // under the late key put one room's catalogue under another room's key.
     final key = _sessionKey();
     if (!forceRefresh) {
       final cached = _modelsCache[key];
@@ -419,10 +437,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
     }
     final result =
         await _dispatch<ModelsCatalogue>((id) => ListModels(id: id));
-    // Re-evaluate the session key — the user may have switched rooms
-    // mid-flight. We only cache against the key the *response* belongs
-    // to, which is the live one when it resolves.
-    _modelsCache[_sessionKey()] = result;
+    _modelsCache[key] = result;
     _recordProviders(result.models);
     return result;
   }

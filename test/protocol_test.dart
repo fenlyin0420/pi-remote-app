@@ -611,6 +611,60 @@ void main() {
       }) as CompactionEvt;
       expect(recap.model, isNull);
     });
+
+    // The reply carries the CURRENT model, not just per-row past facts.
+    test('session_history carries the live model + thinking snapshot', () {
+      final h = SessionHistory.fromJson({
+        'in_reply_to': 'r1',
+        'session_started_at': 0,
+        'events': <Object>[],
+        'eos': true,
+        'truncated': false,
+        'model': {
+          'id': 'qwen3-27b',
+          'name': 'Qwen3.8-27B',
+          'provider': 'vllm',
+          'reasoning': true,
+          'context_window': 131072,
+          'vision': true,
+        },
+        'thinking': 'high',
+      });
+      expect(h.model?.id, 'qwen3-27b');
+      expect(h.model?.provider, 'vllm');
+      expect(h.thinking, ThinkingLevel.high);
+
+      // Older Pi: both absent → nulls, not an error.
+      final legacy = SessionHistory.fromJson({
+        'in_reply_to': 'r2',
+        'session_started_at': 0,
+        'events': <Object>[],
+        'eos': true,
+      });
+      expect(legacy.model, isNull);
+      expect(legacy.thinking, isNull);
+    });
+
+    // Forward-compat: a pre-flatten relay nests the Pi's room_meta verbatim.
+    test('room_announced reads model from top-level or nested meta', () {
+      final flat = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p1',
+        'room_id': 'main',
+        'started_at': 0,
+        'model': 'Qwen3.8-27B',
+      });
+      expect((flat! as RoomAnnounced).model, 'Qwen3.8-27B');
+
+      final nested = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p1',
+        'room_id': 'main',
+        'started_at': 0,
+        'meta': {'model': 'Qwen3.8-27B'},
+      });
+      expect((nested! as RoomAnnounced).model, 'Qwen3.8-27B');
+    });
   });
 
   // Plan/30 — image attachments on user_message + WireModel.vision.
