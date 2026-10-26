@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:app/data/attachments/attachment_store.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
@@ -16,6 +17,7 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:cryptography/dart.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 
@@ -977,15 +979,83 @@ void main() {
   // LOCAL (fenlyin): a room whose cached model went stale (the relay only
   // re-announces a room when its FIRST conn registers) is corrected from
   // the last assistant row of the history the Pi just replayed.
-  test('session_history self-heals the active room\'s stale cached model', () async {
+  // A replay must NOT rewind the room model to whatever generated the last
+  // reply: history rows are past facts, the snapshot is the present one.
+  test('session_history does not revert a fresh model switch to the old row model', () async {
     final s = await setup();
     s.ch.pushControl(
       RoomAnnounced(
         peer: s.epk,
         roomId: 'main',
         startedAt: 0,
-        model: 'Claude Opus 4.7', // the stale cached value
+        model: 'Qwen3.8-27B', // what the user just switched to
       ),
+    );
+    await _settle();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 10, id: 'u1', text: 'why'),
+          AgentMessageEvt(
+            ts: 11,
+            inReplyTo: 'u1',
+            text: 'the answer',
+            model: 'Claude Opus 4.7', // generated BEFORE the switch
+          ),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    expect(s.conn.roomsFor(s.epk).single.model, 'Qwen3.8-27B');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  // The reply's snapshot corrects a room whose cached model went stale (the
+  // relay only re-announces a room when its FIRST conn registers).
+  test('session_history adopts the current-model snapshot', () async {
+    final s = await setup();
+    s.ch.pushControl(
+      RoomAnnounced(
+        peer: s.epk,
+        roomId: 'main',
+        startedAt: 0,
+        model: 'Claude Opus 4.7', // stale cached value
+      ),
+    );
+    await _settle();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 10, id: 'u1', text: 'why'),
+        ],
+        eos: true,
+        model: const WireModel(
+          id: 'qwen3-27b',
+          name: 'Qwen3.8-27B',
+          provider: 'vllm',
+          reasoning: true,
+          contextWindow: 131072,
+        ),
+      ),
+    );
+    await _settle();
+    expect(s.conn.roomsFor(s.epk).single.model, 'Qwen3.8-27B');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  // Legacy Pi (no snapshot field): keep the old self-heal, but only when the
+  // room has no model at all — never override a model the Pi confirmed.
+  test('session_history legacy fallback fills an empty room model only', () async {
+    final s = await setup();
+    s.ch.pushControl(
+      RoomAnnounced(peer: s.epk, roomId: 'main', startedAt: 0),
     );
     await _settle();
     s.ch.push(
@@ -3471,4 +3541,169 @@ void main() {
       });
     });
   });
+  // Plan/64 — Pi → App chunked file push: a file too big (or too binary) for
+  // one envelope is offered, streamed and verified. The card exists from the
+  // first frame; progress stays in memory; the bytes only become the card's
+  // blob once the whole-file sha256 matches.
+  group('chunked Pi → App file push (file_send_*)', () {
+    Future<List<MessageRecord>> rowsUntil(
+      String epk,
+      bool Function(List<MessageRecord>) done,
+    ) async {
+      for (var i = 0; i < 300; i++) {
+        if (done(messages(epk))) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      return messages(epk);
+    }
+
+    Future<String> sha256Of(List<int> bytes) async {
+      final digest = await const DartSha256().hash(bytes);
+      return digest.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+    }
+
+    test('start → chunks → end leaves a card whose blob is the bytes', () async {
+      final s = await setup();
+      // A PDF: binary, so it could never ride a single `file_offer`.
+      final bytes = utf8.encode('%PDF-1.7\n${'x' * 200}\u0000tail');
+      final sha = await sha256Of(bytes);
+      final chunks = [
+        bytes.sublist(0, 100),
+        bytes.sublist(100, 180),
+        bytes.sublist(180),
+      ];
+
+      s.ch.push(
+        FileSendStart(
+          id: 'att_tc9',
+          name: 'report.pdf',
+          path: '/home/p/report.pdf',
+          mime: 'application/pdf',
+          size: bytes.length,
+          note: 'q3',
+        ),
+      );
+
+      // The card is on screen before any byte arrives, with progress at zero.
+      final started = await rowsUntil(
+        s.epk,
+        (rows) => rows.any((r) => r.id == 'att_tc9'),
+      );
+      final card = started.firstWhere((r) => r.id == 'att_tc9');
+      expect(card.role, MsgRole.attachment);
+      expect(card.attachment!.name, 'report.pdf');
+      expect(card.attachment!.note, 'q3');
+      expect(card.attachment!.blobName, isNull);
+      expect(s.ch.sent.whereType<FileSendReady>(), hasLength(1));
+      expect(s.sync.fileReceiveOf('att_tc9')!.received, 0);
+
+      for (var i = 0; i < chunks.length; i++) {
+        s.ch.push(
+          FileSendChunk(id: 'att_tc9', index: i, data: base64Encode(chunks[i])),
+        );
+        await _settle();
+      }
+      expect(
+        s.ch.sent.whereType<FileSendAck>().map((m) => m.index),
+        [0, 1, 2],
+        reason: 'one ack per chunk, in order — that is the backpressure',
+      );
+      expect(s.sync.fileReceiveOf('att_tc9')!.received, bytes.length);
+
+      s.ch.push(FileSendEnd(id: 'att_tc9', sha256: sha));
+      final done = await rowsUntil(
+        s.epk,
+        (rows) => rows.any(
+          (r) => r.id == 'att_tc9' && r.attachment?.blobName != null,
+        ),
+      );
+      final landed = done.firstWhere((r) => r.id == 'att_tc9');
+      expect(s.ch.sent.whereType<FileSendComplete>(), hasLength(1));
+      expect(s.sync.fileReceiveOf('att_tc9'), isNull);
+      // The bytes are really on disk, under the card's blob name.
+      final store = AttachmentStore.forBox(
+        LocalBoxes().openMsgsBox(s.epk, 'main').path!,
+      );
+      final stored = await store.get(landed.attachment!.blobName!);
+      expect(stored, equals(bytes));
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a hash mismatch aborts the transfer and leaves the reason on the card', () async {
+      final s = await setup();
+      final bytes = utf8.encode('%PDF-1.7\u0000abc');
+      s.ch.push(
+        FileSendStart(
+          id: 'att_tc10',
+          name: 'broken.pdf',
+          path: '/home/p/broken.pdf',
+          mime: 'application/pdf',
+          size: bytes.length,
+        ),
+      );
+      await _settle();
+      s.ch.push(
+        FileSendChunk(id: 'att_tc10', index: 0, data: base64Encode(bytes)),
+      );
+      await _settle();
+      s.ch.push(FileSendEnd(id: 'att_tc10', sha256: 'deadbeef'));
+      final rows = await rowsUntil(
+        s.epk,
+        (rows) => rows.any((r) => r.id == 'att_tc10' && r.attachment?.error != null),
+      );
+      final abort = s.ch.sent.whereType<FileSendAbort>().single;
+      expect(abort.code, 'hash_mismatch');
+      final card = rows.firstWhere((r) => r.id == 'att_tc10');
+      expect(card.attachment!.error, contains('hash mismatch'));
+      expect(card.attachment!.blobName, isNull);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a chunk out of order aborts instead of corrupting the file', () async {
+      final s = await setup();
+      s.ch.push(
+        FileSendStart(
+          id: 'att_tc11',
+          name: 'x.bin',
+          path: '/home/p/x.bin',
+          mime: 'application/octet-stream',
+          size: 8,
+        ),
+      );
+      await _settle();
+      s.ch.push(FileSendChunk(id: 'att_tc11', index: 1, data: base64Encode([1, 2, 3, 4])));
+      await _settle();
+      final abort = s.ch.sent.whereType<FileSendAbort>().single;
+      expect(abort.code, 'invalid_message');
+      expect(s.ch.sent.whereType<FileSendAck>(), isEmpty);
+      expect(s.sync.fileReceiveOf('att_tc11'), isNull);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a file that is not arriving is refused, so the Pi stops early', () async {
+      final s = await setup();
+      // Over the ceiling: the offer is refused before any byte moves.
+      s.ch.push(
+        FileSendStart(
+          id: 'att_tc12',
+          name: 'huge.iso',
+          path: '/home/p/huge.iso',
+          mime: 'application/octet-stream',
+          size: 300 * 1024 * 1024,
+        ),
+      );
+      await _settle();
+      final abort = s.ch.sent.whereType<FileSendAbort>().single;
+      expect(abort.code, 'too_large');
+      expect(s.ch.sent.whereType<FileSendReady>(), isEmpty);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+  });
+
 }

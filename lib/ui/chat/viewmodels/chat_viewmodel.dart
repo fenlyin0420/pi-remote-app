@@ -51,6 +51,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamSubscription<bool>? _workingSub;
   StreamSubscription<List<QueuedMsg>>? _queuedSub;
   StreamSubscription<TodoState>? _todoSub;
+  StreamSubscription<String>? _fileReceiveSub;
   StreamSubscription<SessionEvent>? _eventSub;
   StreamSubscription<ExtensionUiRequest>? _uiReqSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
@@ -62,6 +63,9 @@ class ChatViewModel extends ViewModel<ChatState> {
   bool _disposed = false;
 
   List<ChatMessage> _messages = const [];
+  /// The rows the last watch emitted, kept so a transfer-progress event can
+  /// rebuild the list without touching the DB.
+  List<MessageRecord> _rows = const [];
   StreamingMessage? _streaming;
   bool _working = false;
   List<QueuedMsg> _queuedMessages = const [];
@@ -273,6 +277,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
     _runtimeSub = _read.watchRuntime(epk, roomId).listen(_onRuntime);
     _todoSub = _sync.todosStream.listen(_onTodos);
+    _fileReceiveSub = _sync.fileReceiveStream.listen(_onFileReceive);
 
     _bootstrapping = false;
     _sync.requestSync();
@@ -280,8 +285,34 @@ class ChatViewModel extends ViewModel<ChatState> {
   }
 
   void _onMessages(List<MessageRecord> rows) {
-    _messages = [for (final r in rows) r.toChatMessage()];
+    _rows = rows;
+    _rebuildMessages();
+  }
+
+  /// A chunked Pi → App transfer moved (started, ticked, finished). The bytes
+  /// live outside the DB on purpose, so the progress is re-applied here rather
+  /// than written into the row.
+  void _onFileReceive(String _) => _rebuildMessages();
+
+  void _rebuildMessages() {
+    _messages = [for (final r in _rows) _withReceiveProgress(r.toChatMessage())];
     _recompute();
+  }
+
+  /// Attach the live transfer progress to the card it belongs to. A card whose
+  /// transfer is gone keeps whatever the row says (bytes, or none at all), so
+  /// an interrupted transfer degrades to "tap to load" instead of a bar stuck
+  /// at 40%.
+  ChatMessage _withReceiveProgress(ChatMessage msg) {
+    if (msg is! AttachmentMsg) return msg;
+    final progress = _sync.fileReceiveOf(msg.id);
+    if (progress == null) {
+      return msg.receiving ? msg.withReceive(receiving: false, received: 0) : msg;
+    }
+    return msg.withReceive(
+      receiving: true,
+      received: progress.received,
+    );
   }
 
   void _onStreaming(StreamingMessage? s) {
@@ -594,6 +625,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _workingSub?.cancel();
     _queuedSub?.cancel();
     _todoSub?.cancel();
+    _fileReceiveSub?.cancel();
     _eventSub?.cancel();
     _uiReqSub?.cancel();
     _roomsSub?.cancel();

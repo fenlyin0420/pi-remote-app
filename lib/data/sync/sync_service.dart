@@ -23,6 +23,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:app/data/attachments/attachment_store.dart';
+import 'package:app/data/files/incoming_files.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
@@ -146,6 +147,24 @@ class SyncService extends Service {
 
   final StreamController<bool> _workingController =
       StreamController<bool>.broadcast();
+
+  /// Fires a card id whenever [_fileReceive] changed, so the chat can repaint
+  /// the progress bar without the DB being touched for every chunk.
+  final StreamController<String> _fileReceiveController =
+      StreamController<String>.broadcast();
+
+  /// Chunked Pi → App transfers in flight, by card id. In-memory only: a
+  /// transfer the app lost leaves no row behind, and the card falls back to
+  /// "tap to load", which re-requests the file.
+  final Map<String, FileReceiveProgress> _fileReceive = {};
+
+  /// Metadata of each in-flight transfer, kept so a failure can rewrite the
+  /// card it already created with the reason it stopped.
+  final Map<String, _IncomingCard> _incomingCards = {};
+
+  /// Byte sink for the chunked receive path. Created on the first transfer (it
+  /// needs an open box for a real path, like [_attachments]).
+  IncomingFiles? _incomingFiles;
 
   bool _pendingSyncRequest = false;
   Timer? _syncDebounce;
@@ -442,6 +461,16 @@ class SyncService extends Service {
   String? get activeEpk => _activeEpk;
   String get activeRoomId => _activeRoomId;
 
+  // --- Chunked Pi → App transfers (`file_send_*`) -----------------------------
+
+  /// How far the incoming file for [id] got, or null when nothing is arriving
+  /// for that card. Applied to the card by the chat view model, so progress is
+  /// never persisted: a transfer the app loses simply ends.
+  FileReceiveProgress? fileReceiveOf(String id) => _fileReceive[id];
+
+  /// Emits a card id whose [fileReceiveOf] changed.
+  Stream<String> get fileReceiveStream => _fileReceiveController.stream;
+
   /// LOCAL (fenlyin): the model the ACTIVE room is running (room_meta.model)
   /// — stamped onto LIVE rows so their caption matches the Pi's per-message
   /// model from the next re-sync (the live wire frames carry no model).
@@ -486,6 +515,14 @@ class SyncService extends Service {
     // so returning to it restores the in-flight bubble and its thinking
     // counter instead of starting from zero.
     _cancelAllSendTimers();
+    // A transfer in flight belongs to the room that was bound: its bytes belong
+    // to a card in that box, and its Pi-side sender fails on its own timeout
+    // (the tool reports it). Dropping the parts keeps a room switch from
+    // leaving half a file in the cache.
+    if (_activeEpk != epk || _activeRoomId != room) {
+      // ignore: discarded_futures
+      _abortIncomingTransfers();
+    }
     final prevTurn = _activeEpk != null
         ? _turns[LocalBoxes.sessionKey(_activeEpk!, _activeRoomId)]
         : null;
@@ -1253,6 +1290,38 @@ class SyncService extends Service {
           toolCallId: toolCallId,
         );
 
+      case FileSendStart(
+        :final id,
+        :final name,
+        :final path,
+        :final mime,
+        :final size,
+        :final note,
+      ):
+        // The same hand-off, streamed: the file does not fit one envelope.
+        // Sequential ordering is the same, so the card lands where the tool ran.
+        if (t != null) {
+          _finalizeThinkingSegment(t);
+          _finalizeTextSegment(t);
+        }
+        // ignore: discarded_futures
+        _beginIncomingTransfer(
+          id: id,
+          name: name,
+          path: path,
+          mime: mime,
+          size: size,
+          note: note,
+        );
+
+      case FileSendChunk(:final id, :final index, :final data):
+        // ignore: discarded_futures
+        _appendIncomingChunk(id: id, index: index, data: data);
+
+      case FileSendEnd(:final id, :final sha256):
+        // ignore: discarded_futures
+        _finishIncomingTransfer(id: id, sha256: sha256);
+
       case ExtensionUiRequest():
         // Plan/57 — transient interactive prompt (ask_user via pi-ask).
         // Surface to the UI; never persist (it's a live request, not history).
@@ -1326,9 +1395,14 @@ class SyncService extends Service {
     required bool resized,
     required int? originalSize,
     String? toolCallId,
+    /// Blob already stored by the chunked receive path (the bytes never reach
+    /// this method — they went straight to disk).
+    String? storedBlob,
+    /// Why the transfer stopped, for the card to show instead of a preview.
+    String? error,
   }) async {
-    String? blob;
-    if (data != null && data.isNotEmpty) {
+    String? blob = storedBlob;
+    if (blob == null && data != null && data.isNotEmpty) {
       try {
         blob = await _attachmentStore()?.put(id, base64Decode(data));
       } catch (_) {
@@ -1356,6 +1430,7 @@ class SyncService extends Service {
           resized: resized,
           originalSize: originalSize,
           blobName: blob ?? existing?.attachment?.blobName,
+          error: error,
           // The bytes a `file_get` brings back carry no tool call, so an
           // existing association has to survive the upsert — otherwise the
           // card would jump out of the tool row the moment the user taps it.
@@ -1363,6 +1438,196 @@ class SyncService extends Service {
         ),
       ),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chunked Pi → App transfers (`file_send_*`)
+  // ---------------------------------------------------------------------------
+  //
+  // The card exists from the FIRST frame, so the user watches the transfer
+  // instead of a dead chat during a 100 MiB push. Progress itself is in-memory
+  // ([fileReceiveOf]): writing a row per chunk would put a base64-sized file
+  // through Hive for a number that only repaints a bar.
+
+  void _sendToChannel(ClientMessage msg) {
+    final ch = _conn.channel;
+    if (ch == null) return;
+    // ignore: discarded_futures
+    ch.send(msg);
+  }
+
+  void _emitFileReceive(String id) {
+    if (!_fileReceiveController.isClosed) _fileReceiveController.add(id);
+  }
+
+  IncomingFiles? _incomingStore() {
+    final existing = _incomingFiles;
+    if (existing != null) return existing;
+    final store = _attachmentStore();
+    if (store == null) return null;
+    return _incomingFiles = IncomingFiles(store);
+  }
+
+  Future<void> _beginIncomingTransfer({
+    required String id,
+    required String name,
+    required String path,
+    required String mime,
+    required int size,
+    String? note,
+  }) async {
+    final sink = _incomingStore();
+    if (sink == null) {
+      _sendToChannel(
+        FileSendAbort(
+          id: id,
+          code: 'unavailable',
+          message: 'The chat is not bound to a session yet',
+        ),
+      );
+      return;
+    }
+    try {
+      await sink.begin(id: id, size: size);
+    } on IncomingFileError catch (e) {
+      _sendToChannel(FileSendAbort(id: id, code: e.code, message: e.message));
+      return;
+    }
+    _incomingCards[id] = _IncomingCard(
+      name: name,
+      path: path,
+      mime: mime,
+      size: size,
+      note: note,
+    );
+    _fileReceive[id] = FileReceiveProgress(
+      id: id,
+      name: name,
+      received: 0,
+      total: size,
+    );
+    // Ready before the row write: the Pi starts streaming immediately, and the
+    // card catches up a moment later.
+    _sendToChannel(FileSendReady(id: id));
+    _emitFileReceive(id);
+    await _writeAttachment(
+      id: id,
+      name: name,
+      path: path,
+      mime: mime,
+      size: size,
+      data: null,
+      note: note,
+      resized: false,
+      originalSize: null,
+    );
+  }
+
+  Future<void> _appendIncomingChunk({
+    required String id,
+    required int index,
+    required String data,
+  }) async {
+    final sink = _incomingFiles;
+    if (sink == null) {
+      _sendToChannel(
+        FileSendAbort(
+          id: id,
+          code: 'session_lost',
+          message: 'No transfer with that id',
+        ),
+      );
+      return;
+    }
+    try {
+      final received = await sink.append(id: id, index: index, data: data);
+      final current = _fileReceive[id];
+      if (current != null) {
+        _fileReceive[id] = current.advancedTo(received);
+        _emitFileReceive(id);
+      }
+      _sendToChannel(FileSendAck(id: id, index: index));
+    } on IncomingFileError catch (e) {
+      await _failIncomingTransfer(id, e);
+    }
+  }
+
+  Future<void> _finishIncomingTransfer({
+    required String id,
+    required String sha256,
+  }) async {
+    final sink = _incomingFiles;
+    final card = _incomingCards[id];
+    if (sink == null || card == null) {
+      _sendToChannel(
+        FileSendAbort(
+          id: id,
+          code: 'session_lost',
+          message: 'No transfer with that id',
+        ),
+      );
+      return;
+    }
+    final String blob;
+    try {
+      blob = await sink.finish(id: id, sha256: sha256);
+    } on IncomingFileError catch (e) {
+      await _failIncomingTransfer(id, e);
+      return;
+    }
+    _incomingCards.remove(id);
+    _fileReceive.remove(id);
+    _emitFileReceive(id);
+    _sendToChannel(FileSendComplete(id: id));
+    // The bytes are already in the cache; this only attaches them to the card.
+    await _writeAttachment(
+      id: id,
+      name: card.name,
+      path: card.path,
+      mime: card.mime,
+      size: card.size,
+      data: null,
+      note: card.note,
+      resized: false,
+      originalSize: null,
+      storedBlob: blob,
+    );
+  }
+
+  /// Stop one transfer: drop its bytes, tell the Pi why, and leave the card in
+  /// place explaining that it never arrived.
+  Future<void> _failIncomingTransfer(String id, IncomingFileError error) async {
+    await _incomingFiles?.abort(id);
+    final card = _incomingCards.remove(id);
+    _fileReceive.remove(id);
+    _emitFileReceive(id);
+    _sendToChannel(
+      FileSendAbort(id: id, code: error.code, message: error.message),
+    );
+    if (card == null) return;
+    await _writeAttachment(
+      id: id,
+      name: card.name,
+      path: card.path,
+      mime: card.mime,
+      size: card.size,
+      data: null,
+      note: card.note,
+      resized: false,
+      originalSize: null,
+      error: error.message,
+    );
+  }
+
+  Future<void> _abortIncomingTransfers() async {
+    if (_incomingCards.isEmpty && _fileReceive.isEmpty) return;
+    final ids = {..._incomingCards.keys, ..._fileReceive.keys};
+    await _incomingFiles?.abortAll();
+    _incomingCards.clear();
+    _fileReceive.clear();
+    for (final id in ids) {
+      _emitFileReceive(id);
+    }
   }
 
   Future<void> _applyHistory(SessionHistory h) async {
@@ -1501,6 +1766,7 @@ class SyncService extends Service {
         superseded: superseded,
         sessionStartedAt: h.sessionStartedAt,
         cursor: h.cursor,
+        currentModel: h.model,
       );
     });
   }
@@ -1682,24 +1948,31 @@ class SyncService extends Service {
     required List<MessageRecord> superseded,
     required int sessionStartedAt,
     required String? cursor,
+    WireModel? currentModel,
   }) async {
     if (_activeEpk != epk || _activeRoomId != room) return false;
-    // LOCAL (fenlyin): self-heal the room's cached model from the history
-    // itself. The relay caches each room's meta in memory and re-announces
-    // it only when the room's FIRST conn registers, so a daemon that
-    // restarts (or a missed frame) can leave the app's cached model stale
-    // for the whole connection while the per-row captions are correct.
-    // The last assistant row carries the model that actually generated the
-    // reply; adopt it for the room (no-op when unchanged).
-    String? lastAssistantModel;
-    for (final r in rows.reversed) {
-      if (r.role == MsgRole.assistant) {
-        lastAssistantModel = r.model;
-        break;
+    // The room's CURRENT model comes from the reply's snapshot, never from the
+    // history rows: they only prove what generated PAST replies, so adopting
+    // the last assistant row made a fresh model switch look reverted on every
+    // replay (re-enter a room / reconnect / session switch) — and it was
+    // persisted, so the wrong model survived a cold start.
+    if (currentModel != null && currentModel.name.isNotEmpty) {
+      _conn.updateRoomModel(epk, room, currentModel.name);
+    } else if ((_activeRoomModel ?? '').isEmpty) {
+      // Older Pi without the snapshot: harmless self-heal only when the room
+      // has NO model at all. Never let it override a model the Pi already
+      // confirmed over `room_meta`, since a row can only be older than the
+      // room's current selection.
+      String? lastAssistantModel;
+      for (final r in rows.reversed) {
+        if (r.role == MsgRole.assistant) {
+          lastAssistantModel = r.model;
+          break;
+        }
       }
-    }
-    if (lastAssistantModel != null && lastAssistantModel.isNotEmpty) {
-      _conn.updateRoomModel(epk, room, lastAssistantModel);
+      if (lastAssistantModel != null && lastAssistantModel.isNotEmpty) {
+        _conn.updateRoomModel(epk, room, lastAssistantModel);
+      }
     }
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
     // Rows this reply claims are gone on purpose — including a pending bubble it
@@ -2734,5 +3007,30 @@ class SyncService extends Service {
     _workingController.close();
     _queuedController.close();
     _todoController.close();
+    _fileReceiveController.close();
+    for (final id in _incomingCards.keys.toList()) {
+      // ignore: discarded_futures
+      _incomingFiles?.abort(id);
+    }
+    _incomingCards.clear();
+    _fileReceive.clear();
   }
+}
+
+/// Metadata of one incoming chunked transfer, kept while it runs so a failure
+/// can rewrite the card it created with the reason it stopped.
+class _IncomingCard {
+  const _IncomingCard({
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.note,
+  });
+
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+  final String? note;
 }

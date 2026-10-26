@@ -62,6 +62,12 @@ class AttachmentCard extends StatefulWidget {
   /// "show all" — cheap enough to do on every build of the card.
   static const int previewScanChars = 200000;
 
+  /// Blobs bigger than this are never read into memory just to draw a card.
+  /// They can be streamed from the Pi (`send_to_phone` now carries any file),
+  /// and a 100 MiB PDF has nothing to preview anyway: the card shows the
+  /// metadata and saves through the platform channel, which reads from disk.
+  static const int maxInlineReadBytes = 4 * 1024 * 1024;
+
   @override
   State<AttachmentCard> createState() => _AttachmentCardState();
 }
@@ -92,6 +98,13 @@ class _AttachmentCardState extends State<AttachmentCard> {
     final blob = widget.message.blobName;
     if (blob == null || blob == _loadedBlob) return;
     _loadedBlob = blob;
+    if (widget.message.size > AttachmentCard.maxInlineReadBytes) {
+      // Nothing to draw from a 100 MiB blob, and reading it would cost that
+      // much memory on a phone. The header + size is the card; saving goes
+      // through the file path.
+      if (mounted) setState(() => _bytes = null);
+      return;
+    }
     _reading = true;
     final bytes = await widget.loadBytes(blob);
     // The header is all the layout needs, and remembering it here means the
@@ -152,12 +165,16 @@ class _AttachmentCardState extends State<AttachmentCard> {
     final content = <Widget>[
       if (msg.error != null)
         _errorLine(context, msg.error!)
+      else if (msg.receiving)
+        _receiving(context)
       else if (msg.isImage)
         _image(context)
+      else if (!msg.hasContent)
+        _placeholder(context)
       else if (_bytes != null)
         _textPreview(context)
       else
-        _placeholder(context),
+        _storedFile(context),
       if (msg.note != null && msg.note!.trim().isNotEmpty)
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
@@ -323,11 +340,16 @@ class _AttachmentCardState extends State<AttachmentCard> {
       _bytes!,
       maxChars: AttachmentCard.previewScanChars,
     );
-    if (full == null || full.trim().isEmpty) {
+    if (full == null) {
+      // Bytes that are not text (a PDF, an archive): there is no preview to
+      // draw, so the card says where the file is and leaves the rest to save.
+      return _storedFile(context);
+    }
+    if (full.trim().isEmpty) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
         child: Text(
-          '(no readable text)',
+          '(empty file)',
           style: TextStyle(
             fontFamily: kMonoFamily,
             fontSize: 11,
@@ -383,6 +405,79 @@ class _AttachmentCardState extends State<AttachmentCard> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// A file streaming from the Pi: the bar is the whole card body until the
+  /// bytes are on disk, then the card swaps to its normal content. The row is
+  /// already in the timeline (created by `file_send_start`), so the transfer is
+  /// visible where the file will live instead of as a detached spinner.
+  Widget _receiving(BuildContext context) {
+    final colors = context.colors;
+    final msg = widget.message;
+    final total = msg.size;
+    final fraction = total <= 0
+        ? null
+        : (msg.received / total).clamp(0.0, 1.0);
+    final percent = fraction == null ? '' : '${(fraction * 100).round()}%';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 3,
+              backgroundColor: colors.codeBg,
+              color: colors.accent,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            [
+              'receiving',
+              if (percent.isNotEmpty) percent,
+              '· ${_humanSize(msg.received)} of ${_humanSize(total)}',
+            ].join(' '),
+            key: const Key('attachment-receiving'),
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 11,
+              color: colors.muted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A file whose bytes are on the phone but whose content is not text (a PDF,
+  /// an archive, a video): there is nothing to preview, so the card says what
+  /// it has and lets the header's save button put it in Downloads.
+  Widget _storedFile(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Row(
+        key: const Key('attachment-stored-file'),
+        children: [
+          Icon(LucideIcons.hardDriveDownload, size: 13, color: colors.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'on this phone · save to open it',
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 11,
+                color: colors.muted,
+              ),
+            ),
+          ),
         ],
       ),
     );

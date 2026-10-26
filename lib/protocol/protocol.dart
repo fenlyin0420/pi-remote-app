@@ -46,7 +46,10 @@ sealed class ControlInbound {
           name: j['name'] as String?,
           cwd: j['cwd'] as String?,
           startedAt: (j['started_at'] as num).toInt(),
-          model: j['model'] as String?,
+          // Forward-compat with a pre-flatten relay that nests the Pi's
+          // room_meta verbatim under `meta` (thinking/working/context already
+          // read both shapes; model was top-level only).
+          model: (j['model'] as String?) ?? (metaJson?['model'] as String?),
           thinking: rawThinking != null
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
@@ -328,6 +331,16 @@ class RoomContextUsage {
 
 RoomContextUsage? _parseContext(Map<String, dynamic>? j) =>
     j == null ? null : RoomContextUsage._parse(j);
+
+/// Tolerant wire-model parser: a partial/older payload yields `null` instead
+/// of throwing away the whole frame it rides on.
+WireModel? _parseWireModel(Object? raw) {
+  if (raw is! Map<String, dynamic>) return null;
+  if (raw['id'] is! String || raw['name'] is! String || raw['provider'] is! String) {
+    return null;
+  }
+  return WireModel.fromJson(raw);
+}
 
 class RoomAnnounced extends ControlInbound {
   final String peer;
@@ -1139,9 +1152,59 @@ class FileGet extends ClientMessage {
   };
 }
 
+/// The app's answers to a chunked Pi → App file push (`file_send_start` →
+/// `file_send_chunk` ×N → `file_send_end`).
+///
+/// Backpressure lives in [FileSendAck]: the Pi sends one chunk at a time and
+/// waits for it, so a slow phone cannot be flooded by a 250 MiB file. The
+/// transfer finishes with [FileSendComplete] only after the bytes are on disk
+/// and the declared sha256 matched, or with [FileSendAbort] and the reason.
+class FileSendReady extends ClientMessage {
+  final String id;
+  FileSendReady({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'file_send_ready', 'id': id};
+}
+
+class FileSendAck extends ClientMessage {
+  final String id;
+  final int index;
+  FileSendAck({required this.id, required this.index});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'file_send_ack',
+    'id': id,
+    'index': index,
+  };
+}
+
+class FileSendComplete extends ClientMessage {
+  final String id;
+  FileSendComplete({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'file_send_complete', 'id': id};
+}
+
+class FileSendAbort extends ClientMessage {
+  final String id;
+  final String code;
+  final String message;
+  FileSendAbort({required this.id, required this.code, required this.message});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'file_send_abort',
+    'id': id,
+    'code': code,
+    'message': message,
+  };
+}
+
 // --- ServerMessage (extension → app) ---
-// 1 pairing = 1 session: no session_id on any message.
-// Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
+// 1 pairing = 1 session: no session_id on any message.// Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
 
 sealed class ServerMessage {
   const ServerMessage();
@@ -1177,6 +1240,11 @@ sealed class ServerMessage {
       'compaction' => Compaction.fromJson(json),
       // Pi → App file hand-off (`send_to_phone` / a `file_get` answer).
       'file_offer' => FileOffer.fromJson(json),
+      // The same hand-off for a file that does not fit one envelope (binary, or
+      // over ~2 MiB): offered, streamed in chunks, then closed with its hash.
+      'file_send_start' => FileSendStart.fromJson(json),
+      'file_send_chunk' => FileSendChunk.fromJson(json),
+      'file_send_end' => FileSendEnd.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
       'bye' => Bye.fromJson(json),
       'action_ok' => ActionOk.fromJson(json),
@@ -1805,6 +1873,76 @@ class FileOffer extends ServerMessage {
   );
 }
 
+/// One chunked Pi → App file push. The Pi offers a file
+/// ([FileSendStart]), streams it ([FileSendChunk] ×N) and closes with the
+/// whole-file sha256 ([FileSendEnd]); the app answers `file_send_ready`, one
+/// `file_send_ack` per chunk, then `file_send_complete` or `file_send_abort`.
+///
+/// Same `id` the card uses everywhere (`att_<toolCallId>`, or the
+/// `attachment_id` of the `file_get` being answered), so a streamed file and a
+/// single-frame `file_offer` land in the same bubble.
+class FileSendStart extends ServerMessage {
+  final String id;
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+
+  /// Optional one-line caption the agent wrote for the card.
+  final String? note;
+
+  FileSendStart({
+    required this.id,
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.note,
+  });
+
+  factory FileSendStart.fromJson(Map<String, dynamic> j) => FileSendStart(
+    id: j['id'] as String,
+    name: (j['name'] as String?) ?? '',
+    path: (j['path'] as String?) ?? '',
+    mime: (j['mime'] as String?) ?? 'application/octet-stream',
+    size: (j['size'] as num?)?.toInt() ?? 0,
+    note: j['note'] as String?,
+  );
+}
+
+class FileSendChunk extends ServerMessage {
+  final String id;
+
+  /// 0-based position; the transport already guarantees order, the checker is
+  /// a second line of defense.
+  final int index;
+
+  /// base64 of up to 2 MiB of file bytes.
+  final String data;
+
+  FileSendChunk({required this.id, required this.index, required this.data});
+
+  factory FileSendChunk.fromJson(Map<String, dynamic> j) => FileSendChunk(
+    id: j['id'] as String,
+    index: (j['index'] as num?)?.toInt() ?? 0,
+    data: (j['data'] as String?) ?? '',
+  );
+}
+
+class FileSendEnd extends ServerMessage {
+  final String id;
+
+  /// sha256 of the whole file, hex (lowercase).
+  final String sha256;
+
+  FileSendEnd({required this.id, required this.sha256});
+
+  factory FileSendEnd.fromJson(Map<String, dynamic> j) => FileSendEnd(
+    id: j['id'] as String,
+    sha256: ((j['sha256'] as String?) ?? '').toLowerCase(),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // SessionHistory + embedded event types
 // ---------------------------------------------------------------------------
@@ -1830,6 +1968,17 @@ class SessionHistory extends ServerMessage {
   /// resume from.
   final String? cursor;
 
+  /// LOCAL (fenlyin): the model the Pi is running RIGHT NOW.
+  /// History rows only prove what generated PAST replies, so the room's
+  /// current model must come from this snapshot — inferring it from the last
+  /// assistant row made a fresh model switch look reverted on every replay.
+  /// Absent on older Pi builds.
+  final WireModel? model;
+
+  /// LOCAL (fenlyin): the thinking level in effect right now, same reasoning
+  /// as [model]. Absent on older Pi builds.
+  final ThinkingLevel? thinking;
+
   SessionHistory({
     required this.inReplyTo,
     required this.sessionStartedAt,
@@ -1838,6 +1987,8 @@ class SessionHistory extends ServerMessage {
     this.truncated = false,
     this.isDelta = false,
     this.cursor,
+    this.model,
+    this.thinking,
   });
 
   factory SessionHistory.fromJson(Map<String, dynamic> j) => SessionHistory(
@@ -1852,6 +2003,8 @@ class SessionHistory extends ServerMessage {
     // Absent `mode` is the pre-delta contract: a full replay.
     isDelta: (j['mode'] as String?) == 'delta',
     cursor: j['cursor'] as String?,
+    model: _parseWireModel(j['model']),
+    thinking: ThinkingLevel.fromWire(j['thinking'] as String? ?? ''),
   );
 }
 

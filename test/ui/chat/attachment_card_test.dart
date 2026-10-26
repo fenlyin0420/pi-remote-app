@@ -39,17 +39,22 @@ AttachmentMsg _card({
   int? originalSize,
   String? error,
   String name = 'shot.png',
+  int size = 4096,
+  bool receiving = false,
+  int received = 0,
 }) => AttachmentMsg(
   id: id,
   name: name,
   path: '/home/p/$name',
   mime: mime,
-  size: 4096,
+  size: size,
   note: note,
   resized: resized,
   originalSize: originalSize,
   blobName: blobName,
   error: error,
+  receiving: receiving,
+  received: received,
 );
 
 Future<void> _pump(
@@ -343,5 +348,70 @@ void main() {
         lessThan(120),
       );
     });
+  });
+
+  testWidgets('a file still streaming shows progress, not a preview', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      _card(
+        mime: 'application/pdf',
+        name: 'report.pdf',
+        blobName: null,
+        size: 4096,
+        receiving: true,
+        received: 1024,
+      ),
+      blobs: const {},
+    );
+    expect(find.byKey(const Key('attachment-receiving')), findsOneWidget);
+    expect(find.textContaining('25%'), findsOneWidget);
+    expect(find.textContaining('of 4 KB'), findsOneWidget);
+    // Not the tap-to-load affordance, and not a save button for bytes that are
+    // not here yet.
+    expect(find.byKey(const Key('attachment-load')), findsNothing);
+    expect(find.byKey(const Key('attachment-save')), findsNothing);
+  });
+
+  testWidgets('a binary file that did arrive offers saving instead of mojibake', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      _card(mime: 'application/pdf', name: 'report.pdf'),
+      blobs: {
+        'att_tc-1.bin': Uint8List.fromList([0x25, 0x50, 0x44, 0x46, 0, 1, 2]),
+      },
+    );
+    expect(find.byKey(const Key('attachment-stored-file')), findsOneWidget);
+    expect(find.byKey(const Key('attachment-save')), findsOneWidget);
+    expect(find.text('report.pdf'), findsOneWidget);
+  });
+
+  testWidgets('an oversized blob is never read into memory', (tester) async {
+    var reads = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AttachmentCard(
+            message: _card(
+              mime: 'video/mp4',
+              name: 'clip.mp4',
+              size: AttachmentCard.maxInlineReadBytes + 1,
+            ),
+            loadBytes: (_) async {
+              reads += 1;
+              return Uint8List(0);
+            },
+            onLoad: (_, _) async {},
+            onSave: (_) async => 'Download/Remote Pi/clip.mp4',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(reads, 0, reason: 'a 4 MB+ blob has nothing to draw');
+    expect(find.byKey(const Key('attachment-stored-file')), findsOneWidget);
   });
 }

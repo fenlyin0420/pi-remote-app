@@ -115,6 +115,14 @@ ratio.
    `AttachmentStore.put(id, bytes)` writes `attachments/att_<id>.bin`
    (temp-file + rename, so a crash cannot leave a half-written blob); the row
    keeps `blobName`.
+2b. A file too big or too binary for one envelope arrives as `file_send_start`
+   → `file_send_chunk` ×N → `file_send_end` instead. The row is created on the
+   start frame (metadata only, so the transfer is visible where it will live),
+   the chunks append to `attachments/.incoming/<id>.part` under
+   `IncomingFiles`, and only a matching size + sha256 renames that part into
+   the row's `blobName`. Progress lives in memory (`SyncService.fileReceiveOf`)
+   and is never written to the row; an interrupted transfer leaves the card
+   with no bytes, which is the same "tap to load" state a history replay has.
 3. A card rebuilt from history arrives as metadata only — `_applyHistory`
    carries the old row's `blobName` over, so a room full of already-seen
    screenshots does not turn back into "tap to load" on every re-sync.
@@ -130,7 +138,9 @@ ratio.
 3. Tap the image → `AttachmentViewer`: full screen, zoom, and "save to phone"
    (`MediaSaver` → gallery for images, Downloads otherwise).
 4. Text files render a capped monospace preview instead, and "show all" opens
-   the same viewer.
+   the same viewer. A blob over 4 MiB is never read into memory just to draw a
+   card: it shows its metadata and saves through the platform channel, which
+   copies from the file path.
 
 ## What survives what
 

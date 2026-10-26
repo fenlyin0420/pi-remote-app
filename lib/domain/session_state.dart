@@ -269,6 +269,15 @@ class AttachmentMsg extends ChatMessage {
   /// its own); null for a `send_to_phone` hand-off.
   final String? toolCallId;
 
+  /// True while the file is still streaming to the phone (`file_send_*`). The
+  /// card shows a progress bar instead of a preview; the value is never
+  /// persisted, so an interrupted transfer simply ends up as a card with no
+  /// bytes.
+  final bool receiving;
+
+  /// Bytes received so far while [receiving].
+  final int received;
+
   const AttachmentMsg({
     required super.id,
     required this.name,
@@ -281,6 +290,8 @@ class AttachmentMsg extends ChatMessage {
     this.blobName,
     this.error,
     this.toolCallId,
+    this.receiving = false,
+    this.received = 0,
     super.ts,
     super.model,
   });
@@ -309,9 +320,33 @@ class AttachmentMsg extends ChatMessage {
     blobName: blobName ?? this.blobName,
     error: clearError ? null : (error ?? this.error),
     toolCallId: toolCallId,
+    receiving: receiving,
+    received: received,
     ts: ts,
     model: model,
   );
+
+  /// The same card with live transfer progress attached (or cleared).
+  AttachmentMsg withReceive({required bool receiving, required int received}) =>
+      receiving == this.receiving && received == this.received
+      ? this
+      : AttachmentMsg(
+          id: id,
+          name: name,
+          path: path,
+          mime: mime,
+          size: size,
+          note: note,
+          resized: resized,
+          originalSize: originalSize,
+          blobName: blobName,
+          error: error,
+          toolCallId: toolCallId,
+          receiving: receiving,
+          received: received,
+          ts: ts,
+          model: model,
+        );
 
   @override
   bool operator ==(Object other) =>
@@ -326,7 +361,9 @@ class AttachmentMsg extends ChatMessage {
       other.originalSize == originalSize &&
       other.blobName == blobName &&
       other.error == error &&
-      other.toolCallId == toolCallId;
+      other.toolCallId == toolCallId &&
+      other.receiving == receiving &&
+      other.received == received;
 
   @override
   int get hashCode => Object.hash(
@@ -340,6 +377,8 @@ class AttachmentMsg extends ChatMessage {
     originalSize,
     blobName,
     error,
+    receiving,
+    received,
   );
 }
 

@@ -557,10 +557,10 @@ B → base64 (JSON interno) ≈ 4/3·B → ct = base64(JSON) ≈ 16/9·B ≈ 1.7
 16/9·B ≤ 4 MiB  ⇒  B ≤ ~2.3 MB
 ```
 
-Teto adotado: **2 MiB**. Imagem acima disso é **reduzida** no Pi (o
+Teto adotado por frame: **2 MiB**. Imagem acima disso é **reduzida** no Pi (o
 `resizeImage` do próprio SDK — Photon/WASM, sem dependência nova) até caber;
-texto tem teto próprio de 1 MiB. O que não couber é recusado com mensagem
-acionável, nunca truncado.
+texto tem teto próprio de 1 MiB. O que não couber — e qualquer binário — segue
+pelo caminho em pedaços (`file_send_*`, ver a seção seguinte); nada é truncado.
 
 ### Wire
 
@@ -604,8 +604,11 @@ pode baixar tudo que já foi enviado.
 Tool `send_to_phone(path, note?)` — um arquivo por chamada. O que conta como
 imagem e o que conta como texto é decidido **pelos bytes, nunca pelo nome**
 (mesma regra do upload): assinatura PNG/JPEG/GIF/WebP/BMP → imagem; senão
-UTF-8/UTF-16 estrito sem NUL → texto; senão recusado. `path` sai pelo
-`realpath`, então symlink e `~` nunca reportam outro lugar que não o nomeado.
+assinatura de container (`%PDF-`, `PK`, gzip/xz/7z/rar, `SQLite format 3`,
+ELF, `ftyp`) ou UTF-8/UTF-16 estrito sem NUL → texto; senão binário. Imagem e
+texto pequenos vão em um `file_offer`; binário e o que não cabe vão em pedaços.
+`path` sai pelo `realpath`, então symlink e `~` nunca reportam outro lugar que
+não o nomeado.
 
 O tool **não** publica `tool_request`/`tool_result` para o app: o card de
 anexo É a renderização dessa chamada, e um segundo card seria duplicata. Uma
@@ -629,6 +632,76 @@ Tocar abre a tela cheia (pinch/double-tap de zoom, texto rolável e selecionáve
 e **salvar** copia o blob para o armazenamento do aparelho via MediaStore —
 imagem em `Pictures/Remote Pi`, o resto em `Download/Remote Pi`, sem pedir
 permissão nenhuma e sem diálogo do sistema por salvamento.
+
+---
+
+## Arquivos grandes: push em pedaços (Pi → App)
+
+O espelho do `upload_*`, na direção contrária: o arquivo que não cabe em um
+envelope (ou que não é imagem/texto) é oferecido, transmitido em pedaços e
+conferido por hash no celular.
+
+### Wire
+
+```jsonc
+// Pi → App
+{ "type": "file_send_start", "id": "att_<toolCallId>", "name": "report.pdf",
+  "path": "/home/p/report.pdf", "mime": "application/pdf", "size": 12345678,
+  "note": "opcional" }
+{ "type": "file_send_chunk", "id": "att_<toolCallId>", "index": 0, "data": "<base64>" }
+{ "type": "file_send_end",   "id": "att_<toolCallId>", "sha256": "<hex>" }
+
+// App → Pi
+{ "type": "file_send_ready",    "id": "att_<toolCallId>" }
+{ "type": "file_send_ack",      "id": "att_<toolCallId>", "index": 0 }
+{ "type": "file_send_complete", "id": "att_<toolCallId>" }
+{ "type": "file_send_abort",    "id": "att_<toolCallId>", "code": "hash_mismatch",
+  "message": "explicação para o modelo" }
+```
+
+### Regras
+
+- Pedaço = 2 MiB (mesmo motivo do upload: `ct` ≈ 3.7 MiB < 4 MiB). Arquivo até
+  **250 MiB**; acima disso a tool recusa com a mensagem acionável de antes.
+- Backpressure é o `ack`: um pedaço por vez, o próximo só depois do anterior.
+  `send` do lado Pi confirma a escrita no socket, não que o celular tem espaço —
+  sem essa espera, um arquivo de 100 MiB encheria os buffers do relay e do app.
+- O `id` é o MESMO do card (`att_<toolCallId>`, ou o `attachment_id` do
+  `file_get` respondido), então o app faz upsert do card que um `file_offer`
+  criaria — um arquivo entregue em pedaços não vira dois cards.
+- O card nasce no `file_send_start` (metadados, sem bytes). O progresso é estado
+  em memória do app: nada de barra persistida no Hive.
+- O app só publica os bytes como blob do card e responde `file_send_complete`
+  depois de conferir tamanho + sha256 do que realmente ficou no disco.
+- Sem retomada: uma queda reinicia a transferência (a tool falha com a razão
+  para o modelo). O Pi reusa a mesma decisão de caminho no `file_get`.
+- Ponto a ponto: só o dispositivo que abriu a transferência recebe (acessos por
+  pedaço não fazem sentido com N aparelhos). Um segundo aparelho pareado
+  continua vendo os arquivos que cabem em um `file_offer`.
+- Sem P2P nem storage no relay: frames JSON comuns no envelope existente.
+
+### Escolha do caminho, no Pi
+
+Imagem → `file_offer`, reduzida se passar de 2 MiB. Texto ≤ 1 MiB →
+`file_offer`. O resto (binário, texto grande, imagem que não reduziu) → pedaços.
+O `mime` do card vem primeiro da assinatura do container e só depois do nome: um
+`.txt` que é PDF vira `application/pdf` em vez de um preview de texto cheio de
+código-fonte de PDF.
+
+`file_get` (o toque no card para baixar de novo) usa exatamente a mesma decisão,
+respondendo `file_offer` ou abrindo uma transferência com o mesmo id.
+
+### No app
+
+Os bytes vão para `<attachments>/.incoming/<id>.part` — subdiretório de
+propósito, porque a varredura do cache só apaga arquivos do nível de cima, então
+um download em andamento nunca é confundido com cache velho e apagado no meio.
+Os pedaços são somados na ordem de `index` e só viram o blob do card
+(`<id>.bin`) depois da conferência de tamanho + sha256. Card: barra de progresso
+enquanto chega; depois, o comportamento de sempre (imagem inline, texto com
+preview, binário com "on this phone · save to open it") e o botão de salvar no
+armazenamento do aparelho. Blob acima de 4 MiB nem é lido para a memória: o card
+mostra metadados e o salvamento vai por caminho de arquivo.
 
 ---
 
