@@ -193,6 +193,12 @@ class SyncService extends Service {
   /// only stops a channel that never answers from growing the map.
   static const int _maxSyncAsked = 8;
 
+  /// Rows [_loadIndex] decodes between two yields to the event loop. Opening a
+  /// room decodes the whole box here, and every row is a `fromJson` on the UI
+  /// isolate; slicing keeps the frame that paints the chat's loading indicator
+  /// from waiting behind the entire index.
+  static const int _indexSlice = 200;
+
   /// When this device asked for the reply with [inReplyTo], and forget it.
   ///
   /// Only a full replay needs it (it substitutes the cache, so the rows written
@@ -2431,9 +2437,10 @@ class SyncService extends Service {
         'syncedRows=${stored?.syncedRows} '
         'storedCursor=${stored?.syncCursor == null ? 'none' : 'yes'}$dropped',
       );
-      for (final k in box.keys) {
-        final seq = (k as num).toInt();
-        final r = MessageRecord.fromJson(_coerce(box.get(k)));
+      final keys = box.keys.toList(growable: false);
+      for (var i = 0; i < keys.length; i++) {
+        final seq = (keys[i] as num).toInt();
+        final r = MessageRecord.fromJson(_coerce(box.get(keys[i])));
         _idToSeq[_key(r.role, r.id)] = seq;
         _nextSeq = math.max(_nextSeq, seq + 1);
         if (r.role == MsgRole.thinking && r.text.isNotEmpty) {
@@ -2446,6 +2453,14 @@ class SyncService extends Service {
         // load.
         if (r.role == MsgRole.user && r.pending && r.ts != null) {
           _armSendTimeout(r.id, r.ts!);
+        }
+        // A long room is thousands of rows, and this is the second full decode
+        // of the box on the way into it (the reader does the other): breathe
+        // between slices so the frame showing the chat's loading indicator can
+        // be painted, instead of the whole index landing in one frozen block.
+        if (i % _indexSlice == _indexSlice - 1) {
+          await Future<void>.delayed(Duration.zero);
+          if (_activeEpk != epk || _activeRoomId != room) return;
         }
       }
       // LOCAL (fenlyin): a cache written before the reasoning pairing fix (see

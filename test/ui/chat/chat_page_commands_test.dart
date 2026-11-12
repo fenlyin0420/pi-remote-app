@@ -200,6 +200,16 @@ void main() {
     await dir.delete(recursive: true);
   });
 
+  /// `pumpAndSettle` never returns on the chat page: while the room's history
+  /// is being read the body shows an indefinite progress animation (and under
+  /// the test clock that read does not complete). Pump a bounded number of
+  /// frames instead — enough for the notice strip and the dialog routes.
+  Future<void> settleFrames(WidgetTester tester) async {
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+  }
+
   /// Advances the fake clock over several frames so the async pipeline
   /// (status → runtime row → ViewModel) lands before a test acts.
   Future<void> settle(WidgetTester tester) async {
@@ -316,7 +326,7 @@ void main() {
         notifyType: 'info',
       ),
     );
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
 
     expect(
       app.vm.debugLastNotice,
@@ -332,7 +342,7 @@ void main() {
     expect(find.textContaining('MCP Server Status'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('chat-notice-dismiss')));
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.byKey(const Key('chat-notice-strip')), findsNothing);
 
     shutdown(app);
@@ -358,7 +368,7 @@ void main() {
         message: 'MCP Server Status:\n  pi-mcp: ok',
       ),
     );
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
 
     expect(find.byKey(const Key('chat-notice-strip')), findsOneWidget);
     expect(
@@ -381,7 +391,7 @@ void main() {
         message: 'first output',
       ),
     );
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.textContaining('first output'), findsOneWidget);
 
     app.sync.onServerMessageForTest(
@@ -391,7 +401,7 @@ void main() {
         message: 'second output',
       ),
     );
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.textContaining('second output'), findsOneWidget);
     expect(find.textContaining('first output'), findsNothing);
     expect(find.byKey(const Key('chat-notice-strip')), findsOneWidget);
@@ -471,12 +481,12 @@ void main() {
     expect(composerFocus(tester).hasFocus, isTrue);
 
     await tester.tap(find.byIcon(LucideIcons.info));
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.text('Session info'), findsOneWidget);
     expect(composerFocus(tester).hasFocus, isFalse);
 
     await tester.tap(find.text('Close'));
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.text('Session info'), findsNothing);
     expect(
       composerFocus(tester).hasFocus,
@@ -526,7 +536,7 @@ void main() {
         ),
       ),
     );
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
     expect(find.text(prompt), findsOneWidget, reason: 'the modal opened');
     expect(find.byKey(const Key('chat-pending-ask')), findsNothing);
 
@@ -534,13 +544,13 @@ void main() {
     await tester.tap(find.text('Alpha'));
     await tester.pump();
     await tester.tap(find.byKey(const Key('extension-ui-minimize')));
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
 
     expect(find.text(prompt), findsNothing, reason: 'the chat is back');
     expect(find.byKey(const Key('chat-pending-ask')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('chat-pending-ask')));
-    await tester.pumpAndSettle();
+    await settleFrames(tester);
 
     expect(find.text(prompt), findsOneWidget, reason: 'reopened on tap');
     expect(

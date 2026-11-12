@@ -184,6 +184,38 @@ void main() {
     await _dir.delete(recursive: true);
   });
 
+  test(
+    'enterRoom reports `loading` until the message box has been read',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+      conn.adopt(ch, _peer);
+
+      final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
+      // Before the box read resolves, the page must not claim the room is
+      // empty: that is the spinner window.
+      expect(vm.state, isA<ChatReady>());
+      expect((vm.state as ChatReady).loading, isTrue);
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).loading, isFalse);
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
+
   test('a message written to the DB surfaces in ChatState', () async {
     final ch = _FakeChannel();
     final storage = _FakeStorage();
@@ -464,6 +496,9 @@ void main() {
       // "Nothing here" placeholder (shown whenever the body is empty).
       expect(state.messages, isEmpty);
       expect(state.streaming, isNull);
+      // The room's history has been read by now, so the body is no longer
+      // "loading": that flag gates the spinner that covers the DB read.
+      expect(state.loading, isFalse);
 
       vm.dispose();
       sync.dispose();

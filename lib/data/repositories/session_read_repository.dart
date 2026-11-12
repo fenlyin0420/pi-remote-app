@@ -25,6 +25,11 @@ class SessionReadRepository extends Repository {
     final gate = LocalBoxes.quietGate(LocalBoxes.msgsBoxName(epk, roomId));
     StreamSubscription? sub;
     var pendingEmit = false;
+    // False while the initial snapshot is still being decoded. The box watch is
+    // already armed (it must not miss a row written during the read), but
+    // nothing is published row by row: the first emit is the whole snapshot,
+    // which already contains whatever landed meanwhile.
+    var loaded = false;
     void Function()? flush;
     late final StreamController<List<MessageRecord>> controller;
     void emit() {
@@ -35,16 +40,8 @@ class SessionReadRepository extends Repository {
     controller = StreamController<List<MessageRecord>>(
       onListen: () async {
         final box = await _boxes.msgsBox(epk, roomId);
-        for (final k in box.keys) {
-          byKey[(k as num).toInt()] = MessageRecord.fromJson(
-            _coerce(box.get(k)),
-          );
-        }
-        if (!controller.isClosed) controller.add(_sorted(byKey));
-        flush = () {
-          if (pendingEmit) emit();
-        };
-        gate.onRelease(flush!);
+        // Armed BEFORE the first read: a row written while the snapshot is
+        // being decoded lands in [byKey] and is part of the snapshot below.
         sub = box.watch().listen((event) {
           final key = (event.key as num).toInt();
           if (event.deleted) {
@@ -53,12 +50,34 @@ class SessionReadRepository extends Repository {
             // Incremental: read ONLY the changed key, not the whole box.
             byKey[key] = MessageRecord.fromJson(_coerce(box.get(key)));
           }
+          if (!loaded) return;
           if (gate.isQuiet) {
             pendingEmit = true;
             return;
           }
           emit();
         });
+        // A long room is thousands of rows, and every one of them is a
+        // `MessageRecord.fromJson` on the UI isolate — right as the chat is
+        // opening. Decode in slices with a breath between them, so the frame
+        // that shows the loading indicator keeps getting painted instead of
+        // the whole room landing in one frozen second.
+        final keys = box.keys.toList(growable: false);
+        for (var i = 0; i < keys.length; i++) {
+          byKey[(keys[i] as num).toInt()] = MessageRecord.fromJson(
+            _coerce(box.get(keys[i])),
+          );
+          if (i % _decodeSlice == _decodeSlice - 1) {
+            await Future<void>.delayed(Duration.zero);
+            if (controller.isClosed) return;
+          }
+        }
+        loaded = true;
+        if (!controller.isClosed) controller.add(_sorted(byKey));
+        flush = () {
+          if (pendingEmit) emit();
+        };
+        gate.onRelease(flush!);
       },
       onCancel: () async {
         if (flush != null) gate.offRelease(flush!);
@@ -94,6 +113,9 @@ class SessionReadRepository extends Repository {
     );
     return controller.stream;
   }
+
+  /// Rows decoded between two yields to the event loop (see [watchMessages]).
+  static const int _decodeSlice = 200;
 
   static List<MessageRecord> _sorted(Map<int, MessageRecord> byKey) {
     final keys = byKey.keys.toList()..sort();

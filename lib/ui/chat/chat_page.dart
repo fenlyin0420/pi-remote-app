@@ -556,7 +556,7 @@ class _ChatPageState extends State<ChatPage> {
         actionLabel: 'Re-pair',
         onAction: () => context.go('/pair'),
       ),
-      ChatReady(:final messages, :final streaming) => () {
+      ChatReady(:final messages, :final streaming, :final loading) => () {
         final visible = messages
             .where(
               (m) =>
@@ -564,6 +564,14 @@ class _ChatPageState extends State<ChatPage> {
                   (!hideThinking || m is! ThinkingMsg),
             )
             .toList();
+        // The room's history is still being read off the phone's DB. A long
+        // room needs thousands of rows decoded before the first message can be
+        // drawn, and the page is already on screen for that window: show the
+        // spinner rather than the "Nothing here" placeholder, which claimed
+        // the room was empty.
+        if (loading && visible.isEmpty && streaming == null) {
+          return const _LoadingHistory();
+        }
         // Empty body → the default placeholder (Pi brand icon + "Nothing
         // here"), shown whenever there's nothing to render — including while
         // reconnecting (the reconnect handshake never swaps the body).
@@ -847,6 +855,28 @@ class _ChatPageState extends State<ChatPage> {
 }
 
 // ---------------------------------------------------------------------------
+
+/// The room is on screen but its transcript has not been read yet. Shown in the
+/// body instead of [_EmptyState] so entering a long room reads as "loading",
+/// never as "empty".
+class _LoadingHistory extends StatelessWidget {
+  const _LoadingHistory();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Center(
+      child: SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: colors.muted2,
+        ),
+      ),
+    );
+  }
+}
 
 class _EmptyState extends StatelessWidget {
   final IconData icon;

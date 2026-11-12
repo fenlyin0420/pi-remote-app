@@ -115,6 +115,13 @@ class ChatViewModel extends ViewModel<ChatState> {
   String? _peerOfflineReason;
   ConnectionStatus? _lastStatus;
 
+  /// True until this room's message box has produced its first snapshot. The
+  /// page shows a loading indicator for it: a long room is thousands of rows
+  /// to decode before anything can be drawn, and that happens after the chat
+  /// is already on screen — showing the "Nothing here" placeholder in the
+  /// meantime read as "this room is empty" and then popped into a transcript.
+  bool _loading = true;
+
   ChatViewModel(
     this._read,
     this._sync,
@@ -123,7 +130,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     this._storage,
     this._visibleSession, [
     this._actions,
-  ]) : super(const ChatReady(messages: [])) {
+  ]) : super(const ChatReady(messages: [], loading: true)) {
     // Plan/32f — do NOT seed _streaming/_working from the shared SyncService
     // here: it may still be bound to the PREVIOUS chat (this VM is recreated
     // on session switch, before _bootstrap rebinds via activate). Seeding now
@@ -251,6 +258,11 @@ class ChatViewModel extends ViewModel<ChatState> {
     _activePeer = sessionPeer;
     _activeRoomId = roomId;
 
+    // The transcript lives in the phone's own DB, so start reading it before
+    // the transport work below: a room with a long history paints while the
+    // socket is still binding, instead of waiting behind it.
+    _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
+
     // Bind transport before the singleton writer. Otherwise a same-peer room
     // switch can briefly accept old-room frames while SyncService already
     // writes to the new room.
@@ -274,7 +286,6 @@ class ChatViewModel extends ViewModel<ChatState> {
     _working = _sync.isWorking;
     _queuedMessages = _sync.queuedMessages;
     _todos = _sync.todos;
-    _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
     _runtimeSub = _read.watchRuntime(epk, roomId).listen(_onRuntime);
     _todoSub = _sync.todosStream.listen(_onTodos);
     _fileReceiveSub = _sync.fileReceiveStream.listen(_onFileReceive);
@@ -286,6 +297,7 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onMessages(List<MessageRecord> rows) {
     _rows = rows;
+    _loading = false;
     _rebuildMessages();
   }
 
@@ -431,7 +443,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       // here is what made a relayed notification invisible: the server side
       // worked and the frame arrived, but every recompute discarded it.
       return _bootstrapping
-          ? ChatReady(messages: const [], notice: _notice)
+          ? ChatReady(messages: const [], notice: _notice, loading: true)
           : const ChatNoPeer();
     }
     final isOnline = _runtime.connection == RuntimeConnection.online;
@@ -443,6 +455,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     return ChatReady(
       messages: _messages,
       streaming: _streaming,
+      loading: _loading,
       isOffline: isOffline,
       pairingRevoked: _pairingRevoked,
       peerOfflineReason: _peerOfflineReason,

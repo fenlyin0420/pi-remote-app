@@ -76,12 +76,22 @@ class ChatReady extends ChatState {
   /// name still works, since the Pi is the one that classifies it.
   final List<WireCommand> commands;
 
+  /// True while this room's history is still being read off the phone's DB —
+  /// from the moment the chat mounts until the first snapshot of the message
+  /// box reaches [messages]. A long room decodes thousands of rows before it
+  /// can draw anything, and that window is entered while the page is already
+  /// on screen: the body shows a spinner for it instead of the "Nothing here"
+  /// placeholder, which read as "this room is empty" and then popped into a
+  /// full transcript.
+  final bool loading;
+
   String? get queuedText =>
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
 
   const ChatReady({
     required this.messages,
     this.streaming,
+    this.loading = false,
     this.isOffline = false,
     this.pairingRevoked = false,
     this.peerOfflineReason,
@@ -98,6 +108,7 @@ class ChatReady extends ChatState {
   ChatReady copyWith({
     List<ChatMessage>? messages,
     StreamingMessage? streaming,
+    bool? loading,
     bool? isOffline,
     bool? pairingRevoked,
     String? peerOfflineReason,
@@ -119,6 +130,7 @@ class ChatReady extends ChatState {
       ChatReady(
         messages: messages ?? this.messages,
         streaming: clearStreaming ? null : (streaming ?? this.streaming),
+        loading: loading ?? this.loading,
         isOffline: isOffline ?? this.isOffline,
         pairingRevoked: pairingRevoked ?? this.pairingRevoked,
         peerOfflineReason: clearPeerOffline
@@ -145,6 +157,7 @@ class ChatReady extends ChatState {
       other is ChatReady &&
       other.messages == messages &&
       other.streaming == streaming &&
+      other.loading == loading &&
       other.isOffline == isOffline &&
       other.pairingRevoked == pairingRevoked &&
       other.peerOfflineReason == peerOfflineReason &&
@@ -161,6 +174,7 @@ class ChatReady extends ChatState {
   int get hashCode => Object.hash(
         messages,
         streaming,
+        loading,
         isOffline,
         pairingRevoked,
         peerOfflineReason,
