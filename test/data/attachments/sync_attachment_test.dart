@@ -203,8 +203,10 @@ void main() {
         data: base64Encode(_png),
       ),
     );
-    await _settle();
-    final blob = messages(s.epk).first.attachment!.blobName;
+    final blob = (await rowsAfter(s.epk, (r) => r.isNotEmpty))
+        .first
+        .attachment!
+        .blobName;
 
     // A replay-shaped event for the same card (no `data`).
     s.ch.push(
@@ -407,8 +409,11 @@ void main() {
         eos: true,
       ),
     );
-    await _settle();
-    expect((messages(s.epk).first.toChatMessage() as AttachmentMsg).hasContent, isFalse);
+    final replayed = await rowsAfter(s.epk, (r) => r.isNotEmpty);
+    expect(
+      (replayed.first.toChatMessage() as AttachmentMsg).hasContent,
+      isFalse,
+    );
 
     s.ch.push(
       FileOffer(
@@ -454,8 +459,11 @@ void main() {
           data: base64Encode(_png),
         ),
       );
-      await _settle();
-      final card = messages(s.epk).first.toChatMessage() as AttachmentMsg;
+      final card =
+          (await rowsAfter(s.epk, (r) => r.isNotEmpty))
+                  .first
+                  .toChatMessage()
+              as AttachmentMsg;
       final expected = await _store.pathOf(card.blobName!);
 
       final where = await s.sync.saveAttachment(card);
