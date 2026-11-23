@@ -149,15 +149,22 @@ void main() {
     });
   });
 
-  group('sessionTitle (picker rows: the content identifies a session)', () {
-    test('the first message wins over a real agent name', () {
+  group('sessionTitle (picker rows: the session\'s own name first)', () {
+    test('a real name wins over the first message', () {
       expect(
         sessionTitle(name: 'Jarvis', firstMessage: 'hello there', cwd: '/home/u/proj'),
+        'Jarvis',
+      );
+    });
+
+    test('a nameless session is titled by its first message', () {
+      expect(
+        sessionTitle(firstMessage: 'hello there', cwd: '/home/u/proj'),
         'hello there',
       );
     });
 
-    test('the first message wins over the folder-default name', () {
+    test('the folder-default name is not a title — the message wins', () {
       expect(
         sessionTitle(name: 'proj', firstMessage: 'hello there', cwd: '/home/u/proj'),
         'hello there',
@@ -182,6 +189,10 @@ void main() {
       expect(
         sessionTitle(name: 'Jarvis', firstMessage: '(no messages)', cwd: '/home/u/proj'),
         'Jarvis',
+      );
+      expect(
+        sessionTitle(name: 'proj', firstMessage: '(no messages)', cwd: '/home/u/proj'),
+        '(unnamed session)',
       );
       expect(
         sessionTitle(firstMessage: '(no messages)', cwd: '/home/u/proj'),

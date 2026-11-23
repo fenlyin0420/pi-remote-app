@@ -39,25 +39,23 @@ String? folderName(String cwd) {
   return segments.isEmpty ? null : segments.last;
 }
 
-/// The session picker's per-row title. A session is identified by its
-/// content, not by the room's identity — so the first user message wins
-/// ALWAYS (even when the room carries a real agent name like "Jarvis"; the
-/// name is the room's label, shared by every row of one room). The name is
-/// only a fallback for sessions that never had a message, and a name that
-/// is the cwd's folder basename (the Pi's default identity) is not a user
-/// choice — it is skipped. The SDK's empty sentinel "(no messages)" counts
-/// as absent.
+/// The session picker's per-row title. A session that carries its own name
+/// (set by the user, the agent, or `--name` when the room was started) is
+/// identified by it — the first user message is then only the fallback for
+/// sessions that never named themselves. A name that is the cwd's folder
+/// basename (the Pi's default identity) is not a title anyone chose, so it
+/// is skipped. The SDK's empty sentinel "(no messages)" counts as absent.
 String sessionTitle({
   String? name,
   required String firstMessage,
   String? cwd,
 }) {
-  if (firstMessage.isNotEmpty && firstMessage != '(no messages)') {
-    return firstMessage;
-  }
   final folder = folderName(cwd ?? '');
   if (name?.isNotEmpty == true && (folder == null || name != folder)) {
     return name!;
+  }
+  if (firstMessage.isNotEmpty && firstMessage != '(no messages)') {
+    return firstMessage;
   }
   return '(unnamed session)';
 }

@@ -2389,11 +2389,11 @@ class WireSession {
   /// The session file's UUID — handed back verbatim on [SessionSwitch].
   final String id;
 
-  /// User-set display name; `null` when the session never named itself —
-  /// the UI falls back to [firstMessage].
+  /// User-set display name; `null` when the session never named itself.
+  /// The picker's title — [firstMessage] is only the fallback.
   final String? name;
 
-  /// First user message, truncated by the Pi — the picker's subtitle.
+  /// First user message, truncated by the Pi — the picker's fallback title.
   final String firstMessage;
 
   final int messageCount;

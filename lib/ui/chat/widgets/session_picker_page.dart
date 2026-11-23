@@ -37,9 +37,8 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
     setState(() => _load = widget.chat.listSessions());
   }
 
-  /// The row/dialog title: the session's first message always wins (the
-  /// agent name is the room's label, shared by every row); the name is
-  /// only a fallback for message-less sessions.
+  /// The row/dialog title: the session's own name wins; the first message
+  /// is the fallback for sessions that never named themselves.
   String _title(WireSession s) => sessionTitle(
     name: s.name,
     firstMessage: s.firstMessage,
